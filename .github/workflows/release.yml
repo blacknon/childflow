@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package release archive
+        env:
+          BIN_NAME: childflow
+          TARGET: x86_64-unknown-linux-gnu
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          cp target/release/${BIN_NAME} dist/${BIN_NAME}
+          cp README.md LICENSE dist/
+          tar -C dist -czf dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz ${BIN_NAME} README.md LICENSE
+          shasum -a 256 dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz > dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: childflow-${{ github.ref_name }}-x86_64-unknown-linux-gnu
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

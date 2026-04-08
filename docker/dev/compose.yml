@@ -1,0 +1,12 @@
+services:
+  childflow-dev:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    working_dir: /workspaces/childflow
+    volumes:
+      - ../..:/workspaces/childflow
+    tty: true
+    stdin_open: true
+    privileged: true
+    network_mode: host
