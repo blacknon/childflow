@@ -1,4 +1,3 @@
-use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -165,4 +164,88 @@ fn relay_bidirectional(left: &mut TcpStream, right: &mut TcpStream) -> Result<()
         .context("DNS TCP upstream->client relay failed")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+
+    fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        let join = thread::spawn(move || {
+            let accepted = listener.accept().unwrap().0;
+            tx.send(accepted).unwrap();
+        });
+
+        let client = TcpStream::connect(addr).unwrap();
+        let server = rx.recv().unwrap();
+        join.join().unwrap();
+
+        (client, server)
+    }
+
+    #[test]
+    fn forward_udp_query_relays_response_from_upstream() {
+        let upstream = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let upstream_addr = match upstream.local_addr().unwrap() {
+            SocketAddr::V4(addr) => addr,
+            SocketAddr::V6(_) => panic!("expected an IPv4 upstream socket"),
+        };
+
+        let expected_query = b"\x12\x34dns-query".to_vec();
+        let expected_response = b"\x12\x34dns-response".to_vec();
+
+        let join = thread::spawn({
+            let expected_query = expected_query.clone();
+            let expected_response = expected_response.clone();
+            move || {
+                let mut buf = [0_u8; 64];
+                let (n, peer) = upstream.recv_from(&mut buf).unwrap();
+                assert_eq!(&buf[..n], expected_query.as_slice());
+                upstream.send_to(&expected_response, peer).unwrap();
+            }
+        });
+
+        let actual = forward_udp_query(&expected_query, upstream_addr).unwrap();
+        join.join().unwrap();
+
+        assert_eq!(actual, expected_response);
+    }
+
+    #[test]
+    fn relay_bidirectional_copies_data_in_both_directions() {
+        let (mut left_peer, mut left_relay) = tcp_pair();
+        let (mut right_peer, mut right_relay) = tcp_pair();
+
+        let request = b"dns request payload".to_vec();
+        let response = b"dns response payload".to_vec();
+
+        let upstream_join = thread::spawn({
+            let request = request.clone();
+            let response = response.clone();
+            move || {
+                let mut received = vec![0_u8; request.len()];
+                right_peer.read_exact(&mut received).unwrap();
+                assert_eq!(received, request);
+
+                right_peer.write_all(&response).unwrap();
+                right_peer.shutdown(Shutdown::Write).unwrap();
+            }
+        });
+
+        left_peer.write_all(&request).unwrap();
+        left_peer.shutdown(Shutdown::Write).unwrap();
+
+        relay_bidirectional(&mut left_relay, &mut right_relay).unwrap();
+        upstream_join.join().unwrap();
+
+        let mut received = Vec::new();
+        left_peer.read_to_end(&mut received).unwrap();
+        assert_eq!(received, response);
+    }
 }

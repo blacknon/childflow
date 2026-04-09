@@ -2,8 +2,15 @@ name: Release
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
