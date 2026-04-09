@@ -14,6 +14,12 @@ This tool relies on Linux kernel features and only runs on Linux.
 - `Tunnel`: Redirect the target command's TCP traffic through a transparent tunnel inside an isolated network namespace.
 - `Packet capture`: Capture only the target command's traffic and save it in `pcapng` format.
 
+## Install
+
+```bash
+cargo build --release
+sudo cp ./target/release/childflow /usr/local/bin/
+```
 
 ## How to use
 
