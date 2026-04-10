@@ -1,0 +1,68 @@
+services:
+  origin-http:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - python
+      - /demo/origin_server.py
+      - --port
+      - "8080"
+      - --body
+      - origin-http-ok
+
+  origin-https:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - bash
+      - -lc
+      - |
+        /demo/create-self-signed-cert.sh origin-https /tmp/origin.crt /tmp/origin.key
+        exec python /demo/origin_server.py --port 8443 --body origin-https-ok --tls-cert /tmp/origin.crt --tls-key /tmp/origin.key
+
+  proxy-http:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - python
+      - /demo/proxy_server.py
+      - --port
+      - "3128"
+      - --user
+      - demo
+      - --password
+      - demo
+
+  proxy-https:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - bash
+      - -lc
+      - |
+        /demo/create-self-signed-cert.sh proxy-https /tmp/proxy.crt /tmp/proxy.key
+        exec python /demo/proxy_server.py --port 3443 --tls-cert /tmp/proxy.crt --tls-key /tmp/proxy.key --user demo --password demo
+
+  childflow-demo:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    working_dir: /workspaces/childflow
+    volumes:
+      - ../..:/workspaces/childflow
+    privileged: true
+    tty: true
+    stdin_open: true
+    depends_on:
+      - origin-http
+      - origin-https
+      - proxy-http
+      - proxy-https

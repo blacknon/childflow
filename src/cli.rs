@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -18,13 +18,25 @@ pub struct Cli {
     #[arg(short = 'o', long = "output")]
     pub output: PathBuf,
 
-    /// Force DNS traffic for the child tree to this IPv4 resolver.
+    /// Force DNS traffic for the child tree to this IPv4 or IPv6 resolver.
     #[arg(short = 'd', long = "dns")]
-    pub dns: Option<Ipv4Addr>,
+    pub dns: Option<IpAddr>,
 
-    /// Force TCP traffic through this upstream proxy URI, for example http://127.0.0.1:8080 or socks5://host.docker.internal:10080.
+    /// Force TCP traffic through this upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080.
     #[arg(short = 'p', long = "proxy")]
     pub proxy: Option<ProxySpec>,
+
+    /// Username for upstream proxy authentication.
+    #[arg(long = "proxy-user")]
+    pub proxy_user: Option<String>,
+
+    /// Password for upstream proxy authentication.
+    #[arg(long = "proxy-password")]
+    pub proxy_password: Option<String>,
+
+    /// Ignore TLS certificate and hostname validation for https:// upstream proxies.
+    #[arg(long = "proxy-insecure")]
+    pub proxy_insecure: bool,
 
     /// Force the host-side egress interface for the child's direct traffic.
     #[arg(short = 'i', long = "iface")]
@@ -41,13 +53,21 @@ impl Cli {
             bail!("missing command to execute");
         }
 
+        if self.proxy_user.is_some() != self.proxy_password.is_some() {
+            bail!("`--proxy-user` and `--proxy-password` must be provided together");
+        }
+
+        if (self.proxy_user.is_some() || self.proxy_insecure) && self.proxy.is_none() {
+            bail!("proxy authentication and TLS options require `--proxy`");
+        }
+
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxySpec {
-    pub kind: ProxyType,
+    pub scheme: ProxyScheme,
     pub host: String,
     pub port: u16,
 }
@@ -68,19 +88,20 @@ impl FromStr for ProxySpec {
             return Err("proxy URI must not contain a path, query, or fragment".to_string());
         }
 
-        let kind = match scheme {
-            "http" => ProxyType::Http,
-            "socks5" => ProxyType::Socks5,
+        let scheme = match scheme {
+            "http" => ProxyScheme::Http,
+            "https" => ProxyScheme::Https,
+            "socks5" => ProxyScheme::Socks5,
             other => {
                 return Err(format!(
-                    "unsupported proxy scheme `{other}`; expected `http` or `socks5`"
+                    "unsupported proxy scheme `{other}`; expected `http`, `https`, or `socks5`"
                 ))
             }
         };
 
         let (host, port) = parse_host_port(rest)?;
 
-        Ok(Self { kind, host, port })
+        Ok(Self { scheme, host, port })
     }
 }
 
@@ -116,4 +137,55 @@ fn parse_host_port(input: &str) -> std::result::Result<(String, u16), String> {
 pub enum ProxyType {
     Http,
     Socks5,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProxyScheme {
+    Http,
+    Https,
+    Socks5,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_proxy_spec_accepts_bracketed_ipv6_hosts() {
+        let parsed: ProxySpec = "socks5://[2001:db8::1]:1080".parse().unwrap();
+
+        assert_eq!(parsed.scheme, ProxyScheme::Socks5);
+        assert_eq!(parsed.host, "2001:db8::1");
+        assert_eq!(parsed.port, 1080);
+    }
+
+    #[test]
+    fn parse_proxy_spec_rejects_ipv6_without_brackets() {
+        let err = "http://2001:db8::1:8080".parse::<ProxySpec>().unwrap_err();
+        assert!(err.contains("invalid port") || err.contains("must include a port"));
+    }
+
+    #[test]
+    fn parse_proxy_spec_accepts_https_scheme() {
+        let parsed: ProxySpec = "https://proxy.example.com:443".parse().unwrap();
+        assert_eq!(parsed.scheme, ProxyScheme::Https);
+        assert_eq!(parsed.host, "proxy.example.com");
+        assert_eq!(parsed.port, 443);
+    }
+
+    #[test]
+    fn validate_requires_complete_proxy_credentials() {
+        let cli = Cli {
+            output: PathBuf::from("out.pcapng"),
+            dns: None,
+            proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
+            proxy_user: Some("alice".into()),
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        };
+
+        assert!(cli.validate().is_err());
+    }
 }

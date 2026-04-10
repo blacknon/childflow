@@ -16,6 +16,8 @@ docker compose -f docker/dev/compose.yml run --rm childflow-dev
 cargo build
 ```
 
+The development image includes `libssl-dev` and `pkg-config` because HTTPS upstream proxy support now depends on OpenSSL through `native-tls`.
+
 ## Run a quick example
 
 ```bash

@@ -26,7 +26,7 @@ use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::io::Write;
 #[cfg(target_os = "linux")]
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
@@ -50,7 +50,7 @@ use capture::CaptureHandle;
 #[cfg(target_os = "linux")]
 use cgroup::CgroupManager;
 #[cfg(target_os = "linux")]
-use cli::Cli;
+use cli::{Cli, ProxyScheme, ProxyType};
 #[cfg(target_os = "linux")]
 use dns::DnsHandle;
 #[cfg(target_os = "linux")]
@@ -79,7 +79,12 @@ fn real_main() -> Result<i32> {
 
     let run_id = util::unique_run_id();
     let network_plan = NetworkPlan::new();
-    let dns_config = prepare_dns_config(&run_id, cli.dns, network_plan.host_ip())?;
+    let dns_config = prepare_dns_config(
+        &run_id,
+        cli.dns,
+        network_plan.host_ipv4(),
+        network_plan.host_ipv6(),
+    )?;
 
     let (read_fd, write_fd) = pipe().context("failed to create bootstrap pipe")?;
 
@@ -111,7 +116,18 @@ fn real_main() -> Result<i32> {
                         host: proxy_spec.host,
                         port: proxy_spec.port,
                     },
-                    kind: proxy_spec.kind,
+                    kind: match proxy_spec.scheme {
+                        ProxyScheme::Http | ProxyScheme::Https => ProxyType::Http,
+                        ProxyScheme::Socks5 => ProxyType::Socks5,
+                    },
+                    tls: matches!(proxy_spec.scheme, ProxyScheme::Https),
+                    auth: match (cli.proxy_user.clone(), cli.proxy_password.clone()) {
+                        (Some(username), Some(password)) => {
+                            Some(tproxy::ProxyAuth { username, password })
+                        }
+                        _ => None,
+                    },
+                    insecure: cli.proxy_insecure,
                     bind_interface: cli.iface.clone(),
                 };
                 Some(TproxyHandle::start(upstream).context("failed to start transparent proxy")?)
@@ -130,7 +146,9 @@ fn real_main() -> Result<i32> {
 
             let dns = dns_config
                 .upstream
-                .map(|upstream| DnsHandle::start(network_plan.host_ip(), upstream))
+                .map(|upstream| {
+                    DnsHandle::start(network_plan.host_ipv4(), network_plan.host_ipv6(), upstream)
+                })
                 .transpose()
                 .context("failed to start DNS forwarder")?;
 
@@ -185,8 +203,9 @@ fn maybe_write_resolv_conf(run_id: &str, content: &str) -> Result<Option<TempFil
 #[cfg(target_os = "linux")]
 fn prepare_dns_config(
     run_id: &str,
-    dns: Option<Ipv4Addr>,
-    inherited_dns_ip: Ipv4Addr,
+    dns: Option<IpAddr>,
+    inherited_dns_ipv4: Ipv4Addr,
+    inherited_dns_ipv6: Ipv6Addr,
 ) -> Result<DnsConfig> {
     if let Some(dns) = dns {
         let content = format!("nameserver {dns}\noptions timeout:1 attempts:1\n");
@@ -198,7 +217,8 @@ fn prepare_dns_config(
 
     let host_resolv =
         std::fs::read_to_string("/etc/resolv.conf").context("failed to read /etc/resolv.conf")?;
-    let inherited = build_inherited_dns_config(&host_resolv, inherited_dns_ip)?;
+    let inherited =
+        build_inherited_dns_config(&host_resolv, inherited_dns_ipv4, inherited_dns_ipv6)?;
 
     Ok(DnsConfig {
         resolv_guard: maybe_write_resolv_conf(run_id, &inherited.resolv_conf)?,
@@ -209,7 +229,8 @@ fn prepare_dns_config(
 #[cfg(target_os = "linux")]
 fn build_inherited_dns_config(
     host_resolv: &str,
-    inherited_dns_ip: Ipv4Addr,
+    inherited_dns_ipv4: Ipv4Addr,
+    inherited_dns_ipv6: Ipv6Addr,
 ) -> Result<InheritedDnsConfig> {
     let mut output = Vec::new();
     let mut upstream = None;
@@ -220,12 +241,11 @@ fn build_inherited_dns_config(
         if let Some(rest) = trimmed.strip_prefix("nameserver") {
             let addr = rest.trim();
             match addr.parse::<IpAddr>() {
-                Ok(IpAddr::V4(ip)) => {
+                Ok(ip) => {
                     if upstream.is_none() {
                         upstream = Some(ip);
                     }
                 }
-                Ok(IpAddr::V6(_)) => {}
                 Err(_) => {}
             }
             continue;
@@ -240,9 +260,10 @@ fn build_inherited_dns_config(
     }
 
     let upstream = upstream
-        .ok_or_else(|| anyhow::anyhow!("no usable IPv4 nameserver found in /etc/resolv.conf"))?;
+        .ok_or_else(|| anyhow::anyhow!("no usable nameserver found in /etc/resolv.conf"))?;
 
-    output.push(format!("nameserver {inherited_dns_ip}"));
+    output.push(format!("nameserver {inherited_dns_ipv4}"));
+    output.push(format!("nameserver {inherited_dns_ipv6}"));
     if !output.iter().any(|line| line.starts_with("options ")) {
         output.push("options timeout:1 attempts:1".to_string());
     }
@@ -255,14 +276,14 @@ fn build_inherited_dns_config(
 
 #[cfg(target_os = "linux")]
 struct InheritedDnsConfig {
-    upstream: Ipv4Addr,
+    upstream: IpAddr,
     resolv_conf: String,
 }
 
 #[cfg(target_os = "linux")]
 struct DnsConfig {
     resolv_guard: Option<TempFileGuard>,
-    upstream: Option<Ipv4Addr>,
+    upstream: Option<IpAddr>,
 }
 
 #[cfg(target_os = "linux")]
@@ -290,12 +311,17 @@ search example.internal
 options edns0 trust-ad
 ";
 
-        let config = build_inherited_dns_config(host_resolv, Ipv4Addr::new(10, 0, 0, 2)).unwrap();
+        let config = build_inherited_dns_config(
+            host_resolv,
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv6Addr::new(0xfd42, 0, 0, 0, 0, 0, 0, 2),
+        )
+        .unwrap();
 
-        assert_eq!(config.upstream, Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(config.upstream, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
         assert_eq!(
             config.resolv_conf,
-            "search example.internal\noptions edns0 trust-ad\nnameserver 10.0.0.2\n"
+            "search example.internal\noptions edns0 trust-ad\nnameserver 10.0.0.2\nnameserver fd42::2\n"
         );
     }
 
@@ -307,24 +333,33 @@ domain example.internal
 nameserver 1.1.1.1
 ";
 
-        let config =
-            build_inherited_dns_config(host_resolv, Ipv4Addr::new(172, 16, 0, 10)).unwrap();
+        let config = build_inherited_dns_config(
+            host_resolv,
+            Ipv4Addr::new(172, 16, 0, 10),
+            Ipv6Addr::new(0xfd42, 0x1234, 0x5678, 0, 0, 0, 0, 10),
+        )
+        .unwrap();
 
-        assert_eq!(config.upstream, Ipv4Addr::new(1, 1, 1, 1));
+        assert_eq!(
+            config.upstream,
+            IpAddr::V6("2001:4860:4860::8888".parse().unwrap())
+        );
         assert_eq!(
             config.resolv_conf,
-            "domain example.internal\nnameserver 172.16.0.10\noptions timeout:1 attempts:1\n"
+            "domain example.internal\nnameserver 172.16.0.10\nnameserver fd42:1234:5678::a\noptions timeout:1 attempts:1\n"
         );
     }
 
     #[test]
-    fn build_inherited_dns_config_rejects_missing_ipv4_nameserver() {
-        let host_resolv = "\
-nameserver 2001:4860:4860::8888
-search example.internal
-";
+    fn build_inherited_dns_config_rejects_missing_nameserver() {
+        let host_resolv = "search example.internal\n";
 
-        let err = build_inherited_dns_config(host_resolv, Ipv4Addr::new(10, 0, 0, 2)).unwrap_err();
-        assert!(err.to_string().contains("no usable IPv4 nameserver found"));
+        let err = build_inherited_dns_config(
+            host_resolv,
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv6Addr::new(0xfd42, 0, 0, 0, 0, 0, 0, 2),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no usable nameserver found"));
     }
 }

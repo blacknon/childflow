@@ -1,4 +1,7 @@
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, SocketAddrV6, TcpListener,
+    TcpStream, UdpSocket,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -12,32 +15,38 @@ pub struct DnsHandle {
 }
 
 impl DnsHandle {
-    pub fn start(bind_ip: Ipv4Addr, upstream_ip: Ipv4Addr) -> Result<Self> {
-        let bind_addr = SocketAddrV4::new(bind_ip, 53);
-        let upstream_addr = SocketAddrV4::new(upstream_ip, 53);
-
-        let udp = UdpSocket::bind(bind_addr)
-            .with_context(|| format!("failed to bind UDP DNS forwarder on {bind_addr}"))?;
-        udp.set_read_timeout(Some(Duration::from_millis(250)))
-            .context("failed to set UDP DNS forwarder read timeout")?;
-
-        let tcp = TcpListener::bind(bind_addr)
-            .with_context(|| format!("failed to bind TCP DNS forwarder on {bind_addr}"))?;
-        tcp.set_nonblocking(true)
-            .context("failed to set TCP DNS forwarder nonblocking")?;
-
+    pub fn start(bind_ipv4: Ipv4Addr, bind_ipv6: Ipv6Addr, upstream_ip: IpAddr) -> Result<Self> {
+        let listen_addrs = [
+            SocketAddr::V4(SocketAddrV4::new(bind_ipv4, 53)),
+            SocketAddr::V6(SocketAddrV6::new(bind_ipv6, 53, 0, 0)),
+        ];
+        let upstream_addr = SocketAddr::new(upstream_ip, 53);
         let stop = Arc::new(AtomicBool::new(false));
+        let mut joins = Vec::new();
 
-        let udp_stop = Arc::clone(&stop);
-        let udp_join = thread::spawn(move || udp_loop(udp, upstream_addr, udp_stop));
+        for bind_addr in listen_addrs {
+            let udp = UdpSocket::bind(bind_addr)
+                .with_context(|| format!("failed to bind UDP DNS forwarder on {bind_addr}"))?;
+            udp.set_read_timeout(Some(Duration::from_millis(250)))
+                .context("failed to set UDP DNS forwarder read timeout")?;
 
-        let tcp_stop = Arc::clone(&stop);
-        let tcp_join = thread::spawn(move || tcp_loop(tcp, upstream_addr, tcp_stop));
+            let tcp = TcpListener::bind(bind_addr)
+                .with_context(|| format!("failed to bind TCP DNS forwarder on {bind_addr}"))?;
+            tcp.set_nonblocking(true)
+                .context("failed to set TCP DNS forwarder nonblocking")?;
 
-        Ok(Self {
-            stop,
-            joins: vec![udp_join, tcp_join],
-        })
+            let udp_stop = Arc::clone(&stop);
+            joins.push(thread::spawn(move || {
+                udp_loop(udp, upstream_addr, udp_stop)
+            }));
+
+            let tcp_stop = Arc::clone(&stop);
+            joins.push(thread::spawn(move || {
+                tcp_loop(tcp, upstream_addr, tcp_stop)
+            }));
+        }
+
+        Ok(Self { stop, joins })
     }
 
     fn stop_and_join(&mut self) {
@@ -54,16 +63,12 @@ impl Drop for DnsHandle {
     }
 }
 
-fn udp_loop(socket: UdpSocket, upstream_addr: SocketAddrV4, stop: Arc<AtomicBool>) -> Result<()> {
+fn udp_loop(socket: UdpSocket, upstream_addr: SocketAddr, stop: Arc<AtomicBool>) -> Result<()> {
     let mut buf = [0_u8; 4096];
 
     while !stop.load(Ordering::Relaxed) {
         match socket.recv_from(&mut buf) {
             Ok((n, peer)) => {
-                let SocketAddr::V4(peer) = peer else {
-                    continue;
-                };
-
                 let response = forward_udp_query(&buf[..n], upstream_addr)?;
                 socket
                     .send_to(&response, peer)
@@ -79,8 +84,12 @@ fn udp_loop(socket: UdpSocket, upstream_addr: SocketAddrV4, stop: Arc<AtomicBool
     Ok(())
 }
 
-fn forward_udp_query(query: &[u8], upstream_addr: SocketAddrV4) -> Result<Vec<u8>> {
-    let upstream = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
+fn forward_udp_query(query: &[u8], upstream_addr: SocketAddr) -> Result<Vec<u8>> {
+    let bind_addr = match upstream_addr {
+        SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+        SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
+    };
+    let upstream = UdpSocket::bind(bind_addr)
         .context("failed to bind UDP upstream socket for DNS forwarder")?;
     upstream
         .set_read_timeout(Some(Duration::from_secs(3)))
@@ -99,11 +108,7 @@ fn forward_udp_query(query: &[u8], upstream_addr: SocketAddrV4) -> Result<Vec<u8
     Ok(buf[..n].to_vec())
 }
 
-fn tcp_loop(
-    listener: TcpListener,
-    upstream_addr: SocketAddrV4,
-    stop: Arc<AtomicBool>,
-) -> Result<()> {
+fn tcp_loop(listener: TcpListener, upstream_addr: SocketAddr, stop: Arc<AtomicBool>) -> Result<()> {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((client, _)) => {
@@ -121,7 +126,7 @@ fn tcp_loop(
     Ok(())
 }
 
-fn handle_tcp_connection(mut client: TcpStream, upstream_addr: SocketAddrV4) -> Result<()> {
+fn handle_tcp_connection(mut client: TcpStream, upstream_addr: SocketAddr) -> Result<()> {
     let mut upstream = TcpStream::connect(upstream_addr)
         .with_context(|| format!("failed to connect TCP DNS upstream {upstream_addr}"))?;
     relay_bidirectional(&mut client, &mut upstream)?;

@@ -9,9 +9,10 @@ This tool relies on Linux kernel features and only runs on Linux.
 
 ## Feature
 
-- `Proxy`: Override the proxy used by the target command with a specified upstream proxy.
-- `DNS`: Override the DNS resolver used by the target command with a specified IPv4 DNS server.
-- `Tunnel`: Redirect the target command's TCP traffic through a transparent tunnel inside an isolated network namespace.
+- `Proxy`: Override the proxy used by the target command with a specified upstream HTTP, HTTPS, or SOCKS5 proxy.
+- `DNS`: Override the DNS resolver used by the target command with a specified IPv4 or IPv6 DNS server.
+- `Tunnel`: Redirect the target command's IPv4/IPv6 TCP traffic through a transparent tunnel inside an isolated network namespace.
+- `Dual stack networking`: The isolated namespace is provisioned with both IPv4 and IPv6 connectivity.
 - `Packet capture`: Capture only the target command's traffic and save it in `pcapng` format.
 
 ## Install
@@ -20,6 +21,10 @@ This tool relies on Linux kernel features and only runs on Linux.
 cargo build --release
 sudo cp ./target/release/childflow /usr/local/bin/
 ```
+
+## Demo
+
+A runnable Docker Compose demo is available under `docker/demo/README.md`.
 
 ## How to use
 
@@ -36,15 +41,21 @@ Examples:
 ```bash
 sudo childflow -o capture.pcapng -- curl https://example.com
 sudo childflow -o capture.pcapng -d 1.1.1.1 -- curl https://example.com
+sudo childflow -o capture.pcapng -d 2606:4700:4700::1111 -- curl https://example.com
 sudo childflow -o capture.pcapng -p http://127.0.0.1:8080 -- curl https://example.com
+sudo childflow -o capture.pcapng -p https://proxy.example.com:443 --proxy-user alice --proxy-password secret -- curl https://example.com
+sudo childflow -o capture.pcapng -p https://proxy.example.com:443 --proxy-insecure -- curl https://example.com
 sudo childflow -o capture.pcapng -i eth0 -- curl https://example.com
 ```
 
 Options:
 
 - `-o, --output <PATH>`: Write captured traffic to a `pcapng` file.
-- `-d, --dns <IPv4>`: Force the child process tree to use a specific IPv4 DNS resolver.
-- `-p, --proxy <URI>`: Force TCP traffic through an upstream proxy such as `http://127.0.0.1:8080` or `socks5://127.0.0.1:1080`.
+- `-d, --dns <IP>`: Force the child process tree to use a specific IPv4 or IPv6 DNS resolver.
+- `-p, --proxy <URI>`: Force TCP traffic through an upstream proxy such as `http://127.0.0.1:8080`, `https://proxy.example.com:443`, or `socks5://127.0.0.1:1080`.
+- `--proxy-user <USER>`: Username for upstream proxy authentication.
+- `--proxy-password <PASS>`: Password for upstream proxy authentication.
+- `--proxy-insecure`: Ignore TLS certificate and hostname validation for `https://` upstream proxies.
 - `-i, --iface <NAME>`: Force direct egress traffic to use a specific host interface.
 
 ### Example
