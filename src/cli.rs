@@ -127,6 +127,10 @@ fn parse_host_port(input: &str) -> std::result::Result<(String, u16), String> {
         return Ok((host.to_string(), port));
     }
 
+    if input.matches(':').count() > 1 {
+        return Err("IPv6 proxy hosts must be enclosed in `[` and `]`".to_string());
+    }
+
     let (host, port) = input
         .rsplit_once(':')
         .ok_or_else(|| "proxy URI must include a port".to_string())?;
@@ -171,7 +175,7 @@ mod tests {
     #[test]
     fn parse_proxy_spec_rejects_ipv6_without_brackets() {
         let err = "http://2001:db8::1:8080".parse::<ProxySpec>().unwrap_err();
-        assert!(err.contains("invalid port") || err.contains("must include a port"));
+        assert!(err.contains("must be enclosed in `[` and `]`"));
     }
 
     #[test]
