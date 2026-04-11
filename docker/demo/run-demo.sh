@@ -4,8 +4,6 @@ set -euo pipefail
 repo_root="/workspaces/childflow"
 cd "$repo_root"
 
-./docker/demo/wait-for-port.sh origin-http 8080
-./docker/demo/wait-for-port.sh origin-https 8443
 ./docker/demo/wait-for-port.sh proxy-http 3128
 ./docker/demo/wait-for-port.sh proxy-https 3443
 

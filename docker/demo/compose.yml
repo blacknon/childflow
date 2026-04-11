@@ -14,6 +14,18 @@ services:
     networks:
       backend:
         ipv4_address: 172.31.0.10
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 8080), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
 
   origin-https:
     build:
@@ -29,6 +41,18 @@ services:
     networks:
       backend:
         ipv4_address: 172.31.0.11
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 8443), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
 
   proxy-http:
     build:
@@ -48,6 +72,18 @@ services:
       client: {}
       backend:
         ipv4_address: 172.31.0.20
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 3128), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
 
   proxy-https:
     build:
@@ -64,6 +100,18 @@ services:
       client: {}
       backend:
         ipv4_address: 172.31.0.21
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 3443), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
 
   childflow-demo:
     build:
@@ -79,10 +127,14 @@ services:
       - "origin-http.demo:172.31.0.10"
       - "origin-https.demo:172.31.0.11"
     depends_on:
-      - origin-http
-      - origin-https
-      - proxy-http
-      - proxy-https
+      origin-http:
+        condition: service_healthy
+      origin-https:
+        condition: service_healthy
+      proxy-http:
+        condition: service_healthy
+      proxy-https:
+        condition: service_healthy
     networks:
       client: {}
 
