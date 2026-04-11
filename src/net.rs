@@ -202,6 +202,7 @@ impl NetworkContext {
                 format!("{}/64", self.host_ipv6),
                 "dev".into(),
                 self.host_veth.clone(),
+                "nodad".into(),
             ],
         )
         .context("failed to assign host veth IPv6 address")?;
@@ -269,6 +270,7 @@ impl NetworkContext {
                     format!("{}/64", self.child_ipv6),
                     "dev".into(),
                     self.child_veth.clone(),
+                    "nodad".into(),
                 ],
             )
             .context("failed to assign child veth IPv6 address")?;
