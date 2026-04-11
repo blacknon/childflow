@@ -275,6 +275,7 @@ fn build_inherited_dns_config(
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Debug)]
 struct InheritedDnsConfig {
     upstream: IpAddr,
     resolv_conf: String,

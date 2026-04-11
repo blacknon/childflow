@@ -216,7 +216,7 @@ mod tests {
             }
         });
 
-        let actual = forward_udp_query(&expected_query, upstream_addr).unwrap();
+        let actual = forward_udp_query(&expected_query, SocketAddr::V4(upstream_addr)).unwrap();
         join.join().unwrap();
 
         assert_eq!(actual, expected_response);

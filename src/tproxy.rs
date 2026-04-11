@@ -1,5 +1,6 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -7,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
+use nix::libc;
 use openssl::ssl::{HandshakeError, SslConnector, SslMethod, SslStream, SslVerifyMode};
 use socket2::{Domain, Protocol, Socket, Type};
 
@@ -36,7 +38,7 @@ pub struct ProxyAuth {
 
 enum ProxyStream {
     Tcp(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
+    Tls(Box<SslStream<TcpStream>>),
 }
 
 pub struct TproxyHandle {
@@ -54,8 +56,7 @@ impl TproxyHandle {
         socket
             .set_only_v6(false)
             .context("failed to configure dual-stack transparent listener")?;
-        socket
-            .set_ip_transparent(true)
+        enable_transparent(&socket)
             .context("failed to enable IP_TRANSPARENT on listener socket")?;
         let bind_addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0));
         socket
@@ -459,8 +460,84 @@ fn read_headers<S: Read>(stream: &mut S) -> Result<String> {
     String::from_utf8(buf).map_err(|err| anyhow!("proxy response is not valid UTF-8: {err}"))
 }
 
-fn relay_bidirectional<S: Read + Write>(left: &mut TcpStream, right: &mut S) -> Result<()> {
-    std::io::copy_bidirectional(left, right).context("proxy relay failed")?;
+fn relay_bidirectional(left: &mut TcpStream, right: &mut ProxyStream) -> Result<()> {
+    left.set_nonblocking(true)
+        .context("failed to set inbound stream nonblocking")?;
+    right
+        .set_nonblocking(true)
+        .context("failed to set upstream proxy stream nonblocking")?;
+
+    let mut left_to_right = Vec::new();
+    let mut right_to_left = Vec::new();
+    let mut left_open = true;
+    let mut right_open = true;
+
+    while left_open || right_open || !left_to_right.is_empty() || !right_to_left.is_empty() {
+        let mut progressed = false;
+
+        if left_open && left_to_right.is_empty() {
+            let mut buf = [0_u8; 16 * 1024];
+            match left.read(&mut buf) {
+                Ok(0) => {
+                    left_open = false;
+                    let _ = right.shutdown_write();
+                    progressed = true;
+                }
+                Ok(n) => {
+                    left_to_right.extend_from_slice(&buf[..n]);
+                    progressed = true;
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                Err(err) => return Err(err).context("failed to read from inbound stream"),
+            }
+        }
+
+        if !left_to_right.is_empty() {
+            match right.write(&left_to_right) {
+                Ok(0) => bail!("upstream proxy stream closed while sending request"),
+                Ok(n) => {
+                    left_to_right.drain(..n);
+                    progressed = true;
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                Err(err) => return Err(err).context("failed to write to upstream proxy stream"),
+            }
+        }
+
+        if right_open && right_to_left.is_empty() {
+            let mut buf = [0_u8; 16 * 1024];
+            match right.read(&mut buf) {
+                Ok(0) => {
+                    right_open = false;
+                    let _ = left.shutdown(Shutdown::Write);
+                    progressed = true;
+                }
+                Ok(n) => {
+                    right_to_left.extend_from_slice(&buf[..n]);
+                    progressed = true;
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                Err(err) => return Err(err).context("failed to read from upstream proxy stream"),
+            }
+        }
+
+        if !right_to_left.is_empty() {
+            match left.write(&right_to_left) {
+                Ok(0) => bail!("inbound stream closed while returning response"),
+                Ok(n) => {
+                    right_to_left.drain(..n);
+                    progressed = true;
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                Err(err) => return Err(err).context("failed to write back to inbound stream"),
+            }
+        }
+
+        if !progressed {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     let _ = left.shutdown(Shutdown::Both);
     Ok(())
 }
@@ -488,6 +565,56 @@ impl Write for ProxyStream {
             Self::Tls(stream) => stream.flush(),
         }
     }
+}
+
+impl ProxyStream {
+    fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.set_nonblocking(nonblocking),
+            Self::Tls(stream) => stream.get_ref().set_nonblocking(nonblocking),
+        }
+    }
+
+    fn shutdown_write(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.shutdown(Shutdown::Write),
+            Self::Tls(stream) => stream.get_ref().shutdown(Shutdown::Write),
+        }
+    }
+}
+
+fn enable_transparent(socket: &Socket) -> std::io::Result<()> {
+    let fd = socket.as_raw_fd();
+    let value: libc::c_int = 1;
+
+    unsafe {
+        if libc::setsockopt(
+            fd,
+            libc::IPPROTO_IP,
+            libc::IP_TRANSPARENT,
+            &value as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&value) as libc::socklen_t,
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if libc::setsockopt(
+                fd,
+                libc::IPPROTO_IPV6,
+                libc::IPV6_TRANSPARENT,
+                &value as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&value) as libc::socklen_t,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

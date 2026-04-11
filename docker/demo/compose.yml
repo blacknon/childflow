@@ -13,7 +13,7 @@ services:
       - origin-http-ok
     networks:
       backend:
-        ipv4_address: 172.31.0.10
+        ipv4_address: 10.241.0.10
     healthcheck:
       test:
         - CMD
@@ -40,7 +40,7 @@ services:
         exec python /demo/origin_server.py --port 8443 --body origin-https-ok --tls-cert /tmp/origin.crt --tls-key /tmp/origin.key
     networks:
       backend:
-        ipv4_address: 172.31.0.11
+        ipv4_address: 10.241.0.11
     healthcheck:
       test:
         - CMD
@@ -71,7 +71,7 @@ services:
     networks:
       client: {}
       backend:
-        ipv4_address: 172.31.0.20
+        ipv4_address: 10.241.0.20
     healthcheck:
       test:
         - CMD
@@ -99,7 +99,7 @@ services:
     networks:
       client: {}
       backend:
-        ipv4_address: 172.31.0.21
+        ipv4_address: 10.241.0.21
     healthcheck:
       test:
         - CMD
@@ -124,8 +124,8 @@ services:
     tty: true
     stdin_open: true
     extra_hosts:
-      - "origin-http.demo:172.31.0.10"
-      - "origin-https.demo:172.31.0.11"
+      - "origin-http.demo:10.241.0.10"
+      - "origin-https.demo:10.241.0.11"
     depends_on:
       origin-http:
         condition: service_healthy
@@ -142,9 +142,9 @@ networks:
   client:
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: 10.240.0.0/24
   backend:
     internal: true
     ipam:
       config:
-        - subnet: 172.31.0.0/24
+        - subnet: 10.241.0.0/24
