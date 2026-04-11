@@ -19,6 +19,9 @@ docker compose -f docker/demo/compose.yml run --rm childflow-demo /workspaces/ch
 The script verifies:
 
 - unit tests pass inside Linux
+- direct access to the origin containers is blocked from the demo runner
+- HTTP proxy requests fail without credentials
+- HTTPS proxy requests fail without `--proxy-insecure`
 - HTTP proxy authentication works
-- HTTPS upstream proxy works with `--proxy-insecure`
+- HTTPS upstream proxy works with `--proxy-insecure` while keeping hostname verification
 - `childflow` still writes non-empty `pcapng` capture files during the run

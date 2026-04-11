@@ -34,7 +34,7 @@ pub struct Cli {
     #[arg(long = "proxy-password")]
     pub proxy_password: Option<String>,
 
-    /// Ignore TLS certificate and hostname validation for https:// upstream proxies.
+    /// Ignore certificate trust errors for https:// upstream proxies while still validating the hostname.
     #[arg(long = "proxy-insecure")]
     pub proxy_insecure: bool,
 
@@ -59,6 +59,15 @@ impl Cli {
 
         if (self.proxy_user.is_some() || self.proxy_insecure) && self.proxy.is_none() {
             bail!("proxy authentication and TLS options require `--proxy`");
+        }
+
+        if self.proxy_insecure
+            && !matches!(
+                self.proxy.as_ref().map(|proxy| proxy.scheme),
+                Some(ProxyScheme::Https)
+            )
+        {
+            bail!("`--proxy-insecure` is only valid with an `https://` upstream proxy");
         }
 
         Ok(())
@@ -182,6 +191,22 @@ mod tests {
             proxy_user: Some("alice".into()),
             proxy_password: None,
             proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_proxy_insecure_for_non_https_proxy() {
+        let cli = Cli {
+            output: PathBuf::from("out.pcapng"),
+            dns: None,
+            proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: true,
             iface: None,
             command: vec!["curl".into()],
         };

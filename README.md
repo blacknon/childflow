@@ -55,7 +55,7 @@ Options:
 - `-p, --proxy <URI>`: Force TCP traffic through an upstream proxy such as `http://127.0.0.1:8080`, `https://proxy.example.com:443`, or `socks5://127.0.0.1:1080`.
 - `--proxy-user <USER>`: Username for upstream proxy authentication.
 - `--proxy-password <PASS>`: Password for upstream proxy authentication.
-- `--proxy-insecure`: Ignore TLS certificate and hostname validation for `https://` upstream proxies.
+- `--proxy-insecure`: Ignore certificate trust errors for `https://` upstream proxies while still validating the proxy hostname.
 - `-i, --iface <NAME>`: Force direct egress traffic to use a specific host interface.
 
 ### Example

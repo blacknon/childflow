@@ -11,6 +11,9 @@ services:
       - "8080"
       - --body
       - origin-http-ok
+    networks:
+      backend:
+        ipv4_address: 172.31.0.10
 
   origin-https:
     build:
@@ -23,6 +26,9 @@ services:
       - |
         /demo/create-self-signed-cert.sh origin-https /tmp/origin.crt /tmp/origin.key
         exec python /demo/origin_server.py --port 8443 --body origin-https-ok --tls-cert /tmp/origin.crt --tls-key /tmp/origin.key
+    networks:
+      backend:
+        ipv4_address: 172.31.0.11
 
   proxy-http:
     build:
@@ -38,6 +44,10 @@ services:
       - demo
       - --password
       - demo
+    networks:
+      client: {}
+      backend:
+        ipv4_address: 172.31.0.20
 
   proxy-https:
     build:
@@ -50,6 +60,10 @@ services:
       - |
         /demo/create-self-signed-cert.sh proxy-https /tmp/proxy.crt /tmp/proxy.key
         exec python /demo/proxy_server.py --port 3443 --tls-cert /tmp/proxy.crt --tls-key /tmp/proxy.key --user demo --password demo
+    networks:
+      client: {}
+      backend:
+        ipv4_address: 172.31.0.21
 
   childflow-demo:
     build:
@@ -61,8 +75,24 @@ services:
     privileged: true
     tty: true
     stdin_open: true
+    extra_hosts:
+      - "origin-http.demo:172.31.0.10"
+      - "origin-https.demo:172.31.0.11"
     depends_on:
       - origin-http
       - origin-https
       - proxy-http
       - proxy-https
+    networks:
+      client: {}
+
+networks:
+  client:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

@@ -11,13 +11,18 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release.yml"
+      - ".github/workflows/demo-test.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  demo-test:
+    uses: ./.github/workflows/demo-test.yml
+
   release:
+    needs: demo-test
     runs-on: ubuntu-24.04
 
     steps:

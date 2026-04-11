@@ -1,0 +1,44 @@
+name: Demo Test
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "docker/demo/**"
+      - "docker/dev/**"
+      - "README.md"
+      - ".github/workflows/demo-test.yml"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "docker/demo/**"
+      - "docker/dev/**"
+      - "README.md"
+      - ".github/workflows/demo-test.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  demo-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Docker Demo Test
+        run: docker compose -f docker/demo/compose.yml run --rm childflow-demo /workspaces/childflow/docker/demo/run-demo.sh
