@@ -16,7 +16,7 @@ It currently ships with two backends:
 - force DNS to a specific resolver
 - overlay an `/etc/hosts`-format file for child-side name resolution
 - send outbound TCP directly or through HTTP / HTTPS / SOCKS5 upstream proxies
-- relay outbound UDP, IPv4 / IPv6 `ping`, and both UDP-style and ICMP-mode `traceroute` on the default rootless backend
+- relay outbound UDP, IPv4 / IPv6 `ping`, both UDP-style and ICMP-mode `traceroute`, and best-effort direct non-echo ICMP requests on the default rootless backend
 - capture child traffic as `pcapng`
 
 ## Quick Start
