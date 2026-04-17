@@ -8,19 +8,6 @@ pub enum NetworkBackend {
     RootlessInternal,
 }
 
-impl NetworkBackend {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Rootful => "rootful",
-            Self::RootlessInternal => "rootless-internal",
-        }
-    }
-
-    pub fn is_experimental(self) -> bool {
-        matches!(self, Self::RootlessInternal)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct NetworkPlan {
     pub(crate) host_veth: String,

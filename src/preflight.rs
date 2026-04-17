@@ -213,14 +213,12 @@ fn command_exists_in_dir(dir: &Path, command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
     use std::path::PathBuf;
 
     #[test]
     fn find_missing_commands_reports_only_missing_entries() {
         let base = PathBuf::from("/tmp/childflow-preflight-tests");
-        let path_env =
-            OsString::from(env::join_paths([base.join("bin-a"), base.join("bin-b")]).unwrap());
+        let path_env = env::join_paths([base.join("bin-a"), base.join("bin-b")]).unwrap();
 
         assert_eq!(
             find_missing_commands(&["ip", "iptables"], &path_env),

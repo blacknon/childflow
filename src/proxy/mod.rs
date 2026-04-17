@@ -1,6 +1,8 @@
+#[cfg(test)]
 pub mod env;
 pub mod rootful_tproxy;
-pub mod rootless_connect;
+pub mod rootless_relay;
+#[cfg(test)]
 pub mod types;
 
 use anyhow::Result;
@@ -12,7 +14,7 @@ pub use rootful_tproxy::TproxyHandle;
 
 pub enum ProxyPlan {
     RootfulTransparent(rootful_tproxy::TransparentProxyPlan),
-    RootlessExplicit(rootless_connect::RootlessConnectProxyPlan),
+    RootlessRelay(rootless_relay::RootlessRelayProxyPlan),
 }
 
 impl ProxyPlan {
@@ -26,8 +28,8 @@ impl ProxyPlan {
                 Ok(rootful_tproxy::TransparentProxyPlan::from_cli(cli)
                     .map(Self::RootfulTransparent))
             }
-            NetworkBackend::RootlessInternal => Ok(Some(Self::RootlessExplicit(
-                rootless_connect::RootlessConnectProxyPlan::from_cli(cli)?,
+            NetworkBackend::RootlessInternal => Ok(Some(Self::RootlessRelay(
+                rootless_relay::RootlessRelayProxyPlan::from_cli(cli)?,
             ))),
         }
     }
@@ -35,14 +37,21 @@ impl ProxyPlan {
     pub fn child_env(&self) -> Vec<(String, String)> {
         match self {
             Self::RootfulTransparent(_) => Vec::new(),
-            Self::RootlessExplicit(plan) => plan.child_env().to_vec(),
+            Self::RootlessRelay(_) => Vec::new(),
         }
     }
 
     pub fn transparent_rootful(&self) -> Option<&rootful_tproxy::TransparentProxyPlan> {
         match self {
             Self::RootfulTransparent(plan) => Some(plan),
-            Self::RootlessExplicit(_) => None,
+            Self::RootlessRelay(_) => None,
+        }
+    }
+
+    pub fn rootless_upstream(&self) -> Option<&rootless_relay::ProxyUpstreamConfig> {
+        match self {
+            Self::RootfulTransparent(_) => None,
+            Self::RootlessRelay(plan) => Some(plan.upstream()),
         }
     }
 }

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -37,10 +36,12 @@ impl TcpSession {
         }
     }
 
+    #[cfg(test)]
     pub fn child_ack_for_engine_syn(&self) -> u32 {
         self.engine_initial_seq.wrapping_add(1)
     }
 
+    #[cfg(test)]
     pub fn child_acknowledges_handshake(&self, ack_number: u32) -> bool {
         ack_number == self.child_ack_for_engine_syn()
     }
@@ -75,8 +76,6 @@ impl TcpSession {
         seq
     }
 }
-
-pub type TcpSessionTable = HashMap<FlowKey, TcpSession>;
 
 #[cfg(test)]
 mod tests {

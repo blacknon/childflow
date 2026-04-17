@@ -3,7 +3,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -11,6 +11,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
+use crate::capture::FrameCaptureWriter;
+use crate::proxy::rootless_relay::{self, OutboundStream, ProxyUpstreamConfig};
 use crate::util;
 
 use super::addr::AddressPlan;
@@ -21,6 +23,8 @@ use super::tap::TapHandle;
 pub struct EngineConfig {
     pub dns_upstream: Option<IpAddr>,
     pub allow_ipv6_outbound: bool,
+    pub proxy_upstream: Option<ProxyUpstreamConfig>,
+    pub capture: Option<FrameCaptureWriter>,
 }
 
 pub struct EngineHandle {
@@ -72,13 +76,18 @@ enum RemoteEvent {
 
 struct ConnectionState {
     session: TcpSession,
-    writer: TcpStream,
+    command_tx: Sender<ConnectionCommand>,
+}
+
+enum ConnectionCommand {
+    Write(Vec<u8>),
+    ShutdownWrite,
 }
 
 fn run_engine(
     mut tap: TapHandle,
     addr_plan: AddressPlan,
-    config: EngineConfig,
+    mut config: EngineConfig,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     let (event_tx, event_rx) = mpsc::channel();
@@ -94,31 +103,48 @@ fn run_engine(
             &mut child_mac,
             &event_rx,
             &mut connections,
+            &mut config.capture,
         )?;
 
         match tap.read(&mut buf) {
             Ok(0) => thread::sleep(Duration::from_millis(10)),
-            Ok(n) => match packet::parse_frame(&buf[..n]) {
-                Ok(ParsedPacket::Tcp(tcp)) => {
-                    child_mac.get_or_insert(tcp.meta.src_mac);
-                    handle_tcp_packet(&mut tap, &addr_plan, &event_tx, &mut connections, &tcp)?;
+            Ok(n) => {
+                capture_frame(
+                    &mut config.capture,
+                    &buf[..n],
+                    "failed to capture a child->engine frame from the rootless tap",
+                );
+                match packet::parse_frame(&buf[..n]) {
+                    Ok(ParsedPacket::Tcp(tcp)) => {
+                        child_mac.get_or_insert(tcp.meta.src_mac);
+                        handle_tcp_packet(
+                            &mut tap,
+                            &addr_plan,
+                            &event_tx,
+                            &mut connections,
+                            config.proxy_upstream.as_ref(),
+                            &mut config.capture,
+                            &tcp,
+                        )?;
+                    }
+                    Ok(ParsedPacket::Udp(udp)) => {
+                        child_mac.get_or_insert(udp.meta.src_mac);
+                        handle_udp_packet(
+                            &mut tap,
+                            &addr_plan,
+                            config.dns_upstream,
+                            config.allow_ipv6_outbound,
+                            &mut config.capture,
+                            &udp,
+                            &mut warned_udp,
+                        )?;
+                    }
+                    Ok(ParsedPacket::Unsupported) => {}
+                    Err(err) => util::debug(format!(
+                        "rootless-internal engine ignored an unsupported frame: {err:#}"
+                    )),
                 }
-                Ok(ParsedPacket::Udp(udp)) => {
-                    child_mac.get_or_insert(udp.meta.src_mac);
-                    handle_udp_packet(
-                        &mut tap,
-                        &addr_plan,
-                        config.dns_upstream,
-                        config.allow_ipv6_outbound,
-                        &udp,
-                        &mut warned_udp,
-                    )?;
-                }
-                Ok(ParsedPacket::Unsupported) => {}
-                Err(err) => util::debug(format!(
-                    "rootless-internal engine ignored an unsupported frame: {err:#}"
-                )),
-            },
+            }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));
             }
@@ -134,6 +160,8 @@ fn handle_tcp_packet(
     addr_plan: &AddressPlan,
     event_tx: &Sender<RemoteEvent>,
     connections: &mut HashMap<FlowKey, ConnectionState>,
+    proxy_upstream: Option<&ProxyUpstreamConfig>,
+    capture: &mut Option<FrameCaptureWriter>,
     tcp: &ParsedTcpPacket,
 ) -> Result<()> {
     let key = FlowKey {
@@ -150,8 +178,13 @@ fn handle_tcp_packet(
 
     if tcp.syn && !tcp.ack {
         let remote_addr = key.remote_addr();
-        let writer = match connect_remote(remote_addr) {
-            Ok(writer) => writer,
+        let command_tx = match connect_remote(
+            remote_addr,
+            proxy_upstream,
+            event_tx.clone(),
+            key.clone(),
+        ) {
+            Ok(command_tx) => command_tx,
             Err(err) => {
                 util::warn(format!(
                     "rootless-internal could not open outbound TCP connection for {remote_addr}: {err:#}. Returning RST to the child flow"
@@ -174,14 +207,14 @@ fn handle_tcp_packet(
                 })?;
                 tap.write_all(&rst)
                     .context("failed to write TCP RST after outbound connect failure")?;
+                capture_frame(
+                    capture,
+                    &rst,
+                    "failed to capture a rootless TCP RST frame after outbound connect failure",
+                );
                 return Ok(());
             }
         };
-        let reader = writer
-            .try_clone()
-            .context("failed to clone outbound TCP stream for reader thread")?;
-        spawn_remote_reader(event_tx.clone(), key.clone(), reader);
-
         let engine_isn = util::run_entropy();
         let session = TcpSession::new(tcp.sequence_number, engine_isn);
         let syn_ack = packet::build_tcp_frame(TcpReply {
@@ -202,7 +235,18 @@ fn handle_tcp_packet(
         })?;
         tap.write_all(&syn_ack)
             .context("failed to write SYN-ACK to tap")?;
-        connections.insert(key, ConnectionState { session, writer });
+        capture_frame(
+            capture,
+            &syn_ack,
+            "failed to capture a rootless TCP SYN-ACK frame",
+        );
+        connections.insert(
+            key,
+            ConnectionState {
+                session,
+                command_tx,
+            },
+        );
         return Ok(());
     }
 
@@ -227,6 +271,7 @@ fn handle_tcp_packet(
         })?;
         tap.write_all(&rst)
             .context("failed to write TCP RST to tap")?;
+        capture_frame(capture, &rst, "failed to capture a rootless TCP RST frame");
         return Ok(());
     };
 
@@ -248,9 +293,9 @@ fn handle_tcp_packet(
             return Ok(());
         }
         connection
-            .writer
-            .write_all(&tcp.payload)
-            .context("failed to forward child TCP payload to the remote socket")?;
+            .command_tx
+            .send(ConnectionCommand::Write(tcp.payload.clone()))
+            .context("failed to forward child TCP payload to the remote socket worker")?;
         let ack = packet::build_tcp_frame(TcpReply {
             src_mac: addr_plan.gateway_mac,
             dst_mac: tcp.meta.src_mac,
@@ -269,10 +314,11 @@ fn handle_tcp_packet(
         })?;
         tap.write_all(&ack)
             .context("failed to write TCP ACK to tap")?;
+        capture_frame(capture, &ack, "failed to capture a rootless TCP ACK frame");
     }
 
     if tcp.fin && connection.session.accept_child_fin(tcp.sequence_number) {
-        let _ = connection.writer.shutdown(std::net::Shutdown::Write);
+        let _ = connection.command_tx.send(ConnectionCommand::ShutdownWrite);
         let ack = packet::build_tcp_frame(TcpReply {
             src_mac: addr_plan.gateway_mac,
             dst_mac: tcp.meta.src_mac,
@@ -291,6 +337,11 @@ fn handle_tcp_packet(
         })?;
         tap.write_all(&ack)
             .context("failed to write FIN ACK to tap")?;
+        capture_frame(
+            capture,
+            &ack,
+            "failed to capture a rootless TCP FIN-ACK frame",
+        );
     }
 
     Ok(())
@@ -301,6 +352,7 @@ fn handle_udp_packet(
     addr_plan: &AddressPlan,
     dns_upstream: Option<IpAddr>,
     allow_ipv6_outbound: bool,
+    capture: &mut Option<FrameCaptureWriter>,
     udp: &ParsedUdpPacket,
     warned_udp: &mut bool,
 ) -> Result<()> {
@@ -321,6 +373,11 @@ fn handle_udp_packet(
             )?;
             tap.write_all(&frame)
                 .context("failed to write synthetic DNS AAAA response to tap")?;
+            capture_frame(
+                capture,
+                &frame,
+                "failed to capture a synthetic rootless DNS AAAA response frame",
+            );
             return Ok(());
         }
 
@@ -343,6 +400,11 @@ fn handle_udp_packet(
         )?;
         tap.write_all(&frame)
             .context("failed to write DNS UDP response to tap")?;
+        capture_frame(
+            capture,
+            &frame,
+            "failed to capture a rootless DNS UDP response frame",
+        );
         return Ok(());
     }
 
@@ -362,6 +424,7 @@ fn drain_remote_events(
     child_mac: &mut Option<[u8; 6]>,
     event_rx: &Receiver<RemoteEvent>,
     connections: &mut HashMap<FlowKey, ConnectionState>,
+    capture: &mut Option<FrameCaptureWriter>,
 ) -> Result<()> {
     loop {
         match event_rx.try_recv() {
@@ -391,6 +454,11 @@ fn drain_remote_events(
                 })?;
                 tap.write_all(&frame)
                     .context("failed to write remote TCP payload into tap")?;
+                capture_frame(
+                    capture,
+                    &frame,
+                    "failed to capture a rootless remote->child TCP payload frame",
+                );
             }
             Ok(RemoteEvent::TcpClosed { key }) => {
                 let Some(mac) = *child_mac else {
@@ -417,6 +485,11 @@ fn drain_remote_events(
                     })?;
                     tap.write_all(&frame)
                         .context("failed to write remote TCP FIN into tap")?;
+                    capture_frame(
+                        capture,
+                        &frame,
+                        "failed to capture a rootless remote->child TCP FIN frame",
+                    );
                 }
             }
             Err(TryRecvError::Empty) => break,
@@ -427,27 +500,82 @@ fn drain_remote_events(
     Ok(())
 }
 
-fn connect_remote(remote_addr: SocketAddr) -> Result<TcpStream> {
-    let stream = match remote_addr {
-        SocketAddr::V4(addr) => {
-            TcpStream::connect_timeout(&SocketAddr::V4(addr), Duration::from_secs(5))
-        }
-        SocketAddr::V6(addr) => {
-            TcpStream::connect_timeout(&SocketAddr::V6(addr), Duration::from_secs(5))
-        }
+fn capture_frame(capture: &mut Option<FrameCaptureWriter>, frame: &[u8], message: &str) {
+    let Some(writer) = capture.as_mut() else {
+        return;
+    };
+
+    if let Err(err) = writer.write_frame(frame) {
+        util::warn(format!(
+            "{message}: {err:#}. Disabling rootless capture for the rest of this run"
+        ));
+        *capture = None;
     }
-    .with_context(|| format!("failed to connect to remote TCP destination {remote_addr}"))?;
-    stream
-        .set_nodelay(true)
-        .context("failed to enable TCP_NODELAY for remote TCP socket")?;
-    Ok(stream)
 }
 
-fn spawn_remote_reader(event_tx: Sender<RemoteEvent>, key: FlowKey, mut reader: TcpStream) {
+fn connect_remote(
+    remote_addr: SocketAddr,
+    proxy_upstream: Option<&ProxyUpstreamConfig>,
+    event_tx: Sender<RemoteEvent>,
+    key: FlowKey,
+) -> Result<Sender<ConnectionCommand>> {
+    let stream = if let Some(proxy_upstream) = proxy_upstream {
+        rootless_relay::connect_via_proxy(proxy_upstream, remote_addr).with_context(|| {
+            format!(
+                "failed to connect to remote TCP destination {remote_addr} through the configured rootless upstream proxy"
+            )
+        })?
+    } else {
+        let stream = match remote_addr {
+            SocketAddr::V4(addr) => {
+                TcpStream::connect_timeout(&SocketAddr::V4(addr), Duration::from_secs(5))
+            }
+            SocketAddr::V6(addr) => {
+                TcpStream::connect_timeout(&SocketAddr::V6(addr), Duration::from_secs(5))
+            }
+        }
+        .with_context(|| format!("failed to connect to remote TCP destination {remote_addr}"))?;
+        stream
+            .set_nodelay(true)
+            .context("failed to enable TCP_NODELAY for remote TCP socket")?;
+        OutboundStream::Tcp(stream)
+    };
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .context("failed to configure the rootless outbound stream read timeout")?;
+
+    let (command_tx, command_rx) = mpsc::channel();
+    spawn_remote_worker(event_tx, key, stream, command_rx);
+    Ok(command_tx)
+}
+
+fn spawn_remote_worker(
+    event_tx: Sender<RemoteEvent>,
+    key: FlowKey,
+    mut stream: OutboundStream,
+    command_rx: Receiver<ConnectionCommand>,
+) {
     thread::spawn(move || {
         let mut buf = [0_u8; 8192];
+        let mut write_closed = false;
         loop {
-            match reader.read(&mut buf) {
+            match command_rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(ConnectionCommand::Write(payload)) => {
+                    if stream.write_all(&payload).is_err() {
+                        let _ = event_tx.send(RemoteEvent::TcpClosed { key: key.clone() });
+                        break;
+                    }
+                }
+                Ok(ConnectionCommand::ShutdownWrite) => {
+                    write_closed = true;
+                    let _ = stream.shutdown_write();
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+
+            match stream.read(&mut buf) {
                 Ok(0) => {
                     let _ = event_tx.send(RemoteEvent::TcpClosed { key: key.clone() });
                     break;
@@ -458,7 +586,16 @@ fn spawn_remote_reader(event_tx: Sender<RemoteEvent>, key: FlowKey, mut reader: 
                         payload: buf[..n].to_vec(),
                     });
                 }
-                Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                    ) =>
+                {
+                    if write_closed {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                }
                 Err(_) => {
                     let _ = event_tx.send(RemoteEvent::TcpClosed { key: key.clone() });
                     break;
@@ -566,6 +703,7 @@ fn set_nonblocking(fd: RawFd) -> Result<()> {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, TcpListener};
+    use std::sync::mpsc;
 
     #[test]
     fn relay_dns_udp_forwards_payload_and_response() {
@@ -594,12 +732,23 @@ mod tests {
     fn connect_remote_reaches_tcp_listener() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let join = thread::spawn(move || listener.accept().unwrap());
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let _ = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+        });
 
-        let stream = connect_remote(addr).unwrap();
-        assert_eq!(stream.peer_addr().unwrap(), addr);
-        drop(stream);
-        let _ = join.join().unwrap();
+        let (event_tx, _event_rx) = mpsc::channel();
+        let key = FlowKey {
+            child_ip: IpAddr::V4(Ipv4Addr::new(10, 240, 0, 2)),
+            child_port: 40000,
+            remote_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            remote_port: addr.port(),
+        };
+        let command_tx = connect_remote(addr, None, event_tx, key).unwrap();
+        accepted_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        drop(command_tx);
+        join.join().unwrap();
     }
 
     #[test]

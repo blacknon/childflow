@@ -8,23 +8,17 @@ use anyhow::{Context, Result};
 
 pub struct TapHandle {
     file: File,
-    name: String,
 }
 
 impl TapHandle {
-    pub fn receive_from_stream(stream: &UnixStream, name: impl Into<String>) -> Result<Self> {
-        let name = name.into();
+    pub fn receive_from_stream(stream: &UnixStream) -> Result<Self> {
         let fd = recv_fd(stream).context("failed to receive the rootless tap fd from the child")?;
         let file = unsafe { File::from_raw_fd(fd) };
-        Ok(Self { file, name })
+        Ok(Self { file })
     }
 
     pub fn raw_fd(&self) -> RawFd {
         self.file.as_raw_fd()
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
     }
 }
 

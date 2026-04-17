@@ -28,14 +28,17 @@ impl AddressPlan {
         }
     }
 
+    #[cfg(test)]
     pub fn child_ipv4_cidr(&self) -> String {
         format!("{}/{}", self.child_ipv4, self.child_ipv4_prefix_len)
     }
 
+    #[cfg(test)]
     pub fn child_ipv6_cidr(&self) -> String {
         format!("{}/{}", self.child_ipv6, self.child_ipv6_prefix_len)
     }
 
+    #[cfg(test)]
     pub fn gateway_mac_string(&self) -> String {
         render_mac(self.gateway_mac)
     }
@@ -46,6 +49,7 @@ fn gateway_mac_from_plan(plan: &NetworkPlan) -> [u8; 6] {
     [0x02, 0xcf, octets[1], octets[2], octets[3], 0x01]
 }
 
+#[cfg(test)]
 fn render_mac(mac: [u8; 6]) -> String {
     format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",

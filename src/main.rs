@@ -110,16 +110,16 @@ fn real_main() -> Result<i32> {
             let read_file = File::from(read_fd);
             let ready_file = File::from(ready_write_fd);
             let child_network_bootstrap = child_bootstrap.namespace_bootstrap();
-            if let Err(err) = namespace::child_enter_and_exec(
-                namespace_mode,
-                read_file,
-                child_network_bootstrap.as_ref().map(|_| ready_file),
-                child_network_bootstrap.as_ref().map(|_| tap_child),
-                dns_plan.resolv_conf_path(),
-                child_network_bootstrap.as_ref(),
-                &child_proxy_env,
-                &cli.command,
-            ) {
+            if let Err(err) = namespace::child_enter_and_exec(namespace::ChildExecParams {
+                mode: namespace_mode,
+                release_pipe: read_file,
+                ready_pipe: child_network_bootstrap.as_ref().map(|_| ready_file),
+                tap_transfer: child_network_bootstrap.as_ref().map(|_| tap_child),
+                resolv_conf: dns_plan.resolv_conf_path(),
+                network_bootstrap: child_network_bootstrap.as_ref(),
+                extra_env: &child_proxy_env,
+                command: &cli.command,
+            }) {
                 eprintln!("childflow: child bootstrap failed: {err:#}");
                 process::exit(127);
             }
@@ -170,10 +170,10 @@ fn real_main() -> Result<i32> {
 
                     match &mut child_bootstrap {
                         network::ChildBootstrap::RootlessInternal(bootstrap) => {
-                            let tap = network::rootless_internal::tap::TapHandle::receive_from_stream(
-                                &tap_parent,
-                                bootstrap.tap_name(),
-                            )
+                            let tap =
+                                network::rootless_internal::tap::TapHandle::receive_from_stream(
+                                    &tap_parent,
+                                )
                             .context("failed to receive the rootless tap fd from the child")?;
                             bootstrap.set_tap(tap);
                         }
@@ -256,15 +256,16 @@ impl ParentRuntime {
             })
             .transpose()?;
 
-        let network = network::setup(
-            network_plan,
+        let network = network::setup(network::NetworkSetupParams {
+            plan: network_plan,
             run_id,
-            child,
+            child_pid: child,
             cli,
             dns_plan,
-            proxy.as_ref().map(TproxyHandle::listen_port),
+            tproxy_port: proxy.as_ref().map(TproxyHandle::listen_port),
             child_bootstrap,
-        )
+            proxy_plan,
+        })
         .context("failed to prepare the selected network backend. Check backend preflight output, kernel namespace support, and whether the requested backend phase is implemented on this host")?;
 
         let dns = match network.dns_bind_addrs() {
@@ -277,9 +278,7 @@ impl ParentRuntime {
         let capture = match (network.capture_mode(), cli.output.as_ref()) {
             (Some(mode), Some(output_path)) => {
                 Some(CaptureHandle::start(mode, output_path).with_context(|| {
-                    format!(
-                        "failed to start packet capture. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected capture path for the selected backend"
-                    )
+                    "failed to start packet capture. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected capture path for the selected backend".to_string()
                 })?)
             }
             _ => None,

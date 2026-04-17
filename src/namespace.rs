@@ -52,16 +52,29 @@ pub struct RootlessChildBootstrap {
     pub child_ipv6_prefix_len: u8,
 }
 
-pub fn child_enter_and_exec(
-    mode: NamespaceMode,
-    mut release_pipe: File,
-    mut ready_pipe: Option<File>,
-    tap_transfer: Option<UnixStream>,
-    resolv_conf: Option<&Path>,
-    network_bootstrap: Option<&ChildNetworkBootstrap>,
-    extra_env: &[(String, String)],
-    command: &[String],
-) -> Result<()> {
+pub struct ChildExecParams<'a> {
+    pub mode: NamespaceMode,
+    pub release_pipe: File,
+    pub ready_pipe: Option<File>,
+    pub tap_transfer: Option<UnixStream>,
+    pub resolv_conf: Option<&'a Path>,
+    pub network_bootstrap: Option<&'a ChildNetworkBootstrap>,
+    pub extra_env: &'a [(String, String)],
+    pub command: &'a [String],
+}
+
+pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
+    let ChildExecParams {
+        mode,
+        mut release_pipe,
+        mut ready_pipe,
+        tap_transfer,
+        resolv_conf,
+        network_bootstrap,
+        extra_env,
+        command,
+    } = params;
+
     if command.is_empty() {
         bail!("missing command");
     }
@@ -287,7 +300,7 @@ fn create_tap_device(name: &str) -> Result<(File, String)> {
     if name.is_empty() {
         bail!("tap device name must not be empty");
     }
-    if name.len() >= nix::libc::IFNAMSIZ as usize {
+    if name.len() >= nix::libc::IFNAMSIZ {
         bail!(
             "tap device name `{name}` is too long for Linux IFNAMSIZ={}",
             nix::libc::IFNAMSIZ
@@ -339,10 +352,7 @@ fn ifreq_name_to_string(raw_name: &[nix::libc::c_char; nix::libc::IFNAMSIZ]) -> 
         .iter()
         .position(|ch| *ch == 0)
         .unwrap_or(raw_name.len());
-    let bytes = raw_name[..end]
-        .iter()
-        .map(|ch| *ch as u8)
-        .collect::<Vec<_>>();
+    let bytes = raw_name[..end].to_vec();
     String::from_utf8(bytes)
         .map_err(|err| anyhow!("kernel returned a non-UTF8 tap device name: {err}"))
 }

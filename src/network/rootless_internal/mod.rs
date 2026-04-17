@@ -8,10 +8,11 @@ pub mod tap;
 use anyhow::{Context, Result};
 use nix::unistd::Pid;
 
-use crate::capture::CaptureMode;
+use crate::capture::FrameCaptureWriter;
 use crate::cli::Cli;
 use crate::dns::DnsPlan;
 use crate::namespace;
+use crate::proxy::ProxyPlan;
 
 use super::types::NetworkPlan;
 
@@ -46,10 +47,6 @@ impl ChildBootstrap {
         &self.addr_plan
     }
 
-    pub fn tap_name(&self) -> &str {
-        &self.addr_plan.tap_name
-    }
-
     pub fn set_tap(&mut self, tap: tap::TapHandle) {
         self.tap = Some(tap);
     }
@@ -61,90 +58,52 @@ impl ChildBootstrap {
     }
 }
 
-pub struct RuntimeInfo {
-    pub tap_name: String,
-    pub gateway_mac: [u8; 6],
-    pub gateway_ipv4: std::net::Ipv4Addr,
-    pub child_ipv4: std::net::Ipv4Addr,
-    pub gateway_ipv6: std::net::Ipv6Addr,
-    pub child_ipv6: std::net::Ipv6Addr,
-    pub dns_upstream: Option<std::net::IpAddr>,
-}
-
 pub struct NetworkContext {
-    runtime: RuntimeInfo,
     _engine: engine::EngineHandle,
 }
 
 impl NetworkContext {
-    pub fn capture_mode(&self) -> Option<CaptureMode> {
+    pub fn capture_mode(&self) -> Option<crate::capture::CaptureMode> {
         None
     }
+}
 
-    pub fn runtime(&self) -> &RuntimeInfo {
-        &self.runtime
-    }
+pub struct RootlessSetupParams<'a> {
+    pub dns_plan: &'a DnsPlan,
+    pub child_bootstrap: &'a mut ChildBootstrap,
+    pub proxy_plan: Option<&'a ProxyPlan>,
 }
 
 pub fn setup(
     _plan: &NetworkPlan,
     _run_id: &str,
     _child_pid: Pid,
-    _cli: &Cli,
-    dns_plan: &DnsPlan,
+    cli: &Cli,
     _tproxy_port: Option<u16>,
-    child_bootstrap: &mut ChildBootstrap,
+    params: RootlessSetupParams<'_>,
 ) -> Result<NetworkContext> {
-    let addr_plan = child_bootstrap.addr_plan().clone();
-    let tap_name = child_bootstrap.tap_name().to_string();
-    let dns_upstream = dns_plan.rootless_upstream();
+    let addr_plan = params.child_bootstrap.addr_plan().clone();
+    let dns_upstream = params.dns_plan.rootless_upstream();
+    let capture = cli
+        .output
+        .as_deref()
+        .map(FrameCaptureWriter::open_rootless)
+        .transpose()
+        .context("failed to open the rootless tap capture output")?;
     let engine = engine::EngineHandle::start(
-        child_bootstrap.take_tap(),
+        params.child_bootstrap.take_tap(),
         addr_plan.clone(),
         engine::EngineConfig {
             dns_upstream,
             allow_ipv6_outbound: engine::detect_ipv6_outbound(),
+            proxy_upstream: params
+                .proxy_plan
+                .and_then(ProxyPlan::rootless_upstream)
+                .cloned(),
+            capture,
         },
     )
     .context("failed to start the rootless-internal userspace networking engine")?;
 
-    Ok(NetworkContext {
-        runtime: RuntimeInfo {
-            tap_name,
-            gateway_mac: addr_plan.gateway_mac,
-            gateway_ipv4: addr_plan.gateway_ipv4,
-            child_ipv4: addr_plan.child_ipv4,
-            gateway_ipv6: addr_plan.gateway_ipv6,
-            child_ipv6: addr_plan.child_ipv6,
-            dns_upstream,
-        },
-        _engine: engine,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::network::types::NetworkPlan;
-
-    #[test]
-    fn runtime_info_tracks_addr_plan() {
-        let plan = NetworkPlan::new();
-        let addr_plan = addr::AddressPlan::from_network_plan(&plan);
-        let runtime = RuntimeInfo {
-            tap_name: "tap0".into(),
-            gateway_mac: addr_plan.gateway_mac,
-            gateway_ipv4: addr_plan.gateway_ipv4,
-            child_ipv4: addr_plan.child_ipv4,
-            gateway_ipv6: addr_plan.gateway_ipv6,
-            child_ipv6: addr_plan.child_ipv6,
-            dns_upstream: Some("1.1.1.1".parse().unwrap()),
-        };
-
-        assert_eq!(runtime.tap_name, "tap0");
-        assert_eq!(runtime.gateway_mac, addr_plan.gateway_mac);
-        assert_eq!(runtime.dns_upstream, Some("1.1.1.1".parse().unwrap()));
-        assert_eq!(runtime.gateway_ipv4, plan.host_ipv4);
-        assert_eq!(runtime.child_ipv6, plan.child_ipv6);
-    }
+    Ok(NetworkContext { _engine: engine })
 }

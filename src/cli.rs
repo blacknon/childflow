@@ -20,11 +20,11 @@ pub struct Cli {
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
 
-    /// Select the networking backend. `rootless-internal` is experimental and under construction.
+    /// Select the networking backend. Defaults to `rootless-internal`, while `rootful` remains available for the current feature-complete path.
     #[arg(
         long = "network-backend",
         value_enum,
-        default_value_t = NetworkBackend::Rootful
+        default_value_t = NetworkBackend::RootlessInternal
     )]
     pub network_backend: NetworkBackend,
 
@@ -32,7 +32,7 @@ pub struct Cli {
     #[arg(short = 'd', long = "dns")]
     pub dns: Option<IpAddr>,
 
-    /// Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080. `rootful` uses transparent interception, while `rootless-internal` currently injects explicit proxy environment variables.
+    /// Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080. `rootful` uses transparent interception, while `rootless-internal` relays outbound TCP through the selected proxy from the parent-side engine.
     #[arg(short = 'p', long = "proxy")]
     pub proxy: Option<ProxySpec>,
 
@@ -44,7 +44,7 @@ pub struct Cli {
     #[arg(long = "proxy-password")]
     pub proxy_password: Option<String>,
 
-    /// Ignore certificate trust errors for https:// upstream proxies while still validating the hostname. This currently only applies to the `rootful` transparent proxy path.
+    /// Ignore certificate trust errors for https:// upstream proxies while still validating the hostname.
     #[arg(long = "proxy-insecure")]
     pub proxy_insecure: bool,
 
@@ -63,22 +63,9 @@ impl Cli {
             bail!("missing command to execute");
         }
 
-        if matches!(self.network_backend, NetworkBackend::RootlessInternal) {
-            if self.output.is_some() {
-                bail!(
-                    "`--output` is not yet supported by the `rootless-internal` backend because the current packet capture path is rootful-only"
-                );
-            }
-
-            if self.iface.is_some() {
-                bail!("`--iface` is not supported by the `rootless-internal` backend");
-            }
-
-            if self.proxy_insecure {
-                bail!(
-                    "`--proxy-insecure` is not supported by the `rootless-internal` backend because its current proxy path is explicit environment-variable injection rather than transparent proxying"
-                );
-            }
+        if matches!(self.network_backend, NetworkBackend::RootlessInternal) && self.iface.is_some()
+        {
+            bail!("`--iface` is not supported by the `rootless-internal` backend");
         }
 
         if self.proxy_user.is_some() != self.proxy_password.is_some() {
@@ -297,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_allows_rootless_internal_explicit_proxy() {
+    fn validate_allows_rootless_internal_relay_proxy() {
         let cli = Cli {
             output: None,
             network_backend: NetworkBackend::RootlessInternal,
@@ -314,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_rootless_internal_proxy_insecure() {
+    fn validate_allows_rootless_internal_proxy_insecure_for_https_proxy() {
         let cli = Cli {
             output: None,
             network_backend: NetworkBackend::RootlessInternal,
@@ -327,13 +314,11 @@ mod tests {
             command: vec!["curl".into()],
         };
 
-        let err = cli.validate().unwrap_err();
-        assert!(err.to_string().contains("rootless-internal"));
-        assert!(err.to_string().contains("`--proxy-insecure`"));
+        cli.validate().unwrap();
     }
 
     #[test]
-    fn validate_rejects_rootless_internal_output() {
+    fn validate_allows_rootless_internal_output() {
         let cli = Cli {
             output: Some(PathBuf::from("out.pcapng")),
             network_backend: NetworkBackend::RootlessInternal,
@@ -346,8 +331,6 @@ mod tests {
             command: vec!["curl".into()],
         };
 
-        let err = cli.validate().unwrap_err();
-        assert!(err.to_string().contains("rootless-internal"));
-        assert!(err.to_string().contains("`--output`"));
+        cli.validate().unwrap();
     }
 }

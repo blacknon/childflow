@@ -9,6 +9,7 @@ use crate::capture::CaptureMode;
 use crate::cli::Cli;
 use crate::dns::DnsPlan;
 use crate::namespace::{ChildNetworkBootstrap, NamespaceMode};
+use crate::proxy::ProxyPlan;
 
 pub use types::{NetworkBackend, NetworkPlan};
 
@@ -27,7 +28,7 @@ impl ChildBootstrap {
 }
 
 pub enum NetworkContext {
-    Rootful(rootful::NetworkContext),
+    Rootful(Box<rootful::NetworkContext>),
     RootlessInternal(rootless_internal::NetworkContext),
 }
 
@@ -65,29 +66,29 @@ pub fn prepare_child_bootstrap(cli: &Cli, plan: &NetworkPlan) -> Result<ChildBoo
     }
 }
 
-pub fn setup(
-    plan: &NetworkPlan,
-    run_id: &str,
-    child_pid: Pid,
-    cli: &Cli,
-    dns_plan: &DnsPlan,
-    tproxy_port: Option<u16>,
-    child_bootstrap: &mut ChildBootstrap,
-) -> Result<NetworkContext> {
-    match cli.network_backend {
-        NetworkBackend::Rootful => {
-            rootful::NetworkContext::setup(plan, run_id, child_pid, cli, tproxy_port)
-                .map(NetworkContext::Rootful)
-        }
-        NetworkBackend::RootlessInternal => match child_bootstrap {
+pub fn setup(params: NetworkSetupParams<'_>) -> Result<NetworkContext> {
+    match params.cli.network_backend {
+        NetworkBackend::Rootful => rootful::NetworkContext::setup(
+            params.plan,
+            params.run_id,
+            params.child_pid,
+            params.cli,
+            params.tproxy_port,
+        )
+        .map(Box::new)
+        .map(NetworkContext::Rootful),
+        NetworkBackend::RootlessInternal => match params.child_bootstrap {
             ChildBootstrap::RootlessInternal(bootstrap) => rootless_internal::setup(
-                plan,
-                run_id,
-                child_pid,
-                cli,
-                dns_plan,
-                tproxy_port,
-                bootstrap,
+                params.plan,
+                params.run_id,
+                params.child_pid,
+                params.cli,
+                params.tproxy_port,
+                rootless_internal::RootlessSetupParams {
+                    dns_plan: params.dns_plan,
+                    child_bootstrap: bootstrap,
+                    proxy_plan: params.proxy_plan,
+                },
             )
             .map(NetworkContext::RootlessInternal),
             ChildBootstrap::Rootful => unreachable!(
@@ -95,4 +96,15 @@ pub fn setup(
             ),
         },
     }
+}
+
+pub struct NetworkSetupParams<'a> {
+    pub plan: &'a NetworkPlan,
+    pub run_id: &'a str,
+    pub child_pid: Pid,
+    pub cli: &'a Cli,
+    pub dns_plan: &'a DnsPlan,
+    pub tproxy_port: Option<u16>,
+    pub child_bootstrap: &'a mut ChildBootstrap,
+    pub proxy_plan: Option<&'a ProxyPlan>,
 }

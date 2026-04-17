@@ -8,7 +8,7 @@ pub fn ensure_root() -> Result<()> {
     let euid = unsafe { nix::libc::geteuid() };
     if euid != 0 {
         bail!(
-            "childflow must run as root on Linux because it creates network namespaces, changes routing/sysctl/iptables state, and opens AF_PACKET capture sockets.\nHint: rerun with `sudo`, or use the Docker demo from README.md if you are evaluating from a non-Linux host."
+            "the `rootful` backend must run as root on Linux because it creates network namespaces, changes routing/sysctl/iptables state, and opens AF_PACKET capture sockets.\nHint: rerun with `sudo -- childflow --network-backend rootful ...`, or use the default `rootless-internal` backend when its current feature set is sufficient."
         );
     }
 
