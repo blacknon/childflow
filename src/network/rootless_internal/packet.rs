@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{anyhow, bail, Context, Result};
 use etherparse::{
@@ -38,9 +38,55 @@ pub struct ParsedUdpPacket {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedIcmpv4Packet {
+    pub meta: PacketMeta,
+    pub icmp_type: u8,
+    pub code: u8,
+    pub identifier: u16,
+    pub sequence: u16,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedIcmpv6Packet {
+    pub meta: PacketMeta,
+    pub icmp_type: u8,
+    pub code: u8,
+    pub identifier: u16,
+    pub sequence: u16,
+    pub payload: Vec<u8>,
+}
+
+pub struct Icmpv4EchoFrame<'a> {
+    pub src_mac: [u8; 6],
+    pub dst_mac: [u8; 6],
+    pub src_ip: Ipv4Addr,
+    pub dst_ip: Ipv4Addr,
+    pub icmp_type: u8,
+    pub code: u8,
+    pub identifier: u16,
+    pub sequence: u16,
+    pub payload: &'a [u8],
+}
+
+pub struct Icmpv6EchoFrame<'a> {
+    pub src_mac: [u8; 6],
+    pub dst_mac: [u8; 6],
+    pub src_ip: Ipv6Addr,
+    pub dst_ip: Ipv6Addr,
+    pub icmp_type: u8,
+    pub code: u8,
+    pub identifier: u16,
+    pub sequence: u16,
+    pub payload: &'a [u8],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParsedPacket {
     Tcp(ParsedTcpPacket),
     Udp(ParsedUdpPacket),
+    Icmpv4(ParsedIcmpv4Packet),
+    Icmpv6(ParsedIcmpv6Packet),
     Unsupported,
 }
 
@@ -99,6 +145,7 @@ fn parse_ipv4_packet(payload: &[u8], mut meta: PacketMeta) -> Result<ParsedPacke
                 payload: udp.payload().to_vec(),
             }))
         }
+        IpNumber::ICMP => parse_icmpv4_packet(payload.payload, meta),
         _ => Ok(ParsedPacket::Unsupported),
     }
 }
@@ -141,8 +188,39 @@ fn parse_ipv6_packet(payload: &[u8], mut meta: PacketMeta) -> Result<ParsedPacke
                 payload: udp.payload().to_vec(),
             }))
         }
+        IpNumber::IPV6_ICMP => parse_icmpv6_packet(payload.payload, meta),
         _ => Ok(ParsedPacket::Unsupported),
     }
+}
+
+fn parse_icmpv4_packet(payload: &[u8], meta: PacketMeta) -> Result<ParsedPacket> {
+    if payload.len() < 8 {
+        bail!("failed to parse ICMPv4 packet: payload too short");
+    }
+
+    Ok(ParsedPacket::Icmpv4(ParsedIcmpv4Packet {
+        meta,
+        icmp_type: payload[0],
+        code: payload[1],
+        identifier: u16::from_be_bytes([payload[4], payload[5]]),
+        sequence: u16::from_be_bytes([payload[6], payload[7]]),
+        payload: payload[8..].to_vec(),
+    }))
+}
+
+fn parse_icmpv6_packet(payload: &[u8], meta: PacketMeta) -> Result<ParsedPacket> {
+    if payload.len() < 8 {
+        bail!("failed to parse ICMPv6 packet: payload too short");
+    }
+
+    Ok(ParsedPacket::Icmpv6(ParsedIcmpv6Packet {
+        meta,
+        icmp_type: payload[0],
+        code: payload[1],
+        identifier: u16::from_be_bytes([payload[4], payload[5]]),
+        sequence: u16::from_be_bytes([payload[6], payload[7]]),
+        payload: payload[8..].to_vec(),
+    }))
 }
 
 pub struct TcpReply<'a> {
@@ -214,6 +292,54 @@ pub fn build_udp_frame(
             };
             udp.write(bytes).context("failed to serialize UDP header")?;
             bytes.extend_from_slice(payload);
+            Ok(())
+        },
+    )
+}
+
+pub fn build_icmpv4_echo_frame(frame: Icmpv4EchoFrame<'_>) -> Result<Vec<u8>> {
+    let mut icmp = Vec::with_capacity(8 + frame.payload.len());
+    icmp.push(frame.icmp_type);
+    icmp.push(frame.code);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&frame.identifier.to_be_bytes());
+    icmp.extend_from_slice(&frame.sequence.to_be_bytes());
+    icmp.extend_from_slice(frame.payload);
+    let checksum = internet_checksum(&icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+    build_ip_frame(
+        frame.src_mac,
+        frame.dst_mac,
+        IpAddr::V4(frame.src_ip),
+        IpAddr::V4(frame.dst_ip),
+        IpNumber::ICMP,
+        |_ip_kind, bytes| {
+            bytes.extend_from_slice(&icmp);
+            Ok(())
+        },
+    )
+}
+
+pub fn build_icmpv6_echo_frame(frame: Icmpv6EchoFrame<'_>) -> Result<Vec<u8>> {
+    let mut icmp = Vec::with_capacity(8 + frame.payload.len());
+    icmp.push(frame.icmp_type);
+    icmp.push(frame.code);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&frame.identifier.to_be_bytes());
+    icmp.extend_from_slice(&frame.sequence.to_be_bytes());
+    icmp.extend_from_slice(frame.payload);
+    let checksum = icmpv6_checksum(frame.src_ip, frame.dst_ip, &icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+    build_ip_frame(
+        frame.src_mac,
+        frame.dst_mac,
+        IpAddr::V6(frame.src_ip),
+        IpAddr::V6(frame.dst_ip),
+        IpNumber::IPV6_ICMP,
+        |_ip_kind, bytes| {
+            bytes.extend_from_slice(&icmp);
             Ok(())
         },
     )
@@ -309,6 +435,39 @@ where
     }
 }
 
+fn internet_checksum(bytes: &[u8]) -> u16 {
+    finalize_checksum(checksum_sum(bytes))
+}
+
+fn checksum_sum(bytes: &[u8]) -> u32 {
+    let mut sum = 0_u32;
+    let mut chunks = bytes.chunks_exact(2);
+    for chunk in &mut chunks {
+        sum = sum.wrapping_add(u16::from_be_bytes([chunk[0], chunk[1]]) as u32);
+    }
+    if let [last] = chunks.remainder() {
+        sum = sum.wrapping_add(u16::from_be_bytes([*last, 0]) as u32);
+    }
+    sum
+}
+
+fn finalize_checksum(mut sum: u32) -> u16 {
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn icmpv6_checksum(src_ip: Ipv6Addr, dst_ip: Ipv6Addr, payload: &[u8]) -> u16 {
+    let mut sum = 0_u32;
+    sum = sum.wrapping_add(checksum_sum(&src_ip.octets()));
+    sum = sum.wrapping_add(checksum_sum(&dst_ip.octets()));
+    sum = sum.wrapping_add(checksum_sum(&(payload.len() as u32).to_be_bytes()));
+    sum = sum.wrapping_add(checksum_sum(&[0, 0, 0, IpNumber::IPV6_ICMP.0]));
+    sum = sum.wrapping_add(checksum_sum(payload));
+    finalize_checksum(sum)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +526,68 @@ mod tests {
                 assert_eq!(packet.payload, payload);
                 assert_eq!(packet.meta.src_ip, IpAddr::V6("fd42::1".parse().unwrap()));
                 assert_eq!(packet.meta.dst_ip, IpAddr::V6("fd42::2".parse().unwrap()));
+            }
+            other => panic!("unexpected packet: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_icmpv4_echo_frame_round_trips_payload() {
+        let payload = b"ping-data".to_vec();
+        let frame = build_icmpv4_echo_frame(Icmpv4EchoFrame {
+            src_mac: [0x02, 0xcf, 0, 0, 0, 1],
+            dst_mac: [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            src_ip: Ipv4Addr::new(1, 1, 1, 1),
+            dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+            icmp_type: 0,
+            code: 0,
+            identifier: 0x1234,
+            sequence: 7,
+            payload: &payload,
+        })
+        .unwrap();
+
+        match parse_frame(&frame).unwrap() {
+            ParsedPacket::Icmpv4(packet) => {
+                assert_eq!(packet.icmp_type, 0);
+                assert_eq!(packet.code, 0);
+                assert_eq!(packet.identifier, 0x1234);
+                assert_eq!(packet.sequence, 7);
+                assert_eq!(packet.payload, payload);
+                assert_eq!(packet.meta.src_ip, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
+                assert_eq!(packet.meta.dst_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+            }
+            other => panic!("unexpected packet: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_icmpv6_echo_frame_round_trips_payload() {
+        let payload = b"ping6-data".to_vec();
+        let src_ip = "2001:db8::1".parse().unwrap();
+        let dst_ip = "fd42::2".parse().unwrap();
+        let frame = build_icmpv6_echo_frame(Icmpv6EchoFrame {
+            src_mac: [0x02, 0xcf, 0, 0, 0, 1],
+            dst_mac: [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            src_ip,
+            dst_ip,
+            icmp_type: 129,
+            code: 0,
+            identifier: 0x4321,
+            sequence: 9,
+            payload: &payload,
+        })
+        .unwrap();
+
+        match parse_frame(&frame).unwrap() {
+            ParsedPacket::Icmpv6(packet) => {
+                assert_eq!(packet.icmp_type, 129);
+                assert_eq!(packet.code, 0);
+                assert_eq!(packet.identifier, 0x4321);
+                assert_eq!(packet.sequence, 9);
+                assert_eq!(packet.payload, payload);
+                assert_eq!(packet.meta.src_ip, IpAddr::V6(src_ip));
+                assert_eq!(packet.meta.dst_ip, IpAddr::V6(dst_ip));
             }
             other => panic!("unexpected packet: {other:?}"),
         }

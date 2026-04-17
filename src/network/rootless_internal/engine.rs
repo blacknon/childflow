@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::os::fd::{BorrowedFd, RawFd};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
@@ -16,7 +17,10 @@ use crate::proxy::rootless_relay::{self, OutboundStream, ProxyUpstreamConfig};
 use crate::util;
 
 use super::addr::AddressPlan;
-use super::packet::{self, ParsedPacket, ParsedTcpPacket, ParsedUdpPacket, TcpReply};
+use super::packet::{
+    self, Icmpv4EchoFrame, Icmpv6EchoFrame, ParsedIcmpv4Packet, ParsedIcmpv6Packet, ParsedPacket,
+    ParsedTcpPacket, ParsedUdpPacket, TcpReply,
+};
 use super::state::{FlowKey, TcpSession};
 use super::tap::TapHandle;
 
@@ -72,11 +76,42 @@ impl Drop for EngineHandle {
 enum RemoteEvent {
     TcpData { key: FlowKey, payload: Vec<u8> },
     TcpClosed { key: FlowKey },
+    Frame(Vec<u8>),
 }
 
 struct ConnectionState {
     session: TcpSession,
     command_tx: Sender<ConnectionCommand>,
+}
+
+struct Icmpv4EchoRequest {
+    gateway_mac: [u8; 6],
+    child_mac: [u8; 6],
+    child_ip: std::net::Ipv4Addr,
+    remote_ip: std::net::Ipv4Addr,
+    identifier: u16,
+    sequence: u16,
+    payload: Vec<u8>,
+}
+
+struct Icmpv6EchoRequest {
+    gateway_mac: [u8; 6],
+    child_mac: [u8; 6],
+    child_ip: std::net::Ipv6Addr,
+    remote_ip: std::net::Ipv6Addr,
+    identifier: u16,
+    sequence: u16,
+    payload: Vec<u8>,
+}
+
+struct UdpRelayRequest {
+    gateway_mac: [u8; 6],
+    child_mac: [u8; 6],
+    child_ip: IpAddr,
+    child_port: u16,
+    remote_ip: IpAddr,
+    remote_port: u16,
+    payload: Vec<u8>,
 }
 
 enum ConnectionCommand {
@@ -93,7 +128,7 @@ fn run_engine(
     let (event_tx, event_rx) = mpsc::channel();
     let mut child_mac = None;
     let mut connections: HashMap<FlowKey, ConnectionState> = HashMap::new();
-    let mut warned_udp = false;
+    let mut warned_icmp = false;
     let mut buf = [0_u8; 65535];
 
     while !stop.load(Ordering::Relaxed) {
@@ -135,9 +170,17 @@ fn run_engine(
                             config.dns_upstream,
                             config.allow_ipv6_outbound,
                             &mut config.capture,
+                            &event_tx,
                             &udp,
-                            &mut warned_udp,
                         )?;
+                    }
+                    Ok(ParsedPacket::Icmpv4(icmp)) => {
+                        child_mac.get_or_insert(icmp.meta.src_mac);
+                        handle_icmpv4_packet(&event_tx, &addr_plan, &icmp, &mut warned_icmp)?;
+                    }
+                    Ok(ParsedPacket::Icmpv6(icmp)) => {
+                        child_mac.get_or_insert(icmp.meta.src_mac);
+                        handle_icmpv6_packet(&event_tx, &addr_plan, &icmp, &mut warned_icmp)?;
                     }
                     Ok(ParsedPacket::Unsupported) => {}
                     Err(err) => util::debug(format!(
@@ -353,8 +396,8 @@ fn handle_udp_packet(
     dns_upstream: Option<IpAddr>,
     allow_ipv6_outbound: bool,
     capture: &mut Option<FrameCaptureWriter>,
+    event_tx: &Sender<RemoteEvent>,
     udp: &ParsedUdpPacket,
-    warned_udp: &mut bool,
 ) -> Result<()> {
     if udp.dst_port == 53
         && (udp.meta.dst_ip == IpAddr::V4(addr_plan.gateway_ipv4)
@@ -408,12 +451,18 @@ fn handle_udp_packet(
         return Ok(());
     }
 
-    if !*warned_udp {
-        util::warn(
-            "non-DNS UDP is not yet supported by the current `rootless-internal` backend; the engine will ignore those packets",
-        );
-        *warned_udp = true;
-    }
+    spawn_udp_worker(
+        event_tx.clone(),
+        UdpRelayRequest {
+            gateway_mac: addr_plan.gateway_mac,
+            child_mac: udp.meta.src_mac,
+            child_ip: udp.meta.src_ip,
+            child_port: udp.src_port,
+            remote_ip: udp.meta.dst_ip,
+            remote_port: udp.dst_port,
+            payload: udp.payload.clone(),
+        },
+    );
 
     Ok(())
 }
@@ -428,6 +477,15 @@ fn drain_remote_events(
 ) -> Result<()> {
     loop {
         match event_rx.try_recv() {
+            Ok(RemoteEvent::Frame(frame)) => {
+                tap.write_all(&frame)
+                    .context("failed to write a rootless remote frame into tap")?;
+                capture_frame(
+                    capture,
+                    &frame,
+                    "failed to capture a rootless remote->child frame",
+                );
+            }
             Ok(RemoteEvent::TcpData { key, payload }) => {
                 let Some(mac) = *child_mac else {
                     continue;
@@ -500,6 +558,82 @@ fn drain_remote_events(
     Ok(())
 }
 
+fn handle_icmpv4_packet(
+    event_tx: &Sender<RemoteEvent>,
+    addr_plan: &AddressPlan,
+    icmp: &ParsedIcmpv4Packet,
+    warned_icmp: &mut bool,
+) -> Result<()> {
+    let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
+        (IpAddr::V4(src), IpAddr::V4(dst)) => (src, dst),
+        _ => return Ok(()),
+    };
+
+    let is_gateway_target = dst_ip == addr_plan.gateway_ipv4;
+    if icmp.icmp_type == 8 && icmp.code == 0 && !is_gateway_target {
+        spawn_icmpv4_echo_worker(
+            event_tx.clone(),
+            Icmpv4EchoRequest {
+                gateway_mac: addr_plan.gateway_mac,
+                child_mac: icmp.meta.src_mac,
+                child_ip: src_ip,
+                remote_ip: dst_ip,
+                identifier: icmp.identifier,
+                sequence: icmp.sequence,
+                payload: icmp.payload.clone(),
+            },
+        );
+        return Ok(());
+    }
+
+    if !*warned_icmp {
+        util::warn(
+            "ICMP is only partially supported by the current `rootless-internal` backend; only IPv4 echo requests from the child are currently relayed",
+        );
+        *warned_icmp = true;
+    }
+
+    Ok(())
+}
+
+fn handle_icmpv6_packet(
+    event_tx: &Sender<RemoteEvent>,
+    addr_plan: &AddressPlan,
+    icmp: &ParsedIcmpv6Packet,
+    warned_icmp: &mut bool,
+) -> Result<()> {
+    let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
+        (IpAddr::V6(src), IpAddr::V6(dst)) => (src, dst),
+        _ => return Ok(()),
+    };
+
+    let is_gateway_target = dst_ip == addr_plan.gateway_ipv6;
+    if icmp.icmp_type == 128 && icmp.code == 0 && !is_gateway_target {
+        spawn_icmpv6_echo_worker(
+            event_tx.clone(),
+            Icmpv6EchoRequest {
+                gateway_mac: addr_plan.gateway_mac,
+                child_mac: icmp.meta.src_mac,
+                child_ip: src_ip,
+                remote_ip: dst_ip,
+                identifier: icmp.identifier,
+                sequence: icmp.sequence,
+                payload: icmp.payload.clone(),
+            },
+        );
+        return Ok(());
+    }
+
+    if !*warned_icmp {
+        util::warn(
+            "ICMP is only partially supported by the current `rootless-internal` backend; echo requests from the child are relayed, but ICMP errors and traceroute-style control traffic are not yet handled",
+        );
+        *warned_icmp = true;
+    }
+
+    Ok(())
+}
+
 fn capture_frame(capture: &mut Option<FrameCaptureWriter>, frame: &[u8], message: &str) {
     let Some(writer) = capture.as_mut() else {
         return;
@@ -511,6 +645,153 @@ fn capture_frame(capture: &mut Option<FrameCaptureWriter>, frame: &[u8], message
         ));
         *capture = None;
     }
+}
+
+fn spawn_icmpv4_echo_worker(event_tx: Sender<RemoteEvent>, request: Icmpv4EchoRequest) {
+    thread::spawn(move || {
+        match send_icmpv4_echo(request.remote_ip, &request.payload).and_then(|reply| {
+            packet::build_icmpv4_echo_frame(Icmpv4EchoFrame {
+                src_mac: request.gateway_mac,
+                dst_mac: request.child_mac,
+                src_ip: request.remote_ip,
+                dst_ip: request.child_ip,
+                icmp_type: 0,
+                code: 0,
+                identifier: request.identifier,
+                sequence: request.sequence,
+                payload: &reply,
+            })
+        }) {
+            Ok(frame) => {
+                let _ = event_tx.send(RemoteEvent::Frame(frame));
+            }
+            Err(err) => {
+                util::debug(format!(
+                    "rootless-internal could not complete an outbound ICMP echo exchange for {}: {err:#}",
+                    request.remote_ip
+                ));
+            }
+        }
+    });
+}
+
+fn spawn_icmpv6_echo_worker(event_tx: Sender<RemoteEvent>, request: Icmpv6EchoRequest) {
+    thread::spawn(move || {
+        match send_icmpv6_echo(request.remote_ip, &request.payload).and_then(|reply| {
+            packet::build_icmpv6_echo_frame(Icmpv6EchoFrame {
+                src_mac: request.gateway_mac,
+                dst_mac: request.child_mac,
+                src_ip: request.remote_ip,
+                dst_ip: request.child_ip,
+                icmp_type: 129,
+                code: 0,
+                identifier: request.identifier,
+                sequence: request.sequence,
+                payload: &reply,
+            })
+        }) {
+            Ok(frame) => {
+                let _ = event_tx.send(RemoteEvent::Frame(frame));
+            }
+            Err(err) => {
+                util::debug(format!(
+                    "rootless-internal could not complete an outbound ICMPv6 echo exchange for {}: {err:#}",
+                    request.remote_ip
+                ));
+            }
+        }
+    });
+}
+
+fn spawn_udp_worker(event_tx: Sender<RemoteEvent>, request: UdpRelayRequest) {
+    thread::spawn(move || {
+        let remote_addr = SocketAddr::new(request.remote_ip, request.remote_port);
+        match relay_udp_payload(remote_addr, &request.payload).and_then(|reply| {
+            packet::build_udp_frame(
+                request.gateway_mac,
+                request.child_mac,
+                request.remote_ip,
+                request.child_ip,
+                request.remote_port,
+                request.child_port,
+                &reply,
+            )
+        }) {
+            Ok(frame) => {
+                let _ = event_tx.send(RemoteEvent::Frame(frame));
+            }
+            Err(err) => {
+                util::debug(format!(
+                    "rootless-internal could not complete an outbound UDP exchange for {remote_addr}: {err:#}"
+                ));
+            }
+        }
+    });
+}
+
+fn send_icmpv4_echo(remote_ip: std::net::Ipv4Addr, payload: &[u8]) -> Result<Vec<u8>> {
+    let payload_len = payload.len().to_string();
+    let remote_ip_string = remote_ip.to_string();
+    let output = Command::new("ping")
+        .args([
+            "-n",
+            "-c",
+            "1",
+            "-W",
+            "3",
+            "-s",
+            payload_len.as_str(),
+            remote_ip_string.as_str(),
+        ])
+        .output()
+        .with_context(|| {
+            format!("failed to execute `ping` while relaying an ICMPv4 echo request to {remote_ip}")
+        })?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "the helper `ping` command could not reach {remote_ip} (status: {}). stdout: {} stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(payload.to_vec())
+}
+
+fn send_icmpv6_echo(remote_ip: std::net::Ipv6Addr, payload: &[u8]) -> Result<Vec<u8>> {
+    let payload_len = payload.len().to_string();
+    let remote_ip_string = remote_ip.to_string();
+    let output = Command::new("ping")
+        .args([
+            "-6",
+            "-n",
+            "-c",
+            "1",
+            "-W",
+            "3",
+            "-s",
+            payload_len.as_str(),
+            remote_ip_string.as_str(),
+        ])
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to execute `ping -6` while relaying an ICMPv6 echo request to {remote_ip}"
+            )
+        })?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "the helper `ping -6` command could not reach {remote_ip} (status: {}). stdout: {} stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(payload.to_vec())
 }
 
 fn connect_remote(
@@ -610,25 +891,29 @@ fn relay_dns_udp(upstream_ip: IpAddr, payload: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn relay_dns_udp_to(upstream_addr: SocketAddr, payload: &[u8]) -> Result<Vec<u8>> {
-    let bind_addr = match upstream_addr {
+    relay_udp_payload(upstream_addr, payload)
+}
+
+fn relay_udp_payload(remote_addr: SocketAddr, payload: &[u8]) -> Result<Vec<u8>> {
+    let bind_addr = match remote_addr {
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
     };
     let socket = UdpSocket::bind(bind_addr)
-        .context("failed to bind UDP socket for rootless-internal DNS relay")?;
+        .context("failed to bind UDP socket for the rootless-internal relay")?;
     socket
         .set_read_timeout(Some(Duration::from_secs(3)))
-        .context("failed to set DNS relay UDP timeout")?;
+        .context("failed to set rootless UDP relay timeout")?;
     socket
-        .connect(upstream_addr)
-        .with_context(|| format!("failed to connect rootless DNS relay to {upstream_addr}"))?;
+        .connect(remote_addr)
+        .with_context(|| format!("failed to connect the rootless UDP relay to {remote_addr}"))?;
     socket
         .send(payload)
-        .with_context(|| format!("failed to send rootless DNS query to {upstream_addr}"))?;
+        .with_context(|| format!("failed to send rootless UDP payload to {remote_addr}"))?;
     let mut buf = [0_u8; 4096];
     let n = socket
         .recv(&mut buf)
-        .with_context(|| format!("failed to receive rootless DNS response from {upstream_addr}"))?;
+        .with_context(|| format!("failed to receive a rootless UDP response from {remote_addr}"))?;
     Ok(buf[..n].to_vec())
 }
 
@@ -724,6 +1009,29 @@ mod tests {
         });
 
         let actual = relay_dns_udp_to(upstream_addr, &request).unwrap();
+        join.join().unwrap();
+        assert_eq!(actual, response);
+    }
+
+    #[test]
+    fn relay_udp_payload_forwards_payload_and_response() {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let request = b"udp-request".to_vec();
+        let response = b"udp-response".to_vec();
+
+        let join = thread::spawn({
+            let request = request.clone();
+            let response = response.clone();
+            move || {
+                let mut buf = [0_u8; 64];
+                let (n, peer) = upstream.recv_from(&mut buf).unwrap();
+                assert_eq!(&buf[..n], request.as_slice());
+                upstream.send_to(&response, peer).unwrap();
+            }
+        });
+
+        let actual = relay_udp_payload(upstream_addr, &request).unwrap();
         join.join().unwrap();
         assert_eq!(actual, response);
     }

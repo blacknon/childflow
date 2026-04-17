@@ -230,6 +230,43 @@ fn rootless_internal_writes_capture_for_proxy_flow() -> Result<()> {
     Ok(())
 }
 
+#[test]
+#[ignore = "requires privileged linux namespaces, outbound network access, and ping"]
+fn rootless_internal_relays_ipv4_ping() -> Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_childflow"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--network-backend",
+            "rootless-internal",
+            "--",
+            "ping",
+            "-n",
+            "-c",
+            "1",
+            "-W",
+            "3",
+            "8.8.8.8",
+        ])
+        .output()
+        .context("failed to run childflow rootless-internal ping smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("1 received") || stdout.contains("1 packets received"),
+        "expected ping success output, got:\n{stdout}"
+    );
+
+    Ok(())
+}
+
 fn spawn_http_connect_proxy() -> Result<(SocketAddr, Receiver<String>)> {
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
         .context("failed to bind local HTTP CONNECT proxy test listener")?;

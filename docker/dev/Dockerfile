@@ -14,11 +14,14 @@ RUN apt-get clean \
     && apt-get install -y --no-install-recommends \
         busybox-static \
         iproute2 \
+        iputils-ping \
         iptables \
+        libcap2-bin \
         uidmap \
         sudo \
         tcpdump \
         pkg-config \
+    && setcap cap_net_raw=ep /usr/bin/ping \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 

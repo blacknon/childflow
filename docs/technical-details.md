@@ -11,7 +11,8 @@ This document collects the lower-level backend notes, capture details, troublesh
 | DNS override | Yes | Yes, via child `resolv.conf` rewrite and internal DNS relay |
 | `/etc/hosts` override | Yes | Yes |
 | Outbound TCP | Yes | Yes |
-| UDP | Yes | DNS-only |
+| ICMP | Yes | IPv4 / IPv6 echo requests and replies |
+| UDP | Yes | Yes |
 | Explicit upstream proxy | Yes, via transparent interception path | Yes, via parent-side relay engine |
 | Transparent proxy / TPROXY | Yes | Not supported |
 | `--iface` | Yes | Not supported |
@@ -23,8 +24,8 @@ This document collects the lower-level backend notes, capture details, troublesh
 - `rootful` currently requires `--output`
 - `rootful` is enabled explicitly with `--root` when you want the current feature-complete backend
 - `rootless-internal` currently rejects `--iface` and transparent proxy / TPROXY behavior because those paths are not implemented yet
-- `rootless-internal` supports child isolation, DNS relay, outbound TCP, relay-based HTTP / HTTPS / SOCKS5 upstream proxying, `/etc/hosts` override, and tap/engine-boundary packet capture via `--output`
-- non-DNS UDP remains intentionally unsupported on `rootless-internal`
+- `rootless-internal` supports child isolation, DNS relay, outbound TCP, generic UDP relay, IPv4 / IPv6 ICMP echo relay for `ping`, relay-based HTTP / HTTPS / SOCKS5 upstream proxying, `/etc/hosts` override, and tap/engine-boundary packet capture via `--output`
+- traceroute-style ICMP errors such as time-exceeded and destination-unreachable control traffic are not yet synthesized back into the child namespace on `rootless-internal`
 
 ## How It Works
 
@@ -43,7 +44,7 @@ This document collects the lower-level backend notes, capture details, troublesh
 1. `childflow` validates CLI arguments and runs preflight checks.
 2. A child is forked and unshares user, network, and mount namespaces when available.
 3. The child creates `tap0`, gets a rewritten `resolv.conf`, and receives a merged `/etc/hosts` view when `--hosts-file` is set.
-4. The parent-side userspace engine attaches to the tap and relays DNS over UDP plus outbound TCP.
+4. The parent-side userspace engine attaches to the tap and relays UDP, outbound TCP, and IPv4 / IPv6 ICMP echo requests.
 5. If `--proxy` is set, the parent-side engine tunnels outbound TCP through HTTP, HTTPS, or SOCKS5 upstream proxying.
 6. If `--output` is set, packet capture is written from the tap/engine boundary.
 
@@ -155,7 +156,11 @@ Common failures:
 - `rootless-internal` proxying does not seem to take effect:
   verify the configured upstream proxy is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1`
 - `rootless-internal` drops UDP traffic:
-  only DNS over UDP is currently relayed; other UDP payloads are ignored
+  verify that the remote peer actually sends a UDP response back; the current relay forwards datagrams, but it does not maintain richer session semantics beyond request/response forwarding
+- `rootless-internal` can reach TCP destinations but `ping` still fails:
+  the current rootless ICMP path only handles echo traffic; rerun with `CHILDFLOW_DEBUG=1` and confirm the target family matches the command you used
+- `rootless-internal` still cannot run `traceroute` correctly:
+  the rootless engine does not yet relay ICMP time-exceeded or destination-unreachable error traffic back into the child namespace
 - packet capture startup fails:
   verify AF_PACKET support or rootless tap access, depending on the backend
 
@@ -172,6 +177,7 @@ Host conflicts to keep in mind:
 - backend support is still asymmetric: `rootful` is the feature-complete path, while `rootless-internal` is still experimental
 - direct traffic is dual-stack, but correctness still depends on the host having usable IPv4 and IPv6 upstream connectivity
 - proxy mode currently targets TCP traffic
+- rootless ICMP support is currently limited to echo requests and replies; ICMP error relay for traceroute-class tools is still missing
 - DNS handling is designed around `resolv.conf`-driven resolution inside the child namespace
 - abnormal termination can still leave partial host-side network changes behind even though rollback is attempted
 

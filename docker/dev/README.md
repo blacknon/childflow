@@ -29,6 +29,7 @@ It also installs the Rust `clippy` component so the container can run the repo's
 For non-root rootless testing, it also installs `uidmap` and pre-populates `/etc/subuid` and `/etc/subgid` for the `childflow` user. That lets `childflow` exercise the same `newuidmap` / `newgidmap` fallback path it uses on Debian-like hosts when direct uid/gid map writes are rejected.
 For proxy debugging, it also includes `busybox-static`, so you can use `/bin/busybox wget` as a single-binary HTTP client inside the container.
 It also builds a tiny Go single-binary HTTP client at `/usr/local/bin/proxycheck`, which prints the selected proxy and then performs the request.
+For basic network reachability checks, it also installs `ping` and grants it `cap_net_raw` so the default non-root `childflow` user can use it without `sudo`.
 
 ## Run tests
 
