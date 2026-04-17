@@ -72,6 +72,9 @@ services:
       client: {}
       backend:
         ipv4_address: 10.241.0.20
+    extra_hosts:
+      - "origin-http.demo:10.241.0.10"
+      - "origin-https.demo:10.241.0.11"
     healthcheck:
       test:
         - CMD
@@ -100,6 +103,9 @@ services:
       client: {}
       backend:
         ipv4_address: 10.241.0.21
+    extra_hosts:
+      - "origin-http.demo:10.241.0.10"
+      - "origin-https.demo:10.241.0.11"
     healthcheck:
       test:
         - CMD

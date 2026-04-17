@@ -170,7 +170,6 @@ fn run_engine(
     let (event_tx, event_rx) = mpsc::channel();
     let mut child_mac = None;
     let mut connections: HashMap<FlowKey, ConnectionState> = HashMap::new();
-    let mut warned_icmp = false;
     let mut buf = [0_u8; 65535];
 
     while !stop.load(Ordering::Relaxed) {
@@ -218,11 +217,11 @@ fn run_engine(
                     }
                     Ok(ParsedPacket::Icmpv4(icmp)) => {
                         child_mac.get_or_insert(icmp.meta.src_mac);
-                        handle_icmpv4_packet(&event_tx, &addr_plan, &icmp, &mut warned_icmp)?;
+                        handle_icmpv4_packet(&event_tx, &addr_plan, &icmp)?;
                     }
                     Ok(ParsedPacket::Icmpv6(icmp)) => {
                         child_mac.get_or_insert(icmp.meta.src_mac);
-                        handle_icmpv6_packet(&event_tx, &addr_plan, &icmp, &mut warned_icmp)?;
+                        handle_icmpv6_packet(&event_tx, &addr_plan, &icmp)?;
                     }
                     Ok(ParsedPacket::Unsupported) => {}
                     Err(err) => util::debug(format!(
@@ -605,7 +604,6 @@ fn handle_icmpv4_packet(
     event_tx: &Sender<RemoteEvent>,
     addr_plan: &AddressPlan,
     icmp: &ParsedIcmpv4Packet,
-    warned_icmp: &mut bool,
 ) -> Result<()> {
     let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
         (IpAddr::V4(src), IpAddr::V4(dst)) => (src, dst),
@@ -645,12 +643,10 @@ fn handle_icmpv4_packet(
         return Ok(());
     }
 
-    if !*warned_icmp {
-        util::warn(
-            "ICMP is only partially supported by the current `rootless-internal` backend; echo requests from the child are relayed, but other outbound ICMPv4 message types are not yet handled",
-        );
-        *warned_icmp = true;
-    }
+    util::debug(format!(
+        "ignoring unsupported outbound ICMPv4 type {} code {} toward {}",
+        icmp.icmp_type, icmp.code, dst_ip
+    ));
 
     Ok(())
 }
@@ -659,7 +655,6 @@ fn handle_icmpv6_packet(
     event_tx: &Sender<RemoteEvent>,
     addr_plan: &AddressPlan,
     icmp: &ParsedIcmpv6Packet,
-    warned_icmp: &mut bool,
 ) -> Result<()> {
     let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
         (IpAddr::V6(src), IpAddr::V6(dst)) => (src, dst),
@@ -684,7 +679,7 @@ fn handle_icmpv6_packet(
         return Ok(());
     }
 
-    if should_relay_icmpv6_request(icmp.icmp_type) && !is_gateway_target {
+    if should_relay_icmpv6_request(icmp.icmp_type, dst_ip) && !is_gateway_target {
         spawn_icmpv6_raw_worker(
             event_tx.clone(),
             Icmpv6RawRequest {
@@ -699,12 +694,10 @@ fn handle_icmpv6_packet(
         return Ok(());
     }
 
-    if !*warned_icmp {
-        util::warn(
-            "ICMP is only partially supported by the current `rootless-internal` backend; echo requests from the child are relayed, but other outbound ICMPv6 message types are not yet handled",
-        );
-        *warned_icmp = true;
-    }
+    util::debug(format!(
+        "ignoring unsupported outbound ICMPv6 type {} code {} toward {}",
+        icmp.icmp_type, icmp.code, dst_ip
+    ));
 
     Ok(())
 }
@@ -1311,8 +1304,8 @@ fn should_relay_icmpv4_request(icmp_type: u8) -> bool {
     !matches!(icmp_type, 0 | 3 | 4 | 5 | 11 | 12)
 }
 
-fn should_relay_icmpv6_request(icmp_type: u8) -> bool {
-    icmp_type >= 128
+fn should_relay_icmpv6_request(icmp_type: u8, dst_ip: std::net::Ipv6Addr) -> bool {
+    !dst_ip.is_multicast() && icmp_type >= 128 && !matches!(icmp_type, 128 | 129 | 130..=137 | 143)
 }
 
 fn contains_ping_success(output: &str, remote_ip: &IpAddr) -> bool {
