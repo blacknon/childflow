@@ -59,6 +59,7 @@ pub fn child_enter_and_exec(
     tap_transfer: Option<UnixStream>,
     resolv_conf: Option<&Path>,
     network_bootstrap: Option<&ChildNetworkBootstrap>,
+    extra_env: &[(String, String)],
     command: &[String],
 ) -> Result<()> {
     if command.is_empty() {
@@ -124,6 +125,10 @@ pub fn child_enter_and_exec(
     } else {
         None
     };
+
+    for (key, value) in extra_env {
+        std::env::set_var(key, value);
+    }
 
     let argv = command
         .iter()

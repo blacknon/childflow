@@ -14,20 +14,23 @@ use pcap_file::pcapng::PcapNgWriter;
 use pcap_file::DataLink;
 use pnet_datalink::{self, Channel::Ethernet};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CaptureMode {
+    AfPacket { interface_name: String },
+}
+
 pub struct CaptureHandle {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<Result<()>>>,
 }
 
 impl CaptureHandle {
-    pub fn start(interface_name: &str, output_path: &Path) -> Result<Self> {
-        let interface_name = interface_name.to_string();
+    pub fn start(mode: CaptureMode, output_path: &Path) -> Result<Self> {
         let output_path = output_path.to_path_buf();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
 
-        let join =
-            thread::spawn(move || capture_loop(&interface_name, &output_path, stop_for_thread));
+        let join = thread::spawn(move || capture_loop(mode, &output_path, stop_for_thread));
 
         Ok(Self {
             stop,
@@ -57,7 +60,8 @@ impl Drop for CaptureHandle {
     }
 }
 
-fn capture_loop(interface_name: &str, output_path: &PathBuf, stop: Arc<AtomicBool>) -> Result<()> {
+fn capture_loop(mode: CaptureMode, output_path: &PathBuf, stop: Arc<AtomicBool>) -> Result<()> {
+    let CaptureMode::AfPacket { interface_name } = mode;
     let interface = pnet_datalink::interfaces()
         .into_iter()
         .find(|iface| iface.name == interface_name)

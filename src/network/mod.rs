@@ -5,6 +5,7 @@ pub mod types;
 use anyhow::Result;
 use nix::unistd::Pid;
 
+use crate::capture::CaptureMode;
 use crate::cli::Cli;
 use crate::dns::DnsPlan;
 use crate::namespace::{ChildNetworkBootstrap, NamespaceMode};
@@ -31,10 +32,12 @@ pub enum NetworkContext {
 }
 
 impl NetworkContext {
-    pub fn capture_interface(&self) -> Option<&str> {
+    pub fn capture_mode(&self) -> Option<CaptureMode> {
         match self {
-            Self::Rootful(ctx) => Some(ctx.host_veth()),
-            Self::RootlessInternal(ctx) => ctx.capture_interface(),
+            Self::Rootful(ctx) => Some(CaptureMode::AfPacket {
+                interface_name: ctx.host_veth().to_string(),
+            }),
+            Self::RootlessInternal(ctx) => ctx.capture_mode(),
         }
     }
 

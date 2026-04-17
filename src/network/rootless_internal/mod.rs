@@ -8,6 +8,7 @@ pub mod tap;
 use anyhow::{Context, Result};
 use nix::unistd::Pid;
 
+use crate::capture::CaptureMode;
 use crate::cli::Cli;
 use crate::dns::DnsPlan;
 use crate::namespace;
@@ -76,7 +77,7 @@ pub struct NetworkContext {
 }
 
 impl NetworkContext {
-    pub fn capture_interface(&self) -> Option<&str> {
+    pub fn capture_mode(&self) -> Option<CaptureMode> {
         None
     }
 

@@ -348,7 +348,7 @@ fn handle_udp_packet(
 
     if !*warned_udp {
         util::warn(
-            "non-DNS UDP is not yet supported by the `rootless-internal` backend in stage 3; the engine will ignore those packets",
+            "non-DNS UDP is not yet supported by the current `rootless-internal` backend; the engine will ignore those packets",
         );
         *warned_udp = true;
     }

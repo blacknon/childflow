@@ -19,6 +19,8 @@ mod network;
 #[cfg(target_os = "linux")]
 mod preflight;
 #[cfg(target_os = "linux")]
+mod proxy;
+#[cfg(target_os = "linux")]
 mod tproxy;
 #[cfg(target_os = "linux")]
 mod util;
@@ -56,7 +58,7 @@ use dns::DnsPlan;
 #[cfg(target_os = "linux")]
 use network::NetworkBackend;
 #[cfg(target_os = "linux")]
-use tproxy::{TproxyHandle, TransparentProxyPlan};
+use proxy::{ProxyPlan, TproxyHandle};
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -88,7 +90,11 @@ fn real_main() -> Result<i32> {
         network_plan.host_ipv4(),
         network_plan.host_ipv6(),
     )?;
-    let proxy_plan = TransparentProxyPlan::from_cli(&cli);
+    let proxy_plan = ProxyPlan::from_cli(&cli)?;
+    let child_proxy_env = proxy_plan
+        .as_ref()
+        .map(ProxyPlan::child_env)
+        .unwrap_or_default();
 
     let (read_fd, write_fd) = pipe().context("failed to create bootstrap pipe")?;
     let (ready_read_fd, ready_write_fd) =
@@ -111,6 +117,7 @@ fn real_main() -> Result<i32> {
                 child_network_bootstrap.as_ref().map(|_| tap_child),
                 dns_plan.resolv_conf_path(),
                 child_network_bootstrap.as_ref(),
+                &child_proxy_env,
                 &cli.command,
             ) {
                 eprintln!("childflow: child bootstrap failed: {err:#}");
@@ -221,7 +228,7 @@ impl ParentRuntime {
         cli: &Cli,
         network_plan: &network::NetworkPlan,
         dns_plan: &DnsPlan,
-        proxy_plan: Option<&TransparentProxyPlan>,
+        proxy_plan: Option<&ProxyPlan>,
         child_bootstrap: &mut network::ChildBootstrap,
     ) -> Result<Self> {
         let cgroup = match cli.network_backend {
@@ -241,6 +248,7 @@ impl ParentRuntime {
         };
 
         let proxy = proxy_plan
+            .and_then(ProxyPlan::transparent_rootful)
             .map(|plan| {
                 plan.start().context(
                     "failed to start transparent proxy listener. Check CAP_NET_ADMIN/CAP_NET_RAW, Linux TPROXY support, and whether `IP_TRANSPARENT` is permitted on this host",
@@ -266,12 +274,11 @@ impl ParentRuntime {
             None => None,
         };
 
-        let capture = match (network.capture_interface(), cli.output.as_ref()) {
-            (Some(interface_name), Some(output_path)) => {
-                Some(CaptureHandle::start(interface_name, output_path).with_context(|| {
+        let capture = match (network.capture_mode(), cli.output.as_ref()) {
+            (Some(mode), Some(output_path)) => {
+                Some(CaptureHandle::start(mode, output_path).with_context(|| {
                     format!(
-                        "failed to start packet capture on {}. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected host-side capture interface",
-                        interface_name
+                        "failed to start packet capture. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected capture path for the selected backend"
                     )
                 })?)
             }
