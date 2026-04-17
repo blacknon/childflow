@@ -20,6 +20,7 @@ RUN apt-get clean \
         uidmap \
         sudo \
         tcpdump \
+        traceroute \
         pkg-config \
     && setcap cap_net_raw=ep /usr/bin/ping \
     && apt-get clean \

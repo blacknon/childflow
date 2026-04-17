@@ -90,6 +90,7 @@ struct Icmpv4EchoRequest {
     child_mac: [u8; 6],
     child_ip: std::net::Ipv4Addr,
     remote_ip: std::net::Ipv4Addr,
+    hop_limit: u8,
     identifier: u16,
     sequence: u16,
     payload: Vec<u8>,
@@ -100,6 +101,7 @@ struct Icmpv6EchoRequest {
     child_mac: [u8; 6],
     child_ip: std::net::Ipv6Addr,
     remote_ip: std::net::Ipv6Addr,
+    hop_limit: u8,
     identifier: u16,
     sequence: u16,
     payload: Vec<u8>,
@@ -116,9 +118,19 @@ struct UdpRelayRequest {
     payload: Vec<u8>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 enum UdpRelayOutcome {
     Payload(Vec<u8>),
     IcmpError {
+        source_ip: IpAddr,
+        icmp_type: u8,
+        code: u8,
+    },
+}
+
+enum IcmpRelayOutcome {
+    EchoReply(Vec<u8>),
+    Error {
         source_ip: IpAddr,
         icmp_type: u8,
         code: u8,
@@ -590,6 +602,7 @@ fn handle_icmpv4_packet(
                 child_mac: icmp.meta.src_mac,
                 child_ip: src_ip,
                 remote_ip: dst_ip,
+                hop_limit: icmp.meta.hop_limit,
                 identifier: icmp.identifier,
                 sequence: icmp.sequence,
                 payload: icmp.payload.clone(),
@@ -600,7 +613,7 @@ fn handle_icmpv4_packet(
 
     if !*warned_icmp {
         util::warn(
-            "ICMP is only partially supported by the current `rootless-internal` backend; only IPv4 echo requests from the child are currently relayed",
+            "ICMP is only partially supported by the current `rootless-internal` backend; echo requests from the child are relayed, but other outbound ICMPv4 message types are not yet handled",
         );
         *warned_icmp = true;
     }
@@ -628,6 +641,7 @@ fn handle_icmpv6_packet(
                 child_mac: icmp.meta.src_mac,
                 child_ip: src_ip,
                 remote_ip: dst_ip,
+                hop_limit: icmp.meta.hop_limit,
                 identifier: icmp.identifier,
                 sequence: icmp.sequence,
                 payload: icmp.payload.clone(),
@@ -638,7 +652,7 @@ fn handle_icmpv6_packet(
 
     if !*warned_icmp {
         util::warn(
-            "ICMP is only partially supported by the current `rootless-internal` backend; echo requests from the child are relayed, but ICMP errors and traceroute-style control traffic are not yet handled",
+            "ICMP is only partially supported by the current `rootless-internal` backend; echo requests from the child are relayed, but other outbound ICMPv6 message types are not yet handled",
         );
         *warned_icmp = true;
     }
@@ -661,19 +675,69 @@ fn capture_frame(capture: &mut Option<FrameCaptureWriter>, frame: &[u8], message
 
 fn spawn_icmpv4_echo_worker(event_tx: Sender<RemoteEvent>, request: Icmpv4EchoRequest) {
     thread::spawn(move || {
-        match send_icmpv4_echo(request.remote_ip, &request.payload).and_then(|reply| {
-            packet::build_icmpv4_echo_frame(Icmpv4EchoFrame {
-                src_mac: request.gateway_mac,
-                dst_mac: request.child_mac,
-                src_ip: request.remote_ip,
-                dst_ip: request.child_ip,
-                icmp_type: 0,
+        let child_probe = packet::build_icmpv4_echo_ip_packet(
+            Icmpv4EchoFrame {
+                src_mac: request.child_mac,
+                dst_mac: request.gateway_mac,
+                src_ip: request.child_ip,
+                dst_ip: request.remote_ip,
+                icmp_type: 8,
                 code: 0,
                 identifier: request.identifier,
                 sequence: request.sequence,
-                payload: &reply,
-            })
-        }) {
+                payload: &request.payload,
+            },
+            request.hop_limit,
+        );
+
+        let result = relay_icmpv4_echo(request.remote_ip, request.hop_limit, &request.payload)
+            .and_then(|outcome| match outcome {
+                IcmpRelayOutcome::EchoReply(reply) => packet::build_icmpv4_echo_frame(Icmpv4EchoFrame {
+                    src_mac: request.gateway_mac,
+                    dst_mac: request.child_mac,
+                    src_ip: request.remote_ip,
+                    dst_ip: request.child_ip,
+                    icmp_type: 0,
+                    code: 0,
+                    identifier: request.identifier,
+                    sequence: request.sequence,
+                    payload: if reply.is_empty() {
+                        request.payload.as_slice()
+                    } else {
+                        reply.as_slice()
+                    },
+                }),
+                IcmpRelayOutcome::Error {
+                    source_ip,
+                    icmp_type,
+                    code,
+                } => {
+                    let probe = child_probe.as_ref().map_err(|err| {
+                        anyhow::anyhow!(
+                            "failed to preserve the child ICMPv4 probe for ICMP synthesis toward {}: {err:#}",
+                            request.remote_ip
+                        )
+                    })?;
+                    let source_ip = match source_ip {
+                        IpAddr::V4(ip) => ip,
+                        _ => anyhow::bail!(
+                            "ICMPv4 relay received a non-IPv4 error source for {}",
+                            request.remote_ip
+                        ),
+                    };
+                    packet::build_icmpv4_error_frame(Icmpv4ErrorFrame {
+                        src_mac: request.gateway_mac,
+                        dst_mac: request.child_mac,
+                        src_ip: source_ip,
+                        dst_ip: request.child_ip,
+                        icmp_type,
+                        code,
+                        quote: probe,
+                    })
+                }
+            });
+
+        match result {
             Ok(frame) => {
                 let _ = event_tx.send(RemoteEvent::Frame(frame));
             }
@@ -689,19 +753,69 @@ fn spawn_icmpv4_echo_worker(event_tx: Sender<RemoteEvent>, request: Icmpv4EchoRe
 
 fn spawn_icmpv6_echo_worker(event_tx: Sender<RemoteEvent>, request: Icmpv6EchoRequest) {
     thread::spawn(move || {
-        match send_icmpv6_echo(request.remote_ip, &request.payload).and_then(|reply| {
-            packet::build_icmpv6_echo_frame(Icmpv6EchoFrame {
-                src_mac: request.gateway_mac,
-                dst_mac: request.child_mac,
-                src_ip: request.remote_ip,
-                dst_ip: request.child_ip,
-                icmp_type: 129,
+        let child_probe = packet::build_icmpv6_echo_ip_packet(
+            Icmpv6EchoFrame {
+                src_mac: request.child_mac,
+                dst_mac: request.gateway_mac,
+                src_ip: request.child_ip,
+                dst_ip: request.remote_ip,
+                icmp_type: 128,
                 code: 0,
                 identifier: request.identifier,
                 sequence: request.sequence,
-                payload: &reply,
-            })
-        }) {
+                payload: &request.payload,
+            },
+            request.hop_limit,
+        );
+
+        let result = relay_icmpv6_echo(request.remote_ip, request.hop_limit, &request.payload)
+            .and_then(|outcome| match outcome {
+                IcmpRelayOutcome::EchoReply(reply) => packet::build_icmpv6_echo_frame(Icmpv6EchoFrame {
+                    src_mac: request.gateway_mac,
+                    dst_mac: request.child_mac,
+                    src_ip: request.remote_ip,
+                    dst_ip: request.child_ip,
+                    icmp_type: 129,
+                    code: 0,
+                    identifier: request.identifier,
+                    sequence: request.sequence,
+                    payload: if reply.is_empty() {
+                        request.payload.as_slice()
+                    } else {
+                        reply.as_slice()
+                    },
+                }),
+                IcmpRelayOutcome::Error {
+                    source_ip,
+                    icmp_type,
+                    code,
+                } => {
+                    let probe = child_probe.as_ref().map_err(|err| {
+                        anyhow::anyhow!(
+                            "failed to preserve the child ICMPv6 probe for ICMP synthesis toward {}: {err:#}",
+                            request.remote_ip
+                        )
+                    })?;
+                    let source_ip = match source_ip {
+                        IpAddr::V6(ip) => ip,
+                        _ => anyhow::bail!(
+                            "ICMPv6 relay received a non-IPv6 error source for {}",
+                            request.remote_ip
+                        ),
+                    };
+                    packet::build_icmpv6_error_frame(Icmpv6ErrorFrame {
+                        src_mac: request.gateway_mac,
+                        dst_mac: request.child_mac,
+                        src_ip: source_ip,
+                        dst_ip: request.child_ip,
+                        icmp_type,
+                        code,
+                        quote: probe,
+                    })
+                }
+            });
+
+        match result {
             Ok(frame) => {
                 let _ = event_tx.send(RemoteEvent::Frame(frame));
             }
@@ -800,69 +914,166 @@ fn spawn_udp_worker(event_tx: Sender<RemoteEvent>, request: UdpRelayRequest) {
     });
 }
 
-fn send_icmpv4_echo(remote_ip: std::net::Ipv4Addr, payload: &[u8]) -> Result<Vec<u8>> {
-    let payload_len = payload.len().to_string();
-    let remote_ip_string = remote_ip.to_string();
-    let output = Command::new("ping")
-        .args([
-            "-n",
-            "-c",
-            "1",
-            "-W",
-            "3",
-            "-s",
-            payload_len.as_str(),
-            remote_ip_string.as_str(),
-        ])
-        .output()
+fn relay_icmpv4_echo(
+    remote_ip: std::net::Ipv4Addr,
+    hop_limit: u8,
+    payload: &[u8],
+) -> Result<IcmpRelayOutcome> {
+    let output = run_ping_helper(remote_ip.to_string(), hop_limit, payload.len(), false)
         .with_context(|| {
             format!("failed to execute `ping` while relaying an ICMPv4 echo request to {remote_ip}")
         })?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "the helper `ping` command could not reach {remote_ip} (status: {}). stdout: {} stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-
-    Ok(payload.to_vec())
+    parse_ping_helper_output(IpAddr::V4(remote_ip), false, &output)
 }
 
-fn send_icmpv6_echo(remote_ip: std::net::Ipv6Addr, payload: &[u8]) -> Result<Vec<u8>> {
-    let payload_len = payload.len().to_string();
-    let remote_ip_string = remote_ip.to_string();
-    let output = Command::new("ping")
-        .args([
-            "-6",
-            "-n",
-            "-c",
-            "1",
-            "-W",
-            "3",
-            "-s",
-            payload_len.as_str(),
-            remote_ip_string.as_str(),
-        ])
-        .output()
+fn relay_icmpv6_echo(
+    remote_ip: std::net::Ipv6Addr,
+    hop_limit: u8,
+    payload: &[u8],
+) -> Result<IcmpRelayOutcome> {
+    let output = run_ping_helper(remote_ip.to_string(), hop_limit, payload.len(), true)
         .with_context(|| {
             format!(
                 "failed to execute `ping -6` while relaying an ICMPv6 echo request to {remote_ip}"
             )
         })?;
+    parse_ping_helper_output(IpAddr::V6(remote_ip), true, &output)
+}
 
-    if !output.status.success() {
-        anyhow::bail!(
-            "the helper `ping -6` command could not reach {remote_ip} (status: {}). stdout: {} stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
+fn run_ping_helper(
+    remote_ip: String,
+    hop_limit: u8,
+    payload_len: usize,
+    ipv6: bool,
+) -> Result<std::process::Output> {
+    let payload_len = payload_len.to_string();
+    let hop_limit = hop_limit.to_string();
+    let mut command = Command::new("ping");
+    if ipv6 {
+        command.arg("-6");
+    }
+    command.args([
+        "-n",
+        "-c",
+        "1",
+        "-W",
+        "3",
+        "-t",
+        hop_limit.as_str(),
+        "-s",
+        payload_len.as_str(),
+        remote_ip.as_str(),
+    ]);
+    command.output().context("failed to run the ping helper")
+}
+
+fn parse_ping_helper_output(
+    remote_ip: IpAddr,
+    ipv6: bool,
+    output: &std::process::Output,
+) -> Result<IcmpRelayOutcome> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if contains_ping_success(&stdout, &remote_ip) || contains_ping_success(&stderr, &remote_ip) {
+        return Ok(IcmpRelayOutcome::EchoReply(Vec::new()));
     }
 
-    Ok(payload.to_vec())
+    if let Some(outcome) = parse_ping_error_lines(&stdout, ipv6)? {
+        return Ok(outcome);
+    }
+    if let Some(outcome) = parse_ping_error_lines(&stderr, ipv6)? {
+        return Ok(outcome);
+    }
+
+    anyhow::bail!(
+        "the helper `ping` command could not reach {remote_ip} (status: {}). stdout: {} stderr: {}",
+        output.status,
+        stdout.trim(),
+        stderr.trim(),
+    )
+}
+
+fn contains_ping_success(output: &str, remote_ip: &IpAddr) -> bool {
+    let remote = remote_ip.to_string();
+    output.lines().any(|line| {
+        line.contains("bytes from") && (line.contains(&remote) || line.contains("icmp_seq="))
+    })
+}
+
+fn parse_ping_error_lines(output: &str, ipv6: bool) -> Result<Option<IcmpRelayOutcome>> {
+    for line in output.lines() {
+        let Some(rest) = line.strip_prefix("From ") else {
+            continue;
+        };
+        let source = rest
+            .split_whitespace()
+            .next()
+            .map(|token| token.trim_end_matches(':'))
+            .context("failed to parse the ICMP error source reported by ping")?;
+        let source_ip: IpAddr = source
+            .parse()
+            .with_context(|| format!("failed to parse the ICMP error source IP `{source}`"))?;
+
+        if line.contains("Time to live exceeded")
+            || line.contains("Time exceeded")
+            || line.contains("Hop limit exceeded")
+        {
+            return Ok(Some(IcmpRelayOutcome::Error {
+                source_ip,
+                icmp_type: if ipv6 { 3 } else { 11 },
+                code: 0,
+            }));
+        }
+
+        if line.contains("Destination")
+            || line.contains("unreachable")
+            || line.contains("Unreachable")
+        {
+            return Ok(Some(IcmpRelayOutcome::Error {
+                source_ip,
+                icmp_type: if ipv6 { 1 } else { 3 },
+                code: parse_unreachable_code(line, ipv6),
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_unreachable_code(line: &str, ipv6: bool) -> u8 {
+    let line = line.to_ascii_lowercase();
+    if ipv6 {
+        if line.contains("no route") {
+            0
+        } else if line.contains("prohibited") || line.contains("administratively") {
+            1
+        } else if line.contains("scope") {
+            2
+        } else if line.contains("address unreachable") || line.contains("host unreachable") {
+            3
+        } else if line.contains("port unreachable") {
+            4
+        } else {
+            0
+        }
+    } else if line.contains("net unreachable") {
+        0
+    } else if line.contains("host unreachable") {
+        1
+    } else if line.contains("protocol unreachable") {
+        2
+    } else if line.contains("port unreachable") {
+        3
+    } else if line.contains("fragmentation") {
+        4
+    } else if line.contains("source route failed") {
+        5
+    } else if line.contains("admin") || line.contains("filtered") || line.contains("prohibited") {
+        13
+    } else {
+        0
+    }
 }
 
 fn connect_remote(
@@ -1275,9 +1486,9 @@ mod tests {
             }
         });
 
-        let actual = relay_udp_payload(upstream_addr, &request).unwrap();
+        let actual = relay_udp_payload(upstream_addr, 64, &request).unwrap();
         join.join().unwrap();
-        assert_eq!(actual, response);
+        assert_eq!(actual, UdpRelayOutcome::Payload(response));
     }
 
     #[test]

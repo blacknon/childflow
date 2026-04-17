@@ -267,6 +267,91 @@ fn rootless_internal_relays_ipv4_ping() -> Result<()> {
     Ok(())
 }
 
+#[test]
+#[ignore = "requires privileged linux namespaces, outbound network access, and traceroute"]
+fn rootless_internal_relays_udp_traceroute_hops() -> Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_childflow"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--network-backend",
+            "rootless-internal",
+            "--",
+            "traceroute",
+            "-n",
+            "-q",
+            "1",
+            "-w",
+            "2",
+            "-m",
+            "2",
+            "8.8.8.8",
+        ])
+        .output()
+        .context("failed to run childflow rootless-internal traceroute smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|line| {
+            let trimmed = line.trim_start();
+            (trimmed.starts_with("1 ") || trimmed.starts_with("2 ")) && !trimmed.contains(" *")
+        }),
+        "expected traceroute to report at least one concrete hop, got:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires privileged linux namespaces, outbound network access, and traceroute"]
+fn rootless_internal_relays_icmp_traceroute_hops() -> Result<()> {
+    let output = Command::new(env!("CARGO_BIN_EXE_childflow"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--network-backend",
+            "rootless-internal",
+            "--",
+            "traceroute",
+            "-I",
+            "-n",
+            "-q",
+            "1",
+            "-w",
+            "2",
+            "-m",
+            "2",
+            "8.8.8.8",
+        ])
+        .output()
+        .context("failed to run childflow rootless-internal ICMP traceroute smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|line| {
+            let trimmed = line.trim_start();
+            (trimmed.starts_with("1 ") || trimmed.starts_with("2 ")) && !trimmed.contains(" *")
+        }),
+        "expected ICMP traceroute to report at least one concrete hop, got:\n{stdout}"
+    );
+
+    Ok(())
+}
+
 fn spawn_http_connect_proxy() -> Result<(SocketAddr, Receiver<String>)> {
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
         .context("failed to bind local HTTP CONNECT proxy test listener")?;

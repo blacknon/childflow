@@ -16,7 +16,7 @@ It currently ships with two backends:
 - force DNS to a specific resolver
 - overlay an `/etc/hosts`-format file for child-side name resolution
 - send outbound TCP directly or through HTTP / HTTPS / SOCKS5 upstream proxies
-- relay outbound UDP plus IPv4 / IPv6 `ping` on the default rootless backend
+- relay outbound UDP, IPv4 / IPv6 `ping`, and both UDP-style and ICMP-mode `traceroute` on the default rootless backend
 - capture child traffic as `pcapng`
 
 ## Quick Start
@@ -52,6 +52,8 @@ sudo childflow --root -o capture.pcapng -- curl https://example.com
 childflow -o rootless.pcapng -- curl https://example.com
 childflow -- ping -c 1 8.8.8.8
 childflow -- ping -6 -c 1 2606:4700:4700::1111
+childflow -- traceroute -n -q 1 -w 2 8.8.8.8
+childflow -- traceroute -I -n -q 1 -w 2 8.8.8.8
 childflow --hosts-file ./hosts.override -- curl http://demo.internal
 childflow -p http://host.docker.internal:8080 -- curl https://example.com
 sudo childflow --root -o capture.pcapng -- curl https://example.com
@@ -80,7 +82,7 @@ sudo childflow --root -o capture.pcapng -- curl https://example.com
 
 Start with the default rootless mode when you want the quickest path to isolated execution, DNS control, proxying, and capture without host-wide rootful setup.
 
-Use `--root` when you need the current feature-complete path, including transparent proxying, interface-forced direct egress, and traceroute-style ICMP behavior that the current rootless relay engine still does not implement.
+Use `--root` when you need the current feature-complete path, including transparent proxying, interface-forced direct egress, and broader raw-ICMP behavior than the current rootless relay engine implements.
 
 If you are evaluating from macOS or another non-Linux environment, use the Docker-based workflow instead of trying to run the binary directly.
 

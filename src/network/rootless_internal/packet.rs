@@ -352,15 +352,7 @@ pub fn build_udp_ip_packet(
 }
 
 pub fn build_icmpv4_echo_frame(frame: Icmpv4EchoFrame<'_>) -> Result<Vec<u8>> {
-    let mut icmp = Vec::with_capacity(8 + frame.payload.len());
-    icmp.push(frame.icmp_type);
-    icmp.push(frame.code);
-    icmp.extend_from_slice(&[0, 0]);
-    icmp.extend_from_slice(&frame.identifier.to_be_bytes());
-    icmp.extend_from_slice(&frame.sequence.to_be_bytes());
-    icmp.extend_from_slice(frame.payload);
-    let checksum = internet_checksum(&icmp);
-    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+    let icmp = build_icmpv4_echo_payload(&frame);
 
     build_ip_frame(
         frame.src_mac,
@@ -376,21 +368,43 @@ pub fn build_icmpv4_echo_frame(frame: Icmpv4EchoFrame<'_>) -> Result<Vec<u8>> {
 }
 
 pub fn build_icmpv6_echo_frame(frame: Icmpv6EchoFrame<'_>) -> Result<Vec<u8>> {
-    let mut icmp = Vec::with_capacity(8 + frame.payload.len());
-    icmp.push(frame.icmp_type);
-    icmp.push(frame.code);
-    icmp.extend_from_slice(&[0, 0]);
-    icmp.extend_from_slice(&frame.identifier.to_be_bytes());
-    icmp.extend_from_slice(&frame.sequence.to_be_bytes());
-    icmp.extend_from_slice(frame.payload);
-    let checksum = icmpv6_checksum(frame.src_ip, frame.dst_ip, &icmp);
-    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+    let icmp = build_icmpv6_echo_payload(&frame);
 
     build_ip_frame(
         frame.src_mac,
         frame.dst_mac,
         IpAddr::V6(frame.src_ip),
         IpAddr::V6(frame.dst_ip),
+        IpNumber::IPV6_ICMP,
+        |_ip_kind, bytes| {
+            bytes.extend_from_slice(&icmp);
+            Ok(())
+        },
+    )
+}
+
+pub fn build_icmpv4_echo_ip_packet(frame: Icmpv4EchoFrame<'_>, ttl: u8) -> Result<Vec<u8>> {
+    let icmp = build_icmpv4_echo_payload(&frame);
+    build_ip_packet(
+        IpAddr::V4(frame.src_ip),
+        IpAddr::V4(frame.dst_ip),
+        icmp.len(),
+        ttl,
+        IpNumber::ICMP,
+        |_ip_kind, bytes| {
+            bytes.extend_from_slice(&icmp);
+            Ok(())
+        },
+    )
+}
+
+pub fn build_icmpv6_echo_ip_packet(frame: Icmpv6EchoFrame<'_>, hop_limit: u8) -> Result<Vec<u8>> {
+    let icmp = build_icmpv6_echo_payload(&frame);
+    build_ip_packet(
+        IpAddr::V6(frame.src_ip),
+        IpAddr::V6(frame.dst_ip),
+        icmp.len(),
+        hop_limit,
         IpNumber::IPV6_ICMP,
         |_ip_kind, bytes| {
             bytes.extend_from_slice(&icmp);
@@ -616,6 +630,32 @@ where
 
 fn internet_checksum(bytes: &[u8]) -> u16 {
     finalize_checksum(checksum_sum(bytes))
+}
+
+fn build_icmpv4_echo_payload(frame: &Icmpv4EchoFrame<'_>) -> Vec<u8> {
+    let mut icmp = Vec::with_capacity(8 + frame.payload.len());
+    icmp.push(frame.icmp_type);
+    icmp.push(frame.code);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&frame.identifier.to_be_bytes());
+    icmp.extend_from_slice(&frame.sequence.to_be_bytes());
+    icmp.extend_from_slice(frame.payload);
+    let checksum = internet_checksum(&icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+    icmp
+}
+
+fn build_icmpv6_echo_payload(frame: &Icmpv6EchoFrame<'_>) -> Vec<u8> {
+    let mut icmp = Vec::with_capacity(8 + frame.payload.len());
+    icmp.push(frame.icmp_type);
+    icmp.push(frame.code);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&frame.identifier.to_be_bytes());
+    icmp.extend_from_slice(&frame.sequence.to_be_bytes());
+    icmp.extend_from_slice(frame.payload);
+    let checksum = icmpv6_checksum(frame.src_ip, frame.dst_ip, &icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+    icmp
 }
 
 fn checksum_sum(bytes: &[u8]) -> u32 {
