@@ -4,6 +4,10 @@ set -euo pipefail
 repo_root="/workspaces/childflow"
 cd "$repo_root"
 
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
+mkdir -p "$CARGO_TARGET_DIR"
+bin_path="$CARGO_TARGET_DIR/debug/childflow"
+
 ./docker/demo/wait-for-port.sh proxy-http 3128
 ./docker/demo/wait-for-port.sh proxy-https 3443
 
@@ -26,7 +30,7 @@ if curl --connect-timeout 3 -kfsS https://origin-https.demo:8443/ >/dev/null 2>&
   exit 1
 fi
 
-if ./target/debug/childflow \
+if "$bin_path" \
   -o "$tmpdir/http-auth-fail.pcapng" \
   -p http://proxy-http:3128 \
   -- \
@@ -35,7 +39,7 @@ if ./target/debug/childflow \
   exit 1
 fi
 
-if ./target/debug/childflow \
+if "$bin_path" \
   -o "$tmpdir/https-cert-fail.pcapng" \
   -p https://proxy-https:3443 \
   --proxy-user demo \
@@ -46,7 +50,7 @@ if ./target/debug/childflow \
   exit 1
 fi
 
-./target/debug/childflow \
+"$bin_path" \
   -o "$tmpdir/http-proxy.pcapng" \
   -p http://proxy-http:3128 \
   --proxy-user demo \
@@ -56,7 +60,7 @@ fi
 
 grep -q "origin-http-ok" "$http_proxy_output"
 
-./target/debug/childflow \
+"$bin_path" \
   -o "$tmpdir/https-proxy.pcapng" \
   -p https://proxy-https:3443 \
   --proxy-user demo \

@@ -662,7 +662,10 @@ fn ifreq_name_to_string(raw_name: &[nix::libc::c_char; nix::libc::IFNAMSIZ]) -> 
         .iter()
         .position(|ch| *ch == 0)
         .unwrap_or(raw_name.len());
-    let bytes = raw_name[..end].to_vec();
+    let bytes = raw_name[..end]
+        .iter()
+        .map(|&ch| ch.to_ne_bytes()[0])
+        .collect();
     String::from_utf8(bytes)
         .map_err(|err| anyhow!("kernel returned a non-UTF8 tap device name: {err}"))
 }
