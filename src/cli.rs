@@ -5,6 +5,8 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use clap::Parser;
 
+use crate::network::NetworkBackend;
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "childflow",
@@ -16,7 +18,15 @@ use clap::Parser;
 pub struct Cli {
     /// Write only the target command tree's traffic as pcapng.
     #[arg(short = 'o', long = "output")]
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
+
+    /// Select the networking backend. `rootless-internal` is experimental and under construction.
+    #[arg(
+        long = "network-backend",
+        value_enum,
+        default_value_t = NetworkBackend::Rootful
+    )]
+    pub network_backend: NetworkBackend,
 
     /// Force DNS traffic for the child tree to this IPv4 or IPv6 resolver.
     #[arg(short = 'd', long = "dns")]
@@ -53,6 +63,28 @@ impl Cli {
             bail!("missing command to execute");
         }
 
+        if matches!(self.network_backend, NetworkBackend::RootlessInternal) {
+            if self.output.is_some() {
+                bail!(
+                    "`--output` is not yet supported by the `rootless-internal` backend because the current packet capture path is rootful-only"
+                );
+            }
+
+            if self.iface.is_some() {
+                bail!("`--iface` is not supported by the `rootless-internal` backend");
+            }
+
+            if self.proxy.is_some()
+                || self.proxy_user.is_some()
+                || self.proxy_password.is_some()
+                || self.proxy_insecure
+            {
+                bail!(
+                    "transparent proxy options (`--proxy`, `--proxy-user`, `--proxy-password`, `--proxy-insecure`) are not yet supported by the `rootless-internal` backend"
+                );
+            }
+        }
+
         if self.proxy_user.is_some() != self.proxy_password.is_some() {
             bail!("`--proxy-user` and `--proxy-password` must be provided together");
         }
@@ -68,6 +100,17 @@ impl Cli {
             )
         {
             bail!("`--proxy-insecure` is only valid with an `https://` upstream proxy");
+        }
+
+        match self.network_backend {
+            NetworkBackend::Rootful => {
+                if self.output.is_none() {
+                    bail!(
+                        "`--output` is required with the `rootful` backend because packet capture currently depends on the host-side veth capture path"
+                    );
+                }
+            }
+            NetworkBackend::RootlessInternal => {}
         }
 
         Ok(())
@@ -189,7 +232,8 @@ mod tests {
     #[test]
     fn validate_requires_complete_proxy_credentials() {
         let cli = Cli {
-            output: PathBuf::from("out.pcapng"),
+            output: Some(PathBuf::from("out.pcapng")),
+            network_backend: NetworkBackend::Rootful,
             dns: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: Some("alice".into()),
@@ -205,7 +249,8 @@ mod tests {
     #[test]
     fn validate_rejects_proxy_insecure_for_non_https_proxy() {
         let cli = Cli {
-            output: PathBuf::from("out.pcapng"),
+            output: Some(PathBuf::from("out.pcapng")),
+            network_backend: NetworkBackend::Rootful,
             dns: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: None,
@@ -216,5 +261,80 @@ mod tests {
         };
 
         assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_requires_output_for_rootful_backend() {
+        let cli = Cli {
+            output: None,
+            network_backend: NetworkBackend::Rootful,
+            dns: None,
+            proxy: None,
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("`--output` is required"));
+    }
+
+    #[test]
+    fn validate_rejects_rootless_internal_iface() {
+        let cli = Cli {
+            output: None,
+            network_backend: NetworkBackend::RootlessInternal,
+            dns: None,
+            proxy: None,
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: Some("eth0".into()),
+            command: vec!["curl".into()],
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("rootless-internal"));
+        assert!(err.to_string().contains("`--iface`"));
+    }
+
+    #[test]
+    fn validate_rejects_rootless_internal_proxy_options() {
+        let cli = Cli {
+            output: None,
+            network_backend: NetworkBackend::RootlessInternal,
+            dns: None,
+            proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("rootless-internal"));
+        assert!(err.to_string().contains("transparent proxy options"));
+    }
+
+    #[test]
+    fn validate_rejects_rootless_internal_output() {
+        let cli = Cli {
+            output: Some(PathBuf::from("out.pcapng")),
+            network_backend: NetworkBackend::RootlessInternal,
+            dns: None,
+            proxy: None,
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("rootless-internal"));
+        assert!(err.to_string().contains("`--output`"));
     }
 }

@@ -12,7 +12,7 @@ use nix::libc;
 use openssl::ssl::{HandshakeError, SslConnector, SslMethod, SslStream, SslVerifyMode};
 use socket2::{Domain, Protocol, Socket, Type};
 
-use crate::cli::ProxyType;
+use crate::cli::{Cli, ProxyScheme, ProxyType};
 
 #[derive(Clone)]
 pub struct ProxyServer {
@@ -45,6 +45,40 @@ pub struct TproxyHandle {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<Result<()>>>,
     listen_port: u16,
+}
+
+pub struct TransparentProxyPlan {
+    upstream: ProxyUpstreamConfig,
+}
+
+impl TransparentProxyPlan {
+    pub fn from_cli(cli: &Cli) -> Option<Self> {
+        let proxy_spec = cli.proxy.clone()?;
+
+        Some(Self {
+            upstream: ProxyUpstreamConfig {
+                server: ProxyServer {
+                    host: proxy_spec.host,
+                    port: proxy_spec.port,
+                },
+                kind: match proxy_spec.scheme {
+                    ProxyScheme::Http | ProxyScheme::Https => ProxyType::Http,
+                    ProxyScheme::Socks5 => ProxyType::Socks5,
+                },
+                tls: matches!(proxy_spec.scheme, ProxyScheme::Https),
+                auth: match (cli.proxy_user.clone(), cli.proxy_password.clone()) {
+                    (Some(username), Some(password)) => Some(ProxyAuth { username, password }),
+                    _ => None,
+                },
+                insecure: cli.proxy_insecure,
+                bind_interface: cli.iface.clone(),
+            },
+        })
+    }
+
+    pub fn start(&self) -> Result<TproxyHandle> {
+        TproxyHandle::start(self.upstream.clone())
+    }
 }
 
 impl TproxyHandle {
@@ -93,7 +127,13 @@ impl TproxyHandle {
     fn stop_and_join(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(join) = self.join.take() {
-            let _ = join.join();
+            match join.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    crate::util::warn(format!("transparent proxy stopped with an error: {err:#}"));
+                }
+                Err(_) => crate::util::warn("transparent proxy thread panicked"),
+            }
         }
     }
 }

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - develop
+      - master
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "README.md"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/demo-test.yml"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "README.md"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/demo-test.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+jobs:
+  rust-ci:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test
