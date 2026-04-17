@@ -1,8 +1,9 @@
 use std::ffi::CString;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::os::fd::RawFd;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -24,7 +25,11 @@ impl NamespaceMode {
         match self {
             Self::Rootful => CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWNS,
             Self::RootlessInternal => {
-                CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWNS
+                let mut flags = CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWNS;
+                if unsafe { nix::libc::geteuid() } != 0 {
+                    flags |= CloneFlags::CLONE_NEWUSER;
+                }
+                flags
             }
         }
     }
@@ -37,8 +42,8 @@ pub enum ChildNetworkBootstrap {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootlessChildBootstrap {
-    pub tap_fd: RawFd,
     pub tap_name: String,
+    pub gateway_mac: [u8; 6],
     pub child_ipv4: Ipv4Addr,
     pub gateway_ipv4: Ipv4Addr,
     pub child_ipv6: Ipv6Addr,
@@ -50,6 +55,8 @@ pub struct RootlessChildBootstrap {
 pub fn child_enter_and_exec(
     mode: NamespaceMode,
     mut release_pipe: File,
+    mut ready_pipe: Option<File>,
+    tap_transfer: Option<UnixStream>,
     resolv_conf: Option<&Path>,
     network_bootstrap: Option<&ChildNetworkBootstrap>,
     command: &[String],
@@ -86,17 +93,37 @@ pub fn child_enter_and_exec(
         })?;
     }
 
-    let mut ready = [0_u8; 1];
-    let n = release_pipe
-        .read(&mut ready)
-        .context("failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed")?;
-    if n == 0 {
-        bail!("parent closed bootstrap pipe before namespace setup completed");
-    }
+    wait_for_parent_release(
+        &mut release_pipe,
+        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
+        "parent closed bootstrap pipe before namespace setup completed",
+    )?;
 
-    if let Some(bootstrap) = network_bootstrap {
-        apply_child_network_bootstrap(bootstrap)?;
-    }
+    let _network_guard = if let Some(bootstrap) = network_bootstrap {
+        let guard = apply_child_network_bootstrap(bootstrap)?;
+
+        if let (Some(tap_transfer), Some(tap_file)) = (tap_transfer.as_ref(), guard.as_ref()) {
+            crate::network::rootless_internal::tap::send_fd_over_stream(tap_transfer, tap_file)
+                .context("failed to pass the rootless tap fd back to the parent")?;
+        }
+
+        if let Some(ready_pipe) = ready_pipe.as_mut() {
+            use std::io::Write;
+
+            ready_pipe
+                .write_all(&[1])
+                .context("failed to notify the parent that rootless tap bootstrap completed")?;
+        }
+
+        wait_for_parent_release(
+            &mut release_pipe,
+            "failed while waiting for the parent to finish starting the rootless userspace networking engine",
+            "parent closed bootstrap pipe before the rootless userspace networking engine was ready",
+        )?;
+        guard
+    } else {
+        None
+    };
 
     let argv = command
         .iter()
@@ -119,18 +146,50 @@ pub fn child_enter_and_exec(
     unreachable!();
 }
 
+fn wait_for_parent_release(
+    release_pipe: &mut File,
+    read_context: &str,
+    eof_message: &str,
+) -> Result<()> {
+    let mut ready = [0_u8; 1];
+    let n = release_pipe
+        .read(&mut ready)
+        .with_context(|| read_context.to_string())?;
+    if n == 0 {
+        bail!(eof_message.to_string());
+    }
+    Ok(())
+}
+
 pub fn configure_user_namespace(child_pid: Pid) -> Result<()> {
     let pid = child_pid.as_raw();
     let uid = unsafe { nix::libc::geteuid() };
     let gid = unsafe { nix::libc::getegid() };
 
+    if uid == 0 {
+        crate::util::debug(
+            "skipping user namespace id-map setup for rootful parent; `rootless-internal` will continue with mount/net namespaces only in this environment",
+        );
+        return Ok(());
+    }
+
     let setgroups_path = format!("/proc/{pid}/setgroups");
     if Path::new(&setgroups_path).exists() {
-        std::fs::write(&setgroups_path, "deny\n").with_context(|| {
-            format!(
-                "failed to write `deny` to {setgroups_path}. Check whether this Linux environment permits configuring gid maps for new user namespaces"
-            )
-        })?;
+        match std::fs::write(&setgroups_path, "deny\n") {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied && uid == 0 => {
+                crate::util::debug(format!(
+                    "skipping `{setgroups_path}` write for rootful parent because the kernel/container runtime rejected `deny`: {err}"
+                ));
+            }
+            Err(err) => {
+                return Err(anyhow::Error::new(err)).with_context(|| {
+                    format!(
+                        "failed to write `deny` to {setgroups_path}. Check whether this Linux environment permits configuring gid maps for new user namespaces"
+                    )
+                });
+            }
+        }
     }
 
     let uid_map_path = format!("/proc/{pid}/uid_map");
@@ -150,26 +209,25 @@ pub fn configure_user_namespace(child_pid: Pid) -> Result<()> {
     Ok(())
 }
 
-fn apply_child_network_bootstrap(bootstrap: &ChildNetworkBootstrap) -> Result<()> {
+fn apply_child_network_bootstrap(bootstrap: &ChildNetworkBootstrap) -> Result<Option<File>> {
     match bootstrap {
         ChildNetworkBootstrap::RootlessInternal(config) => {
-            create_tap_device(config.tap_fd, &config.tap_name)?;
-            bring_rootless_child_links_up(config)
+            let (tap_file, actual_tap_name) = create_tap_device(&config.tap_name)?;
+            bring_rootless_child_links_up(config, &actual_tap_name)?;
+            Ok(Some(tap_file))
         }
     }
 }
 
-fn bring_rootless_child_links_up(config: &RootlessChildBootstrap) -> Result<()> {
+fn bring_rootless_child_links_up(config: &RootlessChildBootstrap, tap_name: &str) -> Result<()> {
+    let gateway_mac = render_mac(config.gateway_mac);
+
     crate::util::run_command("ip", route::lo_up_args())
         .context("failed to bring loopback up inside the rootless-internal child namespace")?;
 
     crate::util::run_command(
         "ip",
-        route::addr_add_v4_args(
-            &config.tap_name,
-            config.child_ipv4,
-            config.child_ipv4_prefix_len,
-        ),
+        route::addr_add_v4_args(tap_name, config.child_ipv4, config.child_ipv4_prefix_len),
     )
     .context(
         "failed to assign IPv4 address to tap0 inside the rootless-internal child namespace",
@@ -177,35 +235,50 @@ fn bring_rootless_child_links_up(config: &RootlessChildBootstrap) -> Result<()> 
 
     crate::util::run_command(
         "ip",
-        route::addr_add_v6_args(
-            &config.tap_name,
-            config.child_ipv6,
-            config.child_ipv6_prefix_len,
-        ),
+        route::addr_add_v6_args(tap_name, config.child_ipv6, config.child_ipv6_prefix_len),
     )
     .context(
         "failed to assign IPv6 address to tap0 inside the rootless-internal child namespace",
     )?;
 
-    crate::util::run_command("ip", route::link_up_args(&config.tap_name))
+    crate::util::run_command("ip", route::link_up_args(tap_name))
         .context("failed to bring tap0 up inside the rootless-internal child namespace")?;
 
     crate::util::run_command(
         "ip",
-        route::default_route_v4_args(config.gateway_ipv4, &config.tap_name),
+        route::neigh_add_v4_args(config.gateway_ipv4, &gateway_mac, tap_name),
+    )
+    .context("failed to install the IPv4 gateway neighbor entry for tap0 inside the rootless-internal child namespace")?;
+
+    crate::util::run_command(
+        "ip",
+        route::neigh_add_v6_args(config.gateway_ipv6, &gateway_mac, tap_name),
+    )
+    .context("failed to install the IPv6 gateway neighbor entry for tap0 inside the rootless-internal child namespace")?;
+
+    crate::util::run_command(
+        "ip",
+        route::default_route_v4_args(config.gateway_ipv4, tap_name),
     )
     .context("failed to install IPv4 default route for the rootless-internal child namespace")?;
 
     crate::util::run_command(
         "ip",
-        route::default_route_v6_args(config.gateway_ipv6, &config.tap_name),
+        route::default_route_v6_args(config.gateway_ipv6, tap_name),
     )
     .context("failed to install IPv6 default route for the rootless-internal child namespace")?;
 
     Ok(())
 }
 
-fn create_tap_device(fd: RawFd, name: &str) -> Result<()> {
+fn render_mac(mac: [u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+fn create_tap_device(name: &str) -> Result<(File, String)> {
     if name.is_empty() {
         bail!("tap device name must not be empty");
     }
@@ -216,24 +289,30 @@ fn create_tap_device(fd: RawFd, name: &str) -> Result<()> {
         );
     }
 
-    #[repr(C)]
-    struct IfReq {
-        name: [nix::libc::c_char; nix::libc::IFNAMSIZ],
-        flags: nix::libc::c_short,
-        padding: [u8; 22],
-    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/net/tun")
+        .context("failed to open `/dev/net/tun` while creating the rootless-internal tap inside the child namespace")?;
 
-    let mut ifreq = IfReq {
-        name: [0; nix::libc::IFNAMSIZ],
-        flags: (nix::libc::IFF_TAP | nix::libc::IFF_NO_PI) as nix::libc::c_short,
-        padding: [0; 22],
+    let mut ifreq = nix::libc::ifreq {
+        ifr_name: [0; nix::libc::IFNAMSIZ],
+        ifr_ifru: nix::libc::__c_anonymous_ifr_ifru {
+            ifru_flags: (nix::libc::IFF_TAP | nix::libc::IFF_NO_PI) as nix::libc::c_short,
+        },
     };
 
     for (idx, byte) in name.as_bytes().iter().enumerate() {
-        ifreq.name[idx] = *byte as nix::libc::c_char;
+        ifreq.ifr_name[idx] = *byte as nix::libc::c_char;
     }
 
-    let rc = unsafe { nix::libc::ioctl(fd, nix::libc::TUNSETIFF as _, &ifreq) };
+    let rc = unsafe {
+        nix::libc::ioctl(
+            std::os::fd::AsRawFd::as_raw_fd(&file),
+            nix::libc::TUNSETIFF as _,
+            &mut ifreq,
+        )
+    };
     if rc < 0 {
         return Err(anyhow::Error::new(std::io::Error::last_os_error())).context(
             format!(
@@ -242,5 +321,23 @@ fn create_tap_device(fd: RawFd, name: &str) -> Result<()> {
         );
     }
 
-    Ok(())
+    let actual_name = ifreq_name_to_string(&ifreq.ifr_name)?;
+    if actual_name.is_empty() {
+        bail!("kernel returned an empty tap device name after TUNSETIFF");
+    }
+
+    Ok((file, actual_name))
+}
+
+fn ifreq_name_to_string(raw_name: &[nix::libc::c_char; nix::libc::IFNAMSIZ]) -> Result<String> {
+    let end = raw_name
+        .iter()
+        .position(|ch| *ch == 0)
+        .unwrap_or(raw_name.len());
+    let bytes = raw_name[..end]
+        .iter()
+        .map(|ch| *ch as u8)
+        .collect::<Vec<_>>();
+    String::from_utf8(bytes)
+        .map_err(|err| anyhow!("kernel returned a non-UTF8 tap device name: {err}"))
 }

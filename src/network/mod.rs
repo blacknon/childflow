@@ -69,7 +69,7 @@ pub fn setup(
     cli: &Cli,
     dns_plan: &DnsPlan,
     tproxy_port: Option<u16>,
-    child_bootstrap: &ChildBootstrap,
+    child_bootstrap: &mut ChildBootstrap,
 ) -> Result<NetworkContext> {
     match cli.network_backend {
         NetworkBackend::Rootful => {

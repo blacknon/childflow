@@ -1,5 +1,8 @@
 pub mod addr;
+pub mod engine;
+pub mod packet;
 pub mod route;
+pub mod state;
 pub mod tap;
 
 use anyhow::{Context, Result};
@@ -12,20 +15,30 @@ use crate::namespace;
 use super::types::NetworkPlan;
 
 pub struct ChildBootstrap {
-    tap: tap::TapHandle,
+    tap: Option<tap::TapHandle>,
     addr_plan: addr::AddressPlan,
 }
 
 impl ChildBootstrap {
     pub fn prepare(plan: &NetworkPlan) -> Result<Self> {
         let addr_plan = addr::AddressPlan::from_network_plan(plan);
-        let tap = tap::TapHandle::preopen(addr_plan.tap_name.clone())?;
-
-        Ok(Self { tap, addr_plan })
+        Ok(Self {
+            tap: None,
+            addr_plan,
+        })
     }
 
     pub fn namespace_bootstrap(&self) -> namespace::ChildNetworkBootstrap {
-        self.tap.child_bootstrap(&self.addr_plan)
+        namespace::ChildNetworkBootstrap::RootlessInternal(namespace::RootlessChildBootstrap {
+            tap_name: self.addr_plan.tap_name.clone(),
+            gateway_mac: self.addr_plan.gateway_mac,
+            child_ipv4: self.addr_plan.child_ipv4,
+            gateway_ipv4: self.addr_plan.gateway_ipv4,
+            child_ipv6: self.addr_plan.child_ipv6,
+            gateway_ipv6: self.addr_plan.gateway_ipv6,
+            child_ipv4_prefix_len: self.addr_plan.child_ipv4_prefix_len,
+            child_ipv6_prefix_len: self.addr_plan.child_ipv6_prefix_len,
+        })
     }
 
     pub fn addr_plan(&self) -> &addr::AddressPlan {
@@ -33,21 +46,33 @@ impl ChildBootstrap {
     }
 
     pub fn tap_name(&self) -> &str {
-        self.tap.name()
+        &self.addr_plan.tap_name
+    }
+
+    pub fn set_tap(&mut self, tap: tap::TapHandle) {
+        self.tap = Some(tap);
+    }
+
+    pub fn take_tap(&mut self) -> tap::TapHandle {
+        self.tap
+            .take()
+            .expect("rootless tap handle must be populated before engine startup")
     }
 }
 
 pub struct RuntimeInfo {
     pub tap_name: String,
+    pub gateway_mac: [u8; 6],
     pub gateway_ipv4: std::net::Ipv4Addr,
     pub child_ipv4: std::net::Ipv4Addr,
     pub gateway_ipv6: std::net::Ipv6Addr,
     pub child_ipv6: std::net::Ipv6Addr,
-    pub dns_local_forwarder_expected: bool,
+    pub dns_upstream: Option<std::net::IpAddr>,
 }
 
 pub struct NetworkContext {
     runtime: RuntimeInfo,
+    _engine: engine::EngineHandle,
 }
 
 impl NetworkContext {
@@ -63,26 +88,36 @@ impl NetworkContext {
 pub fn setup(
     _plan: &NetworkPlan,
     _run_id: &str,
-    child_pid: Pid,
+    _child_pid: Pid,
     _cli: &Cli,
     dns_plan: &DnsPlan,
     _tproxy_port: Option<u16>,
-    child_bootstrap: &ChildBootstrap,
+    child_bootstrap: &mut ChildBootstrap,
 ) -> Result<NetworkContext> {
-    namespace::configure_user_namespace(child_pid).context(
-        "failed to configure the child user namespace for the `rootless-internal` backend",
-    )?;
+    let addr_plan = child_bootstrap.addr_plan().clone();
+    let tap_name = child_bootstrap.tap_name().to_string();
+    let dns_upstream = dns_plan.rootless_upstream();
+    let engine = engine::EngineHandle::start(
+        child_bootstrap.take_tap(),
+        addr_plan.clone(),
+        engine::EngineConfig {
+            dns_upstream,
+            allow_ipv6_outbound: engine::detect_ipv6_outbound(),
+        },
+    )
+    .context("failed to start the rootless-internal userspace networking engine")?;
 
-    let addr_plan = child_bootstrap.addr_plan();
     Ok(NetworkContext {
         runtime: RuntimeInfo {
-            tap_name: child_bootstrap.tap_name().to_string(),
+            tap_name,
+            gateway_mac: addr_plan.gateway_mac,
             gateway_ipv4: addr_plan.gateway_ipv4,
             child_ipv4: addr_plan.child_ipv4,
             gateway_ipv6: addr_plan.gateway_ipv6,
             child_ipv6: addr_plan.child_ipv6,
-            dns_local_forwarder_expected: dns_plan.expects_local_forwarder(),
+            dns_upstream,
         },
+        _engine: engine,
     })
 }
 
@@ -97,15 +132,17 @@ mod tests {
         let addr_plan = addr::AddressPlan::from_network_plan(&plan);
         let runtime = RuntimeInfo {
             tap_name: "tap0".into(),
+            gateway_mac: addr_plan.gateway_mac,
             gateway_ipv4: addr_plan.gateway_ipv4,
             child_ipv4: addr_plan.child_ipv4,
             gateway_ipv6: addr_plan.gateway_ipv6,
             child_ipv6: addr_plan.child_ipv6,
-            dns_local_forwarder_expected: true,
+            dns_upstream: Some("1.1.1.1".parse().unwrap()),
         };
 
         assert_eq!(runtime.tap_name, "tap0");
-        assert!(runtime.dns_local_forwarder_expected);
+        assert_eq!(runtime.gateway_mac, addr_plan.gateway_mac);
+        assert_eq!(runtime.dns_upstream, Some("1.1.1.1".parse().unwrap()));
         assert_eq!(runtime.gateway_ipv4, plan.host_ipv4);
         assert_eq!(runtime.child_ipv6, plan.child_ipv6);
     }

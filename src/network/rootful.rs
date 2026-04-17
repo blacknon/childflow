@@ -477,12 +477,12 @@ impl NetworkContext {
             return Ok(());
         };
 
-        let route_info = discover_default_route_for_interface(iface).with_context(|| {
+        let route_info = discover_default_route_for_interface(&iface).with_context(|| {
             format!(
                 "failed to discover the IPv4 default route for interface {iface}. Check `ip route show default dev {iface}` on the host"
             )
         })?;
-        let route6_info = discover_default_route6_for_interface(iface).with_context(|| {
+        let route6_info = discover_default_route6_for_interface(&iface).with_context(|| {
             format!(
                 "failed to discover the IPv6 default route for interface {iface}. Check `ip -6 route show default dev {iface}` on the host"
             )

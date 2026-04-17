@@ -103,17 +103,17 @@ mod tests {
     fn allocate_ipv4_subnet_uses_a_private_slash30() {
         let (host, child, cidr) = allocate_ipv4_subnet(0x1234_5678);
 
-        assert_eq!(host, Ipv4Addr::new(10, 240, 0x56, 0x38 + 1));
-        assert_eq!(child, Ipv4Addr::new(10, 240, 0x56, 0x38 + 2));
-        assert_eq!(cidr, "10.240.86.56/30");
+        assert_eq!(host, Ipv4Addr::new(10, 240, 0x56, 0xe0 + 1));
+        assert_eq!(child, Ipv4Addr::new(10, 240, 0x56, 0xe0 + 2));
+        assert_eq!(cidr, "10.240.86.224/30");
     }
 
     #[test]
     fn allocate_ipv6_subnet_uses_a_unique_ula_prefix() {
         let (host, child, cidr) = allocate_ipv6_subnet(0x1234_5678);
 
-        assert_eq!(host, "fd42:1234:5678::1".parse().unwrap());
-        assert_eq!(child, "fd42:1234:5678::2".parse().unwrap());
+        assert_eq!(host, "fd42:1234:5678::1".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(child, "fd42:1234:5678::2".parse::<Ipv6Addr>().unwrap());
         assert_eq!(cidr, "fd42:1234:5678::/64");
     }
 }

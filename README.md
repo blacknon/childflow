@@ -21,7 +21,7 @@ Today, the default `rootful` backend creates a dedicated child network namespace
 
 The resulting capture is scoped to traffic from the target process tree rather than the whole host.
 
-The `rootless-internal` backend is still experimental and not yet functionally complete. Phase 2 adds `userns + netns + mountns`, `tap0`, child-side IPv4/IPv6 addressing, and default routes, but it does not yet provide an outbound relay engine.
+The `rootless-internal` backend is still experimental and not yet functionally complete. Phase 3 adds a minimal internal userspace relay engine so the child can use `tap0` for isolated execution, DNS relay, and outbound TCP without depending on `pasta` or `slirp4netns`.
 
 ## Requirements
 
@@ -120,7 +120,8 @@ Backend notes:
 - `rootful` currently requires `--output`
 - `rootless-internal` currently rejects `--output`, `--iface`, and transparent proxy related options because those paths are not implemented yet
 - `rootless-internal` is experimental and under construction
-- at this phase, `rootless-internal` can build the child-side network foundation, but `curl https://example.com` is still expected to wait for later phases
+- at this phase, `rootless-internal` supports child isolation, child-side DNS override plumbing, outbound TCP, and DNS UDP relay
+- non-DNS UDP, transparent proxy / TPROXY, `--iface`, and the current AF_PACKET capture path are still intentionally unsupported on `rootless-internal`
 
 Examples:
 
@@ -135,6 +136,7 @@ sudo childflow -o capture.pcapng -p https://proxy.example.com:443 --proxy-user a
 sudo childflow -o capture.pcapng -p https://proxy.example.com:443 --proxy-insecure -- curl https://example.com
 sudo childflow -o capture.pcapng -i eth0 -- curl https://example.com
 childflow --network-backend rootless-internal -- true
+childflow --network-backend rootless-internal -d 1.1.1.1 -- curl https://example.com
 ```
 
 ## Backend Matrix
@@ -142,14 +144,15 @@ childflow --network-backend rootless-internal -- true
 | Feature | `rootful` | `rootless-internal` |
 | --- | --- | --- |
 | Isolated execution | Yes | Yes |
-| DNS override | Yes | Planned, child-side resolver path prepared |
-| Outbound TCP/UDP | Yes | Not yet supported |
+| DNS override | Yes | Yes, via child `resolv.conf` rewrite and internal DNS relay |
+| Outbound TCP | Yes | Yes |
+| UDP | Yes | DNS-only in phase 3 |
 | Explicit proxy path | Yes, via current transparent interception path | Not yet supported |
 | Transparent proxy / TPROXY | Yes | Not supported |
 | `--iface` | Yes | Not supported |
 | Current packet capture path | Yes | Not supported |
 | Namespace + `tap0` + child routes | Yes | Yes |
-| Status | Current backend | Experimental / phase-2 network foundation |
+| Status | Current backend | Experimental / phase-3 minimal relay engine |
 
 ## How It Works
 
@@ -163,7 +166,7 @@ childflow --network-backend rootless-internal -- true
 
 IPv4 and IPv6 are both provisioned inside the child namespace. DNS override accepts either family, and direct routing setup configures both IPv4 and IPv6 default paths.
 
-For `rootless-internal`, the current phase creates `tap0` and child-side routes only. The userspace relay engine that will move packets between that tap and the outside world is still a later phase.
+For `rootless-internal`, the current phase creates `tap0`, rewrites the child resolver to the internal gateway, relays DNS over UDP, and opens outbound TCP sockets from the parent-side userspace engine. Non-DNS UDP, transparent proxying, `--iface`, and the current AF_PACKET capture path remain later phases.
 
 ## Packet Capture Behavior
 
@@ -221,6 +224,7 @@ Typical checks:
 which ip iptables ip6tables
 sudo childflow -o /tmp/test.pcapng -- true
 childflow --network-backend rootless-internal -- true
+docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test
 sudo ip route show default
 sudo ip -6 route show default
 sudo iptables -t mangle -S
@@ -235,6 +239,10 @@ Common failures:
   rerun `rootful` with `sudo`; if this still fails inside a container or VM, verify the required capabilities are actually granted
 - `rootless-internal` preflight fails:
   check user namespace availability, `/dev/net/tun`, and whether the host exposes `/proc/self/ns/{user,net,mnt}`
+- `rootless-internal` reaches TCP destinations but DNS still fails:
+  verify the selected upstream resolver is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1` to inspect relay warnings
+- `rootless-internal` drops UDP traffic:
+  phase 3 only relays DNS over UDP; other UDP payloads are intentionally ignored with a warning
 - route discovery fails for `--iface`:
   check `ip route show default dev <iface>` and `ip -6 route show default dev <iface>` manually
 - namespace bootstrap fails:
@@ -258,7 +266,7 @@ Host conflicts to keep in mind:
 ## Limitations
 
 - Linux only
-- backend support is currently asymmetric: `rootful` is the working path, while `rootless-internal` is experimental and currently stops at namespace/tap/address/route foundation
+- backend support is currently asymmetric: `rootful` is still the feature-complete path, while `rootless-internal` is experimental and currently targets isolated execution plus DNS and outbound TCP first
 - direct traffic is dual-stack, but correctness still depends on the host having usable IPv4 and IPv6 upstream connectivity
 - packet capture is scoped to the child-side traffic visible on the host veth; it is not a full post-NAT or post-proxy observation point
 - proxy mode currently targets TCP traffic; non-TCP traffic is not transparently proxied by the TPROXY path

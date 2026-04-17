@@ -1,15 +1,15 @@
 FROM rust:1-trixie
 
-RUN apt-get update \
+RUN apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         iproute2 \
         iptables \
         tcpdump \
-        ca-certificates \
-        curl \
         pkg-config \
-        libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 WORKDIR /workspaces/childflow
 

@@ -26,7 +26,9 @@ mod util;
 #[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
-use std::io::Write;
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::UnixStream;
 #[cfg(target_os = "linux")]
 use std::process;
 #[cfg(target_os = "linux")]
@@ -81,6 +83,7 @@ fn real_main() -> Result<i32> {
     let child_bootstrap = network::prepare_child_bootstrap(&cli, &network_plan)?;
     let dns_plan = DnsPlan::prepare(
         &run_id,
+        cli.network_backend,
         cli.dns,
         network_plan.host_ipv4(),
         network_plan.host_ipv6(),
@@ -88,15 +91,24 @@ fn real_main() -> Result<i32> {
     let proxy_plan = TransparentProxyPlan::from_cli(&cli);
 
     let (read_fd, write_fd) = pipe().context("failed to create bootstrap pipe")?;
+    let (ready_read_fd, ready_write_fd) =
+        pipe().context("failed to create child bootstrap ready pipe")?;
+    let (tap_parent, tap_child) =
+        UnixStream::pair().context("failed to create rootless tap transfer socket pair")?;
 
     match unsafe { fork().context("fork failed")? } {
         ForkResult::Child => {
             drop(write_fd);
+            drop(ready_read_fd);
+            drop(tap_parent);
             let read_file = File::from(read_fd);
+            let ready_file = File::from(ready_write_fd);
             let child_network_bootstrap = child_bootstrap.namespace_bootstrap();
             if let Err(err) = namespace::child_enter_and_exec(
                 namespace_mode,
                 read_file,
+                child_network_bootstrap.as_ref().map(|_| ready_file),
+                child_network_bootstrap.as_ref().map(|_| tap_child),
                 dns_plan.resolv_conf_path(),
                 child_network_bootstrap.as_ref(),
                 &cli.command,
@@ -109,22 +121,77 @@ fn real_main() -> Result<i32> {
         }
         ForkResult::Parent { child } => {
             drop(read_fd);
+            drop(ready_write_fd);
+            drop(tap_child);
             let mut release_file = File::from(write_fd);
+            let mut ready_file = File::from(ready_read_fd);
+            let mut child_bootstrap = child_bootstrap;
 
-            let runtime = ParentRuntime::start(
-                &run_id,
-                child,
-                &cli,
-                &network_plan,
-                &dns_plan,
-                proxy_plan.as_ref(),
-                &child_bootstrap,
-            )?;
+            let runtime = match cli.network_backend {
+                NetworkBackend::Rootful => {
+                    let runtime = ParentRuntime::start(
+                        &run_id,
+                        child,
+                        &cli,
+                        &network_plan,
+                        &dns_plan,
+                        proxy_plan.as_ref(),
+                        &mut child_bootstrap,
+                    )?;
 
-            release_file
-                .write_all(&[1])
-                .context("failed to release child after namespace bootstrap")?;
-            drop(release_file);
+                    release_file
+                        .write_all(&[1])
+                        .context("failed to release child after namespace bootstrap")?;
+                    drop(ready_file);
+                    drop(release_file);
+                    runtime
+                }
+                NetworkBackend::RootlessInternal => {
+                    namespace::configure_user_namespace(child).context(
+                        "failed to configure the child user namespace for the `rootless-internal` backend",
+                    )?;
+
+                    release_file
+                        .write_all(&[1])
+                        .context("failed to release child for rootless tap bootstrap")?;
+
+                    let mut ready = [0_u8; 1];
+                    ready_file
+                        .read_exact(&mut ready)
+                        .context("failed to wait for the child to finish rootless tap bootstrap")?;
+                    drop(ready_file);
+
+                    match &mut child_bootstrap {
+                        network::ChildBootstrap::RootlessInternal(bootstrap) => {
+                            let tap = network::rootless_internal::tap::TapHandle::receive_from_stream(
+                                &tap_parent,
+                                bootstrap.tap_name(),
+                            )
+                            .context("failed to receive the rootless tap fd from the child")?;
+                            bootstrap.set_tap(tap);
+                        }
+                        network::ChildBootstrap::Rootful => unreachable!(
+                            "rootless-internal backend must not be paired with rootful child bootstrap"
+                        ),
+                    }
+
+                    let runtime = ParentRuntime::start(
+                        &run_id,
+                        child,
+                        &cli,
+                        &network_plan,
+                        &dns_plan,
+                        proxy_plan.as_ref(),
+                        &mut child_bootstrap,
+                    )?;
+
+                    release_file
+                        .write_all(&[1])
+                        .context("failed to release child after starting the rootless userspace networking engine")?;
+                    drop(release_file);
+                    runtime
+                }
+            };
 
             let status = waitpid(child, None).context("waitpid failed")?;
 
@@ -155,7 +222,7 @@ impl ParentRuntime {
         network_plan: &network::NetworkPlan,
         dns_plan: &DnsPlan,
         proxy_plan: Option<&TransparentProxyPlan>,
-        child_bootstrap: &network::ChildBootstrap,
+        child_bootstrap: &mut network::ChildBootstrap,
     ) -> Result<Self> {
         let cgroup = match cli.network_backend {
             NetworkBackend::Rootful => Some(

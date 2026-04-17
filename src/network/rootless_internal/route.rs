@@ -55,6 +55,35 @@ pub fn default_route_v6_args(gateway: Ipv6Addr, iface: &str) -> Vec<String> {
     ]
 }
 
+pub fn neigh_add_v4_args(neighbor: Ipv4Addr, mac: &str, iface: &str) -> Vec<String> {
+    vec![
+        "neigh".into(),
+        "add".into(),
+        neighbor.to_string(),
+        "lladdr".into(),
+        mac.into(),
+        "dev".into(),
+        iface.into(),
+        "nud".into(),
+        "permanent".into(),
+    ]
+}
+
+pub fn neigh_add_v6_args(neighbor: Ipv6Addr, mac: &str, iface: &str) -> Vec<String> {
+    vec![
+        "-6".into(),
+        "neigh".into(),
+        "add".into(),
+        neighbor.to_string(),
+        "lladdr".into(),
+        mac.into(),
+        "dev".into(),
+        iface.into(),
+        "nud".into(),
+        "permanent".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +109,39 @@ mod tests {
         assert_eq!(
             default_route_v6_args("fd42::1".parse().unwrap(), "tap0"),
             vec!["-6", "route", "add", "default", "via", "fd42::1", "dev", "tap0"]
+        );
+    }
+
+    #[test]
+    fn neigh_helpers_render_static_neighbors() {
+        assert_eq!(
+            neigh_add_v4_args(Ipv4Addr::new(10, 0, 0, 1), "02:cf:00:00:00:01", "tap0"),
+            vec![
+                "neigh",
+                "add",
+                "10.0.0.1",
+                "lladdr",
+                "02:cf:00:00:00:01",
+                "dev",
+                "tap0",
+                "nud",
+                "permanent"
+            ]
+        );
+        assert_eq!(
+            neigh_add_v6_args("fd42::1".parse().unwrap(), "02:cf:00:00:00:01", "tap0"),
+            vec![
+                "-6",
+                "neigh",
+                "add",
+                "fd42::1",
+                "lladdr",
+                "02:cf:00:00:00:01",
+                "dev",
+                "tap0",
+                "nud",
+                "permanent"
+            ]
         );
     }
 }

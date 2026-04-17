@@ -18,6 +18,20 @@ cargo build
 
 The development image includes `libssl-dev` and `pkg-config` because HTTPS upstream proxy support now depends on OpenSSL through `native-tls`.
 
+## Run tests
+
+```bash
+cargo test
+```
+
+For the experimental stage-3 rootless backend, a useful smoke check is:
+
+```bash
+cargo run -- --network-backend rootless-internal -- curl https://example.com
+```
+
+If the image build fails during `apt-get install` with a message about free space in `/var/cache/apt/archives`, first retry after rebuilding with the current Dockerfile. If your Docker host or Docker Desktop VM is still short on disk, reclaim space with your usual Docker cleanup flow before rerunning the compose command.
+
 ## Run a quick example
 
 ```bash

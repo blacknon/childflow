@@ -82,7 +82,7 @@ fn collect_rootless_internal_issues(path_env: &OsStr) -> Vec<String> {
             "`/proc/sys/user/max_user_namespaces` is `0`; enable user namespaces before using the `rootless-internal` backend".to_string(),
         ),
         Ok(Some(_)) | Ok(None) => {}
-        Err(err) => issues.push(err),
+        Err(err) => issues.push(err.to_string()),
     }
 
     if unsafe { nix::libc::geteuid() } != 0 {
@@ -91,13 +91,13 @@ fn collect_rootless_internal_issues(path_env: &OsStr) -> Vec<String> {
                 "`/proc/sys/kernel/unprivileged_userns_clone` is disabled; enable unprivileged user namespaces or run with sufficient privileges".to_string(),
             ),
             Ok(Some(_)) | Ok(None) => {}
-            Err(err) => issues.push(err),
+            Err(err) => issues.push(err.to_string()),
         }
     }
 
     match check_tun_device("/dev/net/tun") {
         Ok(()) => {}
-        Err(err) => issues.push(err),
+        Err(err) => issues.push(err.to_string()),
     }
 
     issues

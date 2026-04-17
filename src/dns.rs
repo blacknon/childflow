@@ -10,35 +10,30 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::network::NetworkBackend;
+
 pub struct DnsPlan {
     resolv_guard: Option<TempFileGuard>,
-    upstream: Option<IpAddr>,
+    rootful_upstream: Option<IpAddr>,
+    rootless_upstream: Option<IpAddr>,
 }
 
 impl DnsPlan {
     pub fn prepare(
         run_id: &str,
+        backend: NetworkBackend,
         dns: Option<IpAddr>,
         inherited_dns_ipv4: Ipv4Addr,
         inherited_dns_ipv6: Ipv6Addr,
     ) -> Result<Self> {
-        if let Some(dns) = dns {
-            let content = format!("nameserver {dns}\noptions timeout:1 attempts:1\n");
-            return Ok(Self {
-                resolv_guard: maybe_write_resolv_conf(run_id, &content)?,
-                upstream: None,
-            });
+        match backend {
+            NetworkBackend::Rootful => {
+                prepare_rootful_dns_plan(run_id, dns, inherited_dns_ipv4, inherited_dns_ipv6)
+            }
+            NetworkBackend::RootlessInternal => {
+                prepare_rootless_dns_plan(run_id, dns, inherited_dns_ipv4, inherited_dns_ipv6)
+            }
         }
-
-        let host_resolv = std::fs::read_to_string("/etc/resolv.conf")
-            .context("failed to read /etc/resolv.conf")?;
-        let inherited =
-            build_inherited_dns_config(&host_resolv, inherited_dns_ipv4, inherited_dns_ipv6)?;
-
-        Ok(Self {
-            resolv_guard: maybe_write_resolv_conf(run_id, &inherited.resolv_conf)?,
-            upstream: Some(inherited.upstream),
-        })
     }
 
     pub fn resolv_conf_path(&self) -> Option<&Path> {
@@ -50,13 +45,13 @@ impl DnsPlan {
         bind_ipv4: Ipv4Addr,
         bind_ipv6: Ipv6Addr,
     ) -> Result<Option<DnsHandle>> {
-        self.upstream
+        self.rootful_upstream
             .map(|upstream| DnsHandle::start(bind_ipv4, bind_ipv6, upstream))
             .transpose()
     }
 
-    pub fn expects_local_forwarder(&self) -> bool {
-        self.upstream.is_some()
+    pub fn rootless_upstream(&self) -> Option<IpAddr> {
+        self.rootless_upstream
     }
 }
 
@@ -240,12 +235,72 @@ fn maybe_write_resolv_conf(run_id: &str, content: &str) -> Result<Option<TempFil
     Ok(Some(TempFileGuard { path }))
 }
 
+fn prepare_rootful_dns_plan(
+    run_id: &str,
+    dns: Option<IpAddr>,
+    inherited_dns_ipv4: Ipv4Addr,
+    inherited_dns_ipv6: Ipv6Addr,
+) -> Result<DnsPlan> {
+    if let Some(dns) = dns {
+        let content = format!("nameserver {dns}\noptions timeout:1 attempts:1\n");
+        return Ok(DnsPlan {
+            resolv_guard: maybe_write_resolv_conf(run_id, &content)?,
+            rootful_upstream: None,
+            rootless_upstream: None,
+        });
+    }
+
+    let host_resolv =
+        std::fs::read_to_string("/etc/resolv.conf").context("failed to read /etc/resolv.conf")?;
+    let inherited =
+        build_inherited_dns_config(&host_resolv, inherited_dns_ipv4, inherited_dns_ipv6)?;
+
+    Ok(DnsPlan {
+        resolv_guard: maybe_write_resolv_conf(run_id, &inherited.resolv_conf)?,
+        rootful_upstream: Some(inherited.upstream),
+        rootless_upstream: None,
+    })
+}
+
+fn prepare_rootless_dns_plan(
+    run_id: &str,
+    dns: Option<IpAddr>,
+    gateway_ipv4: Ipv4Addr,
+    gateway_ipv6: Ipv6Addr,
+) -> Result<DnsPlan> {
+    let (upstream, resolv_conf) = if let Some(dns) = dns {
+        (
+            dns,
+            render_gateway_resolv_conf(&[], gateway_ipv4, gateway_ipv6, true),
+        )
+    } else {
+        let host_resolv = std::fs::read_to_string("/etc/resolv.conf")
+            .context("failed to read /etc/resolv.conf")?;
+        let inherited = build_inherited_dns_config(&host_resolv, gateway_ipv4, gateway_ipv6)?;
+        (
+            inherited.upstream,
+            render_gateway_resolv_conf(
+                &inherited.preserved_lines,
+                gateway_ipv4,
+                gateway_ipv6,
+                false,
+            ),
+        )
+    };
+
+    Ok(DnsPlan {
+        resolv_guard: maybe_write_resolv_conf(run_id, &resolv_conf)?,
+        rootful_upstream: None,
+        rootless_upstream: Some(upstream),
+    })
+}
+
 fn build_inherited_dns_config(
     host_resolv: &str,
     inherited_dns_ipv4: Ipv4Addr,
     inherited_dns_ipv6: Ipv6Addr,
 ) -> Result<InheritedDnsConfig> {
-    let mut output = Vec::new();
+    let mut preserved_lines = Vec::new();
     let mut upstream = None;
 
     for line in host_resolv.lines() {
@@ -265,29 +320,45 @@ fn build_inherited_dns_config(
             || trimmed.starts_with("domain ")
             || trimmed.starts_with("options ")
         {
-            output.push(trimmed.to_string());
+            preserved_lines.push(trimmed.to_string());
         }
     }
 
     let upstream = upstream
         .ok_or_else(|| anyhow::anyhow!("no usable nameserver found in /etc/resolv.conf"))?;
 
-    output.push(format!("nameserver {inherited_dns_ipv4}"));
-    output.push(format!("nameserver {inherited_dns_ipv6}"));
-    if !output.iter().any(|line| line.starts_with("options ")) {
-        output.push("options timeout:1 attempts:1".to_string());
-    }
-
     Ok(InheritedDnsConfig {
         upstream,
-        resolv_conf: format!("{}\n", output.join("\n")),
+        resolv_conf: render_gateway_resolv_conf(
+            &preserved_lines,
+            inherited_dns_ipv4,
+            inherited_dns_ipv6,
+            false,
+        ),
+        preserved_lines,
     })
+}
+
+fn render_gateway_resolv_conf(
+    preserved_lines: &[String],
+    gateway_ipv4: Ipv4Addr,
+    gateway_ipv6: Ipv6Addr,
+    force_default_options: bool,
+) -> String {
+    let mut output = preserved_lines.to_vec();
+    output.push(format!("nameserver {gateway_ipv4}"));
+    output.push(format!("nameserver {gateway_ipv6}"));
+    if force_default_options || !output.iter().any(|line| line.starts_with("options ")) {
+        output.push("options timeout:1 attempts:1".to_string());
+    }
+    format!("{}\n", output.join("\n"))
 }
 
 #[derive(Debug)]
 struct InheritedDnsConfig {
     upstream: IpAddr,
     resolv_conf: String,
+    preserved_lines: Vec<String>,
 }
 
 struct TempFileGuard {
@@ -442,5 +513,42 @@ nameserver 1.1.1.1
         )
         .unwrap_err();
         assert!(err.to_string().contains("no usable nameserver found"));
+    }
+
+    #[test]
+    fn render_gateway_resolv_conf_adds_default_options_for_explicit_rootless_dns() {
+        let rendered = render_gateway_resolv_conf(
+            &[],
+            Ipv4Addr::new(10, 240, 1, 1),
+            "fd42::1".parse().unwrap(),
+            true,
+        );
+
+        assert_eq!(
+            rendered,
+            "nameserver 10.240.1.1\nnameserver fd42::1\noptions timeout:1 attempts:1\n"
+        );
+    }
+
+    #[test]
+    fn prepare_rootless_dns_plan_points_child_to_gateway_and_keeps_upstream() {
+        let run_id = format!("unit-test-{}", std::process::id());
+        let plan = prepare_rootless_dns_plan(
+            &run_id,
+            Some("1.1.1.1".parse().unwrap()),
+            Ipv4Addr::new(10, 240, 1, 1),
+            "fd42::1".parse().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.rootful_upstream, None);
+        assert_eq!(plan.rootless_upstream(), Some("1.1.1.1".parse().unwrap()));
+
+        let path = plan.resolv_conf_path().unwrap();
+        let content = std::fs::read_to_string(path).unwrap();
+        assert_eq!(
+            content,
+            "nameserver 10.240.1.1\nnameserver fd42::1\noptions timeout:1 attempts:1\n"
+        );
     }
 }

@@ -9,6 +9,7 @@ description = "Forces DNS/proxy/interface for a child process tree and captures 
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+etherparse = "0.15"
 nix = { version = "0.31.2", features = [
     "mount",
     "process",
