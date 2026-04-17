@@ -21,7 +21,7 @@ const ROOTLESS_INTERNAL_NAMESPACE_PATHS: &[&str] = &[
 ];
 
 pub fn run(cli: &Cli) -> Result<()> {
-    match cli.network_backend {
+    match cli.selected_backend() {
         NetworkBackend::Rootful => run_rootful_preflight(cli),
         NetworkBackend::RootlessInternal => run_rootless_internal_preflight(),
     }

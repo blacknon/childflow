@@ -224,9 +224,9 @@ pub fn configure_user_namespace(child_pid: Pid) -> Result<()> {
                 Err(helper_full_err) => {
                     match try_configure_user_namespace_direct_uid_only(pid, uid) {
                         Ok(()) => {
-                            crate::util::warn(
-                            "configured the `rootless-internal` user namespace with a uid-only map because gid mapping was rejected on this host. Rootless networking will continue, but group-based file access inside the child may differ from the caller's primary gid.",
-                        );
+                            crate::util::debug(
+                                "configured the `rootless-internal` user namespace with a uid-only map because gid mapping was rejected on this host. Rootless networking will continue, but group-based file access inside the child may differ from the caller's primary gid.",
+                            );
                             crate::util::debug(format!(
                             "configured rootless user namespace for pid {pid} with a direct uid-only map after full mapping failed.\ndirect full error: {direct_full_err:#}\nhelper full error: {helper_full_err:#}"
                         ));
@@ -236,9 +236,9 @@ pub fn configure_user_namespace(child_pid: Pid) -> Result<()> {
                             match try_configure_user_namespace_with_uidmap_tools_uid_only(pid, uid)
                             {
                                 Ok(()) => {
-                                    crate::util::warn(
-                                    "configured the `rootless-internal` user namespace through `newuidmap` with a uid-only map because gid mapping was rejected on this host. Rootless networking will continue, but group-based file access inside the child may differ from the caller's primary gid.",
-                                );
+                                    crate::util::debug(
+                                        "configured the `rootless-internal` user namespace through `newuidmap` with a uid-only map because gid mapping was rejected on this host. Rootless networking will continue, but group-based file access inside the child may differ from the caller's primary gid.",
+                                    );
                                     crate::util::debug(format!(
                                     "configured rootless user namespace for pid {pid} with a helper-based uid-only map after full mapping failed.\ndirect full error: {direct_full_err:#}\nhelper full error: {helper_full_err:#}\ndirect uid-only error: {direct_uid_only_err:#}"
                                 ));

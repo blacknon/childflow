@@ -23,7 +23,7 @@ impl ProxyPlan {
             return Ok(None);
         }
 
-        match cli.network_backend {
+        match cli.selected_backend() {
             NetworkBackend::Rootful => {
                 Ok(rootful_tproxy::TransparentProxyPlan::from_cli(cli)
                     .map(Self::RootfulTransparent))

@@ -58,7 +58,7 @@ pub fn namespace_mode(backend: NetworkBackend) -> NamespaceMode {
 }
 
 pub fn prepare_child_bootstrap(cli: &Cli, plan: &NetworkPlan) -> Result<ChildBootstrap> {
-    match cli.network_backend {
+    match cli.selected_backend() {
         NetworkBackend::Rootful => Ok(ChildBootstrap::Rootful),
         NetworkBackend::RootlessInternal => {
             rootless_internal::ChildBootstrap::prepare(plan).map(ChildBootstrap::RootlessInternal)
@@ -67,7 +67,7 @@ pub fn prepare_child_bootstrap(cli: &Cli, plan: &NetworkPlan) -> Result<ChildBoo
 }
 
 pub fn setup(params: NetworkSetupParams<'_>) -> Result<NetworkContext> {
-    match params.cli.network_backend {
+    match params.cli.selected_backend() {
         NetworkBackend::Rootful => rootful::NetworkContext::setup(
             params.plan,
             params.run_id,

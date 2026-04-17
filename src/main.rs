@@ -82,14 +82,15 @@ fn real_main() -> Result<i32> {
     let cli = Cli::parse();
     cli.validate()?;
     preflight::run(&cli)?;
+    let backend = cli.selected_backend();
 
-    let namespace_mode = network::namespace_mode(cli.network_backend);
+    let namespace_mode = network::namespace_mode(backend);
     let run_id = util::unique_run_id();
     let network_plan = network::NetworkPlan::new();
     let child_bootstrap = network::prepare_child_bootstrap(&cli, &network_plan)?;
     let dns_plan = DnsPlan::prepare(
         &run_id,
-        cli.network_backend,
+        backend,
         cli.dns,
         network_plan.host_ipv4(),
         network_plan.host_ipv6(),
@@ -140,7 +141,7 @@ fn real_main() -> Result<i32> {
             let mut ready_file = File::from(ready_read_fd);
             let mut child_bootstrap = child_bootstrap;
 
-            let runtime = match cli.network_backend {
+            let runtime = match backend {
                 NetworkBackend::Rootful => {
                     let runtime = ParentRuntime::start(
                         &run_id,
@@ -237,7 +238,7 @@ impl ParentRuntime {
         proxy_plan: Option<&ProxyPlan>,
         child_bootstrap: &mut network::ChildBootstrap,
     ) -> Result<Self> {
-        let cgroup = match cli.network_backend {
+        let cgroup = match cli.selected_backend() {
             NetworkBackend::Rootful => Some(
                 CgroupManager::create(run_id, child)
                     .with_context(|| format!("failed to create cgroup for pid {child}"))?,

@@ -65,6 +65,7 @@ mod tests {
     fn base_cli() -> Cli {
         Cli {
             output: None,
+            root: false,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,

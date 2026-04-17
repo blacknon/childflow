@@ -3,7 +3,7 @@
 This directory provides a simple Linux development environment for `childflow`.
 
 `childflow` needs Linux kernel features and elevated privileges to create namespaces, install `iptables` and TPROXY rules, and open `AF_PACKET` sockets. Because of that, the container is intended to run in `privileged` mode.
-The default shell user inside the container is now the non-root `childflow` user so rootless experiments are closer to a real non-root setup. `sudo` is available without a password when you need to exercise the `rootful` backend.
+The default shell user inside the container is now the non-root `childflow` user so rootless experiments are closer to a real non-root setup. `sudo` is available without a password when you need to exercise the `--root` backend.
 
 ## Start an interactive shell
 
@@ -45,15 +45,15 @@ cargo test --test rootless_proxy -- --ignored --nocapture
 For the experimental rootless backend, a useful smoke check is:
 
 ```bash
-cargo run -- --network-backend rootless-internal -- curl https://example.com
-cargo run -- --network-backend rootless-internal -o /tmp/rootless.pcapng -- curl https://example.com
+cargo run -- -- curl https://example.com
+cargo run -- -o /tmp/rootless.pcapng -- curl https://example.com
 ```
 
 For a single-binary relay proxy check against something like Burp on `host.docker.internal:8080`:
 
 ```bash
-cargo run -- --network-backend rootless-internal -p http://host.docker.internal:8080 -- /bin/busybox wget -O - http://example.com
-cargo run -- --network-backend rootless-internal -p http://host.docker.internal:8080 -- /usr/local/bin/proxycheck http://example.com
+cargo run -- -p http://host.docker.internal:8080 -- /bin/busybox wget -O - http://example.com
+cargo run -- -p http://host.docker.internal:8080 -- /usr/local/bin/proxycheck http://example.com
 ```
 
 If the image build fails during `apt-get install` with a message about free space in `/var/cache/apt/archives`, first retry after rebuilding with the current Dockerfile. If your Docker host or Docker Desktop VM is still short on disk, reclaim space with your usual Docker cleanup flow before rerunning the compose command.
@@ -62,7 +62,7 @@ If the image build fails during `apt-get install` with a message about free spac
 
 ```bash
 sudo cargo run --release -- \
-  --network-backend rootful \
+  --root \
   -o /tmp/capture.pcapng \
   -- curl https://example.com
 ```
@@ -70,5 +70,5 @@ sudo cargo run --release -- \
 ## Notes
 
 - `network_mode: host` is used so the container can interact with the host-side Linux networking stack more directly.
-- The default shell user is `childflow` rather than `root`; use `sudo` when you intentionally want to test `rootful`.
+- The default shell user is `childflow` rather than `root`; use `sudo` when you intentionally want to test `--root`.
 - This setup is aimed at Linux Docker hosts. On macOS, Docker Desktop runs a Linux VM internally, so behavior may differ from a native Linux machine.
