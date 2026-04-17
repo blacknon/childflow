@@ -12,6 +12,7 @@ pub struct PacketMeta {
     pub dst_mac: [u8; 6],
     pub src_ip: IpAddr,
     pub dst_ip: IpAddr,
+    pub hop_limit: u8,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +82,26 @@ pub struct Icmpv6EchoFrame<'a> {
     pub payload: &'a [u8],
 }
 
+pub struct Icmpv4ErrorFrame<'a> {
+    pub src_mac: [u8; 6],
+    pub dst_mac: [u8; 6],
+    pub src_ip: Ipv4Addr,
+    pub dst_ip: Ipv4Addr,
+    pub icmp_type: u8,
+    pub code: u8,
+    pub quote: &'a [u8],
+}
+
+pub struct Icmpv6ErrorFrame<'a> {
+    pub src_mac: [u8; 6],
+    pub dst_mac: [u8; 6],
+    pub src_ip: Ipv6Addr,
+    pub dst_ip: Ipv6Addr,
+    pub icmp_type: u8,
+    pub code: u8,
+    pub quote: &'a [u8],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParsedPacket {
     Tcp(ParsedTcpPacket),
@@ -98,6 +119,7 @@ pub fn parse_frame(frame: &[u8]) -> Result<ParsedPacket> {
         dst_mac: eth.destination(),
         src_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         dst_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        hop_limit: 0,
     };
 
     match eth.ether_type() {
@@ -111,6 +133,7 @@ fn parse_ipv4_packet(payload: &[u8], mut meta: PacketMeta) -> Result<ParsedPacke
     let ip = Ipv4Slice::from_slice(payload).context("failed to parse IPv4 packet")?;
     meta.src_ip = IpAddr::V4(ip.header().source_addr());
     meta.dst_ip = IpAddr::V4(ip.header().destination_addr());
+    meta.hop_limit = ip.header().ttl();
 
     let payload = ip.payload();
     if payload.fragmented {
@@ -154,6 +177,7 @@ fn parse_ipv6_packet(payload: &[u8], mut meta: PacketMeta) -> Result<ParsedPacke
     let ip = Ipv6Slice::from_slice(payload).context("failed to parse IPv6 packet")?;
     meta.src_ip = IpAddr::V6(ip.header().source_addr());
     meta.dst_ip = IpAddr::V6(ip.header().destination_addr());
+    meta.hop_limit = ip.header().hop_limit();
 
     let payload = ip.payload();
     if payload.fragmented {
@@ -297,6 +321,36 @@ pub fn build_udp_frame(
     )
 }
 
+pub fn build_udp_ip_packet(
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    hop_limit: u8,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    build_ip_packet(
+        src_ip,
+        dst_ip,
+        UdpHeader::LEN
+            .checked_add(payload.len())
+            .ok_or_else(|| anyhow!("UDP payload too large"))?,
+        hop_limit,
+        IpNumber::UDP,
+        |ip_kind, bytes| {
+            let udp = match ip_kind {
+                IpKind::V4(ip) => UdpHeader::with_ipv4_checksum(src_port, dst_port, ip, payload)
+                    .context("failed to build IPv4 UDP header")?,
+                IpKind::V6(ip) => UdpHeader::with_ipv6_checksum(src_port, dst_port, ip, payload)
+                    .context("failed to build IPv6 UDP header")?,
+            };
+            udp.write(bytes).context("failed to serialize UDP header")?;
+            bytes.extend_from_slice(payload);
+            Ok(())
+        },
+    )
+}
+
 pub fn build_icmpv4_echo_frame(frame: Icmpv4EchoFrame<'_>) -> Result<Vec<u8>> {
     let mut icmp = Vec::with_capacity(8 + frame.payload.len());
     icmp.push(frame.icmp_type);
@@ -329,6 +383,54 @@ pub fn build_icmpv6_echo_frame(frame: Icmpv6EchoFrame<'_>) -> Result<Vec<u8>> {
     icmp.extend_from_slice(&frame.identifier.to_be_bytes());
     icmp.extend_from_slice(&frame.sequence.to_be_bytes());
     icmp.extend_from_slice(frame.payload);
+    let checksum = icmpv6_checksum(frame.src_ip, frame.dst_ip, &icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+    build_ip_frame(
+        frame.src_mac,
+        frame.dst_mac,
+        IpAddr::V6(frame.src_ip),
+        IpAddr::V6(frame.dst_ip),
+        IpNumber::IPV6_ICMP,
+        |_ip_kind, bytes| {
+            bytes.extend_from_slice(&icmp);
+            Ok(())
+        },
+    )
+}
+
+pub fn build_icmpv4_error_frame(frame: Icmpv4ErrorFrame<'_>) -> Result<Vec<u8>> {
+    let quote = &frame.quote[..frame.quote.len().min(548)];
+    let mut icmp = Vec::with_capacity(8 + quote.len());
+    icmp.push(frame.icmp_type);
+    icmp.push(frame.code);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&[0, 0, 0, 0]);
+    icmp.extend_from_slice(quote);
+    let checksum = internet_checksum(&icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+    build_ip_frame(
+        frame.src_mac,
+        frame.dst_mac,
+        IpAddr::V4(frame.src_ip),
+        IpAddr::V4(frame.dst_ip),
+        IpNumber::ICMP,
+        |_ip_kind, bytes| {
+            bytes.extend_from_slice(&icmp);
+            Ok(())
+        },
+    )
+}
+
+pub fn build_icmpv6_error_frame(frame: Icmpv6ErrorFrame<'_>) -> Result<Vec<u8>> {
+    let quote = &frame.quote[..frame.quote.len().min(1232)];
+    let mut icmp = Vec::with_capacity(8 + quote.len());
+    icmp.push(frame.icmp_type);
+    icmp.push(frame.code);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&[0, 0, 0, 0]);
+    icmp.extend_from_slice(quote);
     let checksum = icmpv6_checksum(frame.src_ip, frame.dst_ip, &icmp);
     icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
 
@@ -426,6 +528,83 @@ where
                 Vec::with_capacity(Ethernet2Header::LEN + Ipv6Header::LEN + payload.len());
             eth.write(&mut bytes)
                 .context("failed to serialize Ethernet header")?;
+            ip.write(&mut bytes)
+                .context("failed to serialize IPv6 header")?;
+            bytes.extend_from_slice(&payload);
+            Ok(bytes)
+        }
+        _ => bail!("source and destination IP versions must match"),
+    }
+}
+
+fn build_ip_packet<F>(
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    payload_len: usize,
+    hop_limit: u8,
+    transport_proto: IpNumber,
+    write_transport: F,
+) -> Result<Vec<u8>>
+where
+    F: FnOnce(IpKind<'_>, &mut Vec<u8>) -> Result<()>,
+{
+    let mut payload = Vec::with_capacity(payload_len);
+    match (src_ip, dst_ip) {
+        (IpAddr::V4(src), IpAddr::V4(dst)) => {
+            let ip = Ipv4Header::new(
+                payload_len
+                    .try_into()
+                    .map_err(|_| anyhow!("payload too large for IPv4 header"))?,
+                hop_limit,
+                transport_proto,
+                src.octets(),
+                dst.octets(),
+            )
+            .context("failed to create IPv4 header")?;
+            write_transport(IpKind::V4(&ip), &mut payload)?;
+            let ip = Ipv4Header::new(
+                payload
+                    .len()
+                    .try_into()
+                    .map_err(|_| anyhow!("payload too large for IPv4 header"))?,
+                hop_limit,
+                transport_proto,
+                src.octets(),
+                dst.octets(),
+            )
+            .context("failed to create IPv4 header")?;
+            let mut bytes = Vec::with_capacity(ip.header_len() + payload.len());
+            ip.write(&mut bytes)
+                .context("failed to serialize IPv4 header")?;
+            bytes.extend_from_slice(&payload);
+            Ok(bytes)
+        }
+        (IpAddr::V6(src), IpAddr::V6(dst)) => {
+            let ip = Ipv6Header {
+                traffic_class: 0,
+                flow_label: Default::default(),
+                payload_length: payload_len
+                    .try_into()
+                    .map_err(|_| anyhow!("payload too large for IPv6 header"))?,
+                next_header: transport_proto,
+                hop_limit,
+                source: src.octets(),
+                destination: dst.octets(),
+            };
+            write_transport(IpKind::V6(&ip), &mut payload)?;
+            let ip = Ipv6Header {
+                traffic_class: 0,
+                flow_label: Default::default(),
+                payload_length: payload
+                    .len()
+                    .try_into()
+                    .map_err(|_| anyhow!("payload too large for IPv6 header"))?,
+                next_header: transport_proto,
+                hop_limit,
+                source: src.octets(),
+                destination: dst.octets(),
+            };
+            let mut bytes = Vec::with_capacity(Ipv6Header::LEN + payload.len());
             ip.write(&mut bytes)
                 .context("failed to serialize IPv6 header")?;
             bytes.extend_from_slice(&payload);

@@ -22,13 +22,13 @@ pub enum CaptureMode {
 }
 
 pub struct FrameCaptureWriter {
-    pcap: PcapNgWriter<BufWriter<File>>,
+    pcap: Option<PcapNgWriter<BufWriter<File>>>,
 }
 
 impl FrameCaptureWriter {
     pub fn open_rootless(output_path: &Path) -> Result<Self> {
         let pcap = open_pcap_writer(output_path)?;
-        Ok(Self { pcap })
+        Ok(Self { pcap: Some(pcap) })
     }
 
     pub fn write_frame(&mut self, frame: &[u8]) -> Result<()> {
@@ -41,9 +41,43 @@ impl FrameCaptureWriter {
             options: vec![],
         };
         self.pcap
+            .as_mut()
+            .ok_or_else(|| anyhow!("rootless frame capture writer is already closed"))?
             .write_pcapng_block(block)
             .context("failed to append enhanced packet block")?;
+        self.flush()?;
         Ok(())
+    }
+
+    pub fn close(&mut self) -> Result<()> {
+        let Some(pcap) = self.pcap.take() else {
+            return Ok(());
+        };
+        let mut writer = pcap.into_inner();
+        writer
+            .flush()
+            .context("failed to flush rootless pcapng output")?;
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        let Some(pcap) = self.pcap.as_mut() else {
+            return Ok(());
+        };
+        pcap.get_mut()
+            .flush()
+            .context("failed to flush rootless pcapng output")?;
+        Ok(())
+    }
+}
+
+impl Drop for FrameCaptureWriter {
+    fn drop(&mut self) {
+        if let Err(err) = self.close() {
+            crate::util::warn(format!(
+                "failed to finalize rootless packet capture output: {err:#}"
+            ));
+        }
     }
 }
 
@@ -124,6 +158,9 @@ fn capture_loop(mode: CaptureMode, output_path: &Path, stop: Arc<AtomicBool>) ->
                 };
                 pcap.write_pcapng_block(block)
                     .context("failed to append enhanced packet block")?;
+                pcap.get_mut()
+                    .flush()
+                    .context("failed to flush AF_PACKET pcapng output")?;
             }
             Err(err)
                 if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut => {}
@@ -155,6 +192,9 @@ fn open_pcap_writer(output_path: &Path) -> Result<PcapNgWriter<BufWriter<File>>>
     };
     pcap.write_pcapng_block(idb)
         .context("failed to write pcapng interface description block")?;
+    pcap.get_mut()
+        .flush()
+        .context("failed to flush the initial pcapng header")?;
     Ok(pcap)
 }
 
