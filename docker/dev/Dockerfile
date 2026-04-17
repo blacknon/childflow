@@ -15,13 +15,27 @@ RUN apt-get clean \
         busybox-static \
         iproute2 \
         iptables \
+        uidmap \
+        sudo \
         tcpdump \
         pkg-config \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
+RUN groupadd --gid 1000 childflow \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash childflow \
+    && usermod -aG sudo childflow \
+    && printf 'childflow:100000:65536\n' >> /etc/subuid \
+    && printf 'childflow:100000:65536\n' >> /etc/subgid \
+    && printf 'childflow ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/childflow \
+    && chmod 0440 /etc/sudoers.d/childflow
+
 COPY --from=proxycheck-builder /out/proxycheck /usr/local/bin/proxycheck
 
 WORKDIR /workspaces/childflow
+
+ENV PATH=/usr/local/cargo/bin:${PATH}
+
+USER childflow
 
 CMD ["bash"]

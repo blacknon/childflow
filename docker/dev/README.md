@@ -3,11 +3,19 @@
 This directory provides a simple Linux development environment for `childflow`.
 
 `childflow` needs Linux kernel features and elevated privileges to create namespaces, install `iptables` and TPROXY rules, and open `AF_PACKET` sockets. Because of that, the container is intended to run in `privileged` mode.
+The default shell user inside the container is now the non-root `childflow` user so rootless experiments are closer to a real non-root setup. `sudo` is available without a password when you need to exercise the `rootful` backend.
 
 ## Start an interactive shell
 
 ```bash
 docker compose -f docker/dev/compose.yml run --rm childflow-dev
+```
+
+Inside the shell, a quick sanity check is:
+
+```bash
+id
+sudo id
 ```
 
 ## Build the project
@@ -18,6 +26,7 @@ cargo build
 
 The development image includes `libssl-dev` and `pkg-config` because HTTPS upstream proxy support now depends on OpenSSL through `native-tls`.
 It also installs the Rust `clippy` component so the container can run the repo's lint command directly.
+For non-root rootless testing, it also installs `uidmap` and pre-populates `/etc/subuid` and `/etc/subgid` for the `childflow` user. That lets `childflow` exercise the same `newuidmap` / `newgidmap` fallback path it uses on Debian-like hosts when direct uid/gid map writes are rejected.
 For proxy debugging, it also includes `busybox-static`, so you can use `/bin/busybox wget` as a single-binary HTTP client inside the container.
 It also builds a tiny Go single-binary HTTP client at `/usr/local/bin/proxycheck`, which prints the selected proxy and then performs the request.
 
@@ -52,7 +61,7 @@ If the image build fails during `apt-get install` with a message about free spac
 ## Run a quick example
 
 ```bash
-cargo run --release -- \
+sudo cargo run --release -- \
   --network-backend rootful \
   -o /tmp/capture.pcapng \
   -- curl https://example.com
@@ -61,4 +70,5 @@ cargo run --release -- \
 ## Notes
 
 - `network_mode: host` is used so the container can interact with the host-side Linux networking stack more directly.
+- The default shell user is `childflow` rather than `root`; use `sudo` when you intentionally want to test `rootful`.
 - This setup is aimed at Linux Docker hosts. On macOS, Docker Desktop runs a Linux VM internally, so behavior may differ from a native Linux machine.

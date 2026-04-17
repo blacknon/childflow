@@ -32,6 +32,10 @@ pub struct Cli {
     #[arg(short = 'd', long = "dns")]
     pub dns: Option<IpAddr>,
 
+    /// Bind-mount an `/etc/hosts`-format file over the child's `/etc/hosts` so those entries are consulted first during name resolution.
+    #[arg(long = "hosts-file")]
+    pub hosts_file: Option<PathBuf>,
+
     /// Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080. `rootful` uses transparent interception, while `rootless-internal` relays outbound TCP through the selected proxy from the parent-side engine.
     #[arg(short = 'p', long = "proxy")]
     pub proxy: Option<ProxySpec>,
@@ -66,6 +70,12 @@ impl Cli {
         if matches!(self.network_backend, NetworkBackend::RootlessInternal) && self.iface.is_some()
         {
             bail!("`--iface` is not supported by the `rootless-internal` backend");
+        }
+
+        if let Some(path) = &self.hosts_file {
+            if !path.exists() {
+                bail!("`--hosts-file` path does not exist: {}", path.display());
+            }
         }
 
         if self.proxy_user.is_some() != self.proxy_password.is_some() {
@@ -218,6 +228,7 @@ mod tests {
             output: Some(PathBuf::from("out.pcapng")),
             network_backend: NetworkBackend::Rootful,
             dns: None,
+            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: Some("alice".into()),
             proxy_password: None,
@@ -235,6 +246,7 @@ mod tests {
             output: Some(PathBuf::from("out.pcapng")),
             network_backend: NetworkBackend::Rootful,
             dns: None,
+            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: None,
             proxy_password: None,
@@ -252,6 +264,7 @@ mod tests {
             output: None,
             network_backend: NetworkBackend::Rootful,
             dns: None,
+            hosts_file: None,
             proxy: None,
             proxy_user: None,
             proxy_password: None,
@@ -270,6 +283,7 @@ mod tests {
             output: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
+            hosts_file: None,
             proxy: None,
             proxy_user: None,
             proxy_password: None,
@@ -289,6 +303,7 @@ mod tests {
             output: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
+            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: None,
             proxy_password: None,
@@ -306,6 +321,7 @@ mod tests {
             output: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
+            hosts_file: None,
             proxy: Some("https://proxy.example.com:443".parse().unwrap()),
             proxy_user: None,
             proxy_password: None,
@@ -323,6 +339,7 @@ mod tests {
             output: Some(PathBuf::from("out.pcapng")),
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
+            hosts_file: None,
             proxy: None,
             proxy_user: None,
             proxy_password: None,
@@ -332,5 +349,24 @@ mod tests {
         };
 
         cli.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_missing_hosts_file() {
+        let cli = Cli {
+            output: None,
+            network_backend: NetworkBackend::RootlessInternal,
+            dns: None,
+            hosts_file: Some(PathBuf::from("/definitely/missing/childflow.hosts")),
+            proxy: None,
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("`--hosts-file`"));
     }
 }

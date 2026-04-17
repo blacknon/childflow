@@ -13,6 +13,8 @@ mod cli;
 #[cfg(target_os = "linux")]
 mod dns;
 #[cfg(target_os = "linux")]
+mod hosts;
+#[cfg(target_os = "linux")]
 mod namespace;
 #[cfg(target_os = "linux")]
 mod network;
@@ -56,6 +58,8 @@ use cli::Cli;
 #[cfg(target_os = "linux")]
 use dns::DnsPlan;
 #[cfg(target_os = "linux")]
+use hosts::HostsPlan;
+#[cfg(target_os = "linux")]
 use network::NetworkBackend;
 #[cfg(target_os = "linux")]
 use proxy::{ProxyPlan, TproxyHandle};
@@ -90,6 +94,7 @@ fn real_main() -> Result<i32> {
         network_plan.host_ipv4(),
         network_plan.host_ipv6(),
     )?;
+    let hosts_plan = HostsPlan::prepare(&run_id, cli.hosts_file.as_deref())?;
     let proxy_plan = ProxyPlan::from_cli(&cli)?;
     let child_proxy_env = proxy_plan
         .as_ref()
@@ -116,6 +121,7 @@ fn real_main() -> Result<i32> {
                 ready_pipe: child_network_bootstrap.as_ref().map(|_| ready_file),
                 tap_transfer: child_network_bootstrap.as_ref().map(|_| tap_child),
                 resolv_conf: dns_plan.resolv_conf_path(),
+                hosts_file: hosts_plan.hosts_path(),
                 network_bootstrap: child_network_bootstrap.as_ref(),
                 extra_env: &child_proxy_env,
                 command: &cli.command,
@@ -239,7 +245,7 @@ impl ParentRuntime {
             NetworkBackend::RootlessInternal => match CgroupManager::create(run_id, child) {
                 Ok(manager) => Some(manager),
                 Err(err) => {
-                    crate::util::warn(format!(
+                    crate::util::debug(format!(
                         "failed to create a dedicated cgroup for the `rootless-internal` backend: {err:#}. Continuing without cgroup-based cleanup for this phase"
                     ));
                     None

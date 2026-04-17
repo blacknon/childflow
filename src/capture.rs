@@ -9,7 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
+use pcap_file::pcapng::blocks::interface_description::{
+    InterfaceDescriptionBlock, InterfaceDescriptionOption,
+};
 use pcap_file::pcapng::PcapNgWriter;
 use pcap_file::DataLink;
 use pnet_datalink::{self, Channel::Ethernet};
@@ -30,9 +32,7 @@ impl FrameCaptureWriter {
     }
 
     pub fn write_frame(&mut self, frame: &[u8]) -> Result<()> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0));
+        let timestamp = capture_timestamp();
         let block = EnhancedPacketBlock {
             interface_id: 0,
             timestamp,
@@ -114,9 +114,7 @@ fn capture_loop(mode: CaptureMode, output_path: &Path, stop: Arc<AtomicBool>) ->
     while !stop.load(Ordering::Relaxed) {
         match rx.next() {
             Ok(packet) => {
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_else(|_| Duration::from_secs(0));
+                let timestamp = capture_timestamp();
                 let block = EnhancedPacketBlock {
                     interface_id: 0,
                     timestamp,
@@ -150,9 +148,18 @@ fn open_pcap_writer(output_path: &Path) -> Result<PcapNgWriter<BufWriter<File>>>
     let idb = InterfaceDescriptionBlock {
         linktype: DataLink::ETHERNET,
         snaplen: 65_535,
-        options: vec![],
+        // `pcap-file` serializes EPB timestamps as raw nanoseconds. Advertise that
+        // resolution explicitly so readers such as tcpdump do not assume the pcapng
+        // default of microseconds and inflate wall-clock time by 1000x.
+        options: vec![InterfaceDescriptionOption::IfTsResol(9)],
     };
     pcap.write_pcapng_block(idb)
         .context("failed to write pcapng interface description block")?;
     Ok(pcap)
+}
+
+fn capture_timestamp() -> Duration {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
 }

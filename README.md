@@ -23,7 +23,7 @@ When you explicitly select `rootful`, `childflow` creates a dedicated child netw
 
 The resulting capture is scoped to traffic from the target process tree rather than the whole host.
 
-The `rootless-internal` backend is still experimental and not yet functionally complete. It now includes a minimal internal userspace relay engine so the child can use `tap0` for isolated execution, DNS relay, outbound TCP, and relay-based upstream proxying without depending on `pasta` or `slirp4netns`.
+The `rootless-internal` backend is still experimental and not yet functionally complete. It now includes a minimal internal userspace relay engine so the child can use `tap0` for isolated execution, DNS relay, outbound TCP, and relay-based upstream proxying without depending on `pasta` or `slirp4netns`. For non-root users, `childflow` first tries direct uid/gid mapping, then falls back to `newuidmap` / `newgidmap`, and finally to a uid-only mapping when the host rejects gid mapping but still permits enough user-namespace functionality to continue.
 
 ## Requirements
 
@@ -44,6 +44,7 @@ Backend-specific requirements:
   - Linux namespace support for user, network, and mount namespaces
   - `/dev/net/tun`
   - user namespace support enabled on the host
+  - the Debian / Ubuntu `uidmap` package is recommended so `childflow` can fall back to `newuidmap` / `newgidmap` when direct `/proc/<pid>/*_map` writes are rejected
 
 Feature-specific requirements:
 
@@ -102,6 +103,7 @@ Options:
 - `--network-backend <rootful|rootless-internal>`: select the networking backend, default `rootless-internal`
 - `-o, --output <PATH>`: write captured traffic as `pcapng` on backends that support capture
 - `-d, --dns <IP>`: force DNS to a specific IPv4 or IPv6 resolver
+- `--hosts-file <PATH>`: overlay an `/etc/hosts`-format file onto the child's `/etc/hosts` so those entries win before DNS
 - `-p, --proxy <URI>`: configure an upstream `http://`, `https://`, or `socks5://` proxy
 - `--proxy-user <USER>`: username for proxy authentication
 - `--proxy-password <PASS>`: password for proxy authentication
@@ -118,6 +120,12 @@ Proxy option notes:
 - `rootful` uses transparent interception and TPROXY for proxying
 - `rootless-internal` relays outbound TCP through the configured upstream proxy from the parent-side userspace engine
 - `rootless-internal` does not require the child application to honor `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY`
+
+Hosts override notes:
+
+- `--hosts-file` applies to both `rootful` and `rootless-internal`
+- the file must already be in `/etc/hosts` format
+- matching hostnames from the override file are placed first, while unrelated base entries such as `localhost` are kept from the original child `/etc/hosts`
 
 Backend notes:
 
@@ -249,6 +257,8 @@ Common failures:
   rerun `rootful` with `sudo`; if this still fails inside a container or VM, verify the required capabilities are actually granted
 - `rootless-internal` preflight fails:
   check user namespace availability, `/dev/net/tun`, and whether the host exposes `/proc/self/ns/{user,net,mnt}`
+- `rootless-internal` namespace setup fails for a non-root user:
+  install the Debian / Ubuntu `uidmap` package, check `/etc/subuid` and `/etc/subgid`, and rerun with `CHILDFLOW_DEBUG=1` to see whether `childflow` fell back from full uid/gid mapping to a uid-only map
 - `rootless-internal` reaches TCP destinations but DNS still fails:
   verify the selected upstream resolver is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1` to inspect relay warnings
 - `rootless-internal` proxying does not seem to take effect:

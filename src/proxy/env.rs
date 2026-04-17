@@ -67,6 +67,7 @@ mod tests {
             output: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
+            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: None,
             proxy_password: None,
