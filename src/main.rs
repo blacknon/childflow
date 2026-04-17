@@ -52,6 +52,8 @@ use cli::Cli;
 #[cfg(target_os = "linux")]
 use dns::DnsPlan;
 #[cfg(target_os = "linux")]
+use network::NetworkBackend;
+#[cfg(target_os = "linux")]
 use tproxy::{TproxyHandle, TransparentProxyPlan};
 
 #[cfg(target_os = "linux")]
@@ -73,9 +75,10 @@ fn real_main() -> Result<i32> {
     cli.validate()?;
     preflight::run(&cli)?;
 
-    let namespace_mode = network::namespace_mode(cli.network_backend)?;
+    let namespace_mode = network::namespace_mode(cli.network_backend);
     let run_id = util::unique_run_id();
     let network_plan = network::NetworkPlan::new();
+    let child_bootstrap = network::prepare_child_bootstrap(&cli, &network_plan)?;
     let dns_plan = DnsPlan::prepare(
         &run_id,
         cli.dns,
@@ -90,10 +93,12 @@ fn real_main() -> Result<i32> {
         ForkResult::Child => {
             drop(write_fd);
             let read_file = File::from(read_fd);
+            let child_network_bootstrap = child_bootstrap.namespace_bootstrap();
             if let Err(err) = namespace::child_enter_and_exec(
                 namespace_mode,
                 read_file,
                 dns_plan.resolv_conf_path(),
+                child_network_bootstrap.as_ref(),
                 &cli.command,
             ) {
                 eprintln!("childflow: child bootstrap failed: {err:#}");
@@ -113,6 +118,7 @@ fn real_main() -> Result<i32> {
                 &network_plan,
                 &dns_plan,
                 proxy_plan.as_ref(),
+                &child_bootstrap,
             )?;
 
             release_file
@@ -137,7 +143,7 @@ struct ParentRuntime {
     _dns: Option<dns::DnsHandle>,
     _network: network::NetworkContext,
     _proxy: Option<TproxyHandle>,
-    _cgroup: CgroupManager,
+    _cgroup: Option<CgroupManager>,
 }
 
 #[cfg(target_os = "linux")]
@@ -149,9 +155,23 @@ impl ParentRuntime {
         network_plan: &network::NetworkPlan,
         dns_plan: &DnsPlan,
         proxy_plan: Option<&TransparentProxyPlan>,
+        child_bootstrap: &network::ChildBootstrap,
     ) -> Result<Self> {
-        let cgroup = CgroupManager::create(run_id, child)
-            .with_context(|| format!("failed to create cgroup for pid {child}"))?;
+        let cgroup = match cli.network_backend {
+            NetworkBackend::Rootful => Some(
+                CgroupManager::create(run_id, child)
+                    .with_context(|| format!("failed to create cgroup for pid {child}"))?,
+            ),
+            NetworkBackend::RootlessInternal => match CgroupManager::create(run_id, child) {
+                Ok(manager) => Some(manager),
+                Err(err) => {
+                    crate::util::warn(format!(
+                        "failed to create a dedicated cgroup for the `rootless-internal` backend: {err:#}. Continuing without cgroup-based cleanup for this phase"
+                    ));
+                    None
+                }
+            },
+        };
 
         let proxy = proxy_plan
             .map(|plan| {
@@ -166,13 +186,18 @@ impl ParentRuntime {
             run_id,
             child,
             cli,
+            dns_plan,
             proxy.as_ref().map(TproxyHandle::listen_port),
+            child_bootstrap,
         )
-        .context("failed to prepare namespaces, veth devices, routing, and firewall rules. Check backend preflight output, kernel namespace support, and whether the selected backend is implemented on this host")?;
+        .context("failed to prepare the selected network backend. Check backend preflight output, kernel namespace support, and whether the requested backend phase is implemented on this host")?;
 
-        let dns = dns_plan
-            .start_forwarder(network_plan.host_ipv4(), network_plan.host_ipv6())
-            .context("failed to start DNS forwarder on port 53 inside the host namespace. Check whether another service already owns that bind address/port, and whether local firewall policy permits the listener")?;
+        let dns = match network.dns_bind_addrs() {
+            Some((bind_ipv4, bind_ipv6)) => dns_plan
+                .start_forwarder(bind_ipv4, bind_ipv6)
+                .context("failed to start DNS forwarder on port 53 inside the host namespace. Check whether another service already owns that bind address/port, and whether local firewall policy permits the listener")?,
+            None => None,
+        };
 
         let capture = match (network.capture_interface(), cli.output.as_ref()) {
             (Some(interface_name), Some(output_path)) => {

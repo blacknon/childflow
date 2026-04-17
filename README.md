@@ -21,7 +21,7 @@ Today, the default `rootful` backend creates a dedicated child network namespace
 
 The resulting capture is scoped to traffic from the target process tree rather than the whole host.
 
-The `rootless-internal` backend is still experimental and not yet functionally complete. Phase 1 adds CLI selection, validation, and preflight scaffolding only.
+The `rootless-internal` backend is still experimental and not yet functionally complete. Phase 2 adds `userns + netns + mountns`, `tap0`, child-side IPv4/IPv6 addressing, and default routes, but it does not yet provide an outbound relay engine.
 
 ## Requirements
 
@@ -120,6 +120,7 @@ Backend notes:
 - `rootful` currently requires `--output`
 - `rootless-internal` currently rejects `--output`, `--iface`, and transparent proxy related options because those paths are not implemented yet
 - `rootless-internal` is experimental and under construction
+- at this phase, `rootless-internal` can build the child-side network foundation, but `curl https://example.com` is still expected to wait for later phases
 
 Examples:
 
@@ -133,26 +134,27 @@ sudo childflow -o capture.pcapng -p socks5://127.0.0.1:1080 -- curl https://exam
 sudo childflow -o capture.pcapng -p https://proxy.example.com:443 --proxy-user alice --proxy-password secret -- curl https://example.com
 sudo childflow -o capture.pcapng -p https://proxy.example.com:443 --proxy-insecure -- curl https://example.com
 sudo childflow -o capture.pcapng -i eth0 -- curl https://example.com
-childflow --network-backend rootless-internal -- curl https://example.com
+childflow --network-backend rootless-internal -- true
 ```
 
 ## Backend Matrix
 
 | Feature | `rootful` | `rootless-internal` |
 | --- | --- | --- |
-| Isolated execution | Yes | Planned |
-| DNS override | Yes | Planned |
-| Outbound TCP/UDP | Yes | Planned |
+| Isolated execution | Yes | Yes |
+| DNS override | Yes | Planned, child-side resolver path prepared |
+| Outbound TCP/UDP | Yes | Not yet supported |
 | Explicit proxy path | Yes, via current transparent interception path | Not yet supported |
 | Transparent proxy / TPROXY | Yes | Not supported |
 | `--iface` | Yes | Not supported |
 | Current packet capture path | Yes | Not supported |
-| Status | Current backend | Experimental / under construction |
+| Namespace + `tap0` + child routes | Yes | Yes |
+| Status | Current backend | Experimental / phase-2 network foundation |
 
 ## How It Works
 
 1. `childflow` validates CLI arguments and runs backend-specific preflight checks.
-2. A child process is forked, then unshares network and mount namespaces.
+2. A child process is forked, then unshares backend-specific namespaces.
 3. A veth pair connects the child namespace to the host namespace.
 4. The host namespace enables forwarding and installs IPv4 / IPv6 NAT and forwarding rules.
 5. Optional policy-routing rules force direct traffic out through `--iface`.
@@ -160,6 +162,8 @@ childflow --network-backend rootless-internal -- curl https://example.com
 7. Packet capture runs on the host-side veth.
 
 IPv4 and IPv6 are both provisioned inside the child namespace. DNS override accepts either family, and direct routing setup configures both IPv4 and IPv6 default paths.
+
+For `rootless-internal`, the current phase creates `tap0` and child-side routes only. The userspace relay engine that will move packets between that tap and the outside world is still a later phase.
 
 ## Packet Capture Behavior
 
@@ -254,7 +258,7 @@ Host conflicts to keep in mind:
 ## Limitations
 
 - Linux only
-- backend support is currently asymmetric: `rootful` is the working path, while `rootless-internal` is experimental and not implemented beyond phase-1 scaffolding
+- backend support is currently asymmetric: `rootful` is the working path, while `rootless-internal` is experimental and currently stops at namespace/tap/address/route foundation
 - direct traffic is dual-stack, but correctness still depends on the host having usable IPv4 and IPv6 upstream connectivity
 - packet capture is scoped to the child-side traffic visible on the host veth; it is not a full post-NAT or post-proxy observation point
 - proxy mode currently targets TCP traffic; non-TCP traffic is not transparently proxied by the TPROXY path

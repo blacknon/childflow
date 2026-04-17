@@ -9,6 +9,7 @@ use crate::cli::Cli;
 use crate::network::NetworkBackend;
 
 const ROOTFUL_REQUIRED_COMMANDS: &[&str] = &["ip", "iptables", "ip6tables"];
+const ROOTLESS_INTERNAL_REQUIRED_COMMANDS: &[&str] = &["ip"];
 const ROOTFUL_REQUIRED_SYSCTLS: &[&str] = &[
     "/proc/sys/net/ipv4/ip_forward",
     "/proc/sys/net/ipv6/conf/all/forwarding",
@@ -50,7 +51,8 @@ fn run_rootful_preflight(cli: &Cli) -> Result<()> {
 }
 
 fn run_rootless_internal_preflight() -> Result<()> {
-    let issues = collect_rootless_internal_issues();
+    let path_env = env::var_os("PATH").unwrap_or_default();
+    let issues = collect_rootless_internal_issues(&path_env);
 
     if issues.is_empty() {
         return Ok(());
@@ -62,8 +64,16 @@ fn run_rootless_internal_preflight() -> Result<()> {
     );
 }
 
-fn collect_rootless_internal_issues() -> Vec<String> {
+fn collect_rootless_internal_issues(path_env: &OsStr) -> Vec<String> {
     let mut issues = Vec::new();
+
+    let missing_commands = find_missing_commands(ROOTLESS_INTERNAL_REQUIRED_COMMANDS, path_env);
+    if !missing_commands.is_empty() {
+        issues.push(format!(
+            "missing required external commands for the `rootless-internal` backend: {}. Install `iproute2` so childflow can configure `tap0`, loopback, and default routes inside the child namespace.",
+            missing_commands.join(", ")
+        ));
+    }
 
     issues.extend(find_missing_paths(ROOTLESS_INTERNAL_NAMESPACE_PATHS));
 

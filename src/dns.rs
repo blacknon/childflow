@@ -54,6 +54,10 @@ impl DnsPlan {
             .map(|upstream| DnsHandle::start(bind_ipv4, bind_ipv6, upstream))
             .transpose()
     }
+
+    pub fn expects_local_forwarder(&self) -> bool {
+        self.upstream.is_some()
+    }
 }
 
 pub struct DnsHandle {

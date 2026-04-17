@@ -104,6 +104,10 @@ impl NetworkContext {
         &self.host_veth
     }
 
+    pub fn dns_bind_addrs(&self) -> (Ipv4Addr, Ipv6Addr) {
+        (self.host_ipv4, self.host_ipv6)
+    }
+
     fn push_cleanup_command(
         &mut self,
         label: &'static str,
