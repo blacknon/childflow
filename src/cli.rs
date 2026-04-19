@@ -217,6 +217,22 @@ pub enum ProxyScheme {
 mod tests {
     use super::*;
 
+    fn make_cli() -> Cli {
+        Cli {
+            output: None,
+            root: false,
+            network_backend: NetworkBackend::RootlessInternal,
+            dns: None,
+            hosts_file: None,
+            proxy: None,
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            iface: None,
+            command: vec!["curl".into()],
+        }
+    }
+
     #[test]
     fn parse_proxy_spec_accepts_bracketed_ipv6_hosts() {
         let parsed: ProxySpec = "socks5://[2001:db8::1]:1080".parse().unwrap();
@@ -244,16 +260,10 @@ mod tests {
     fn validate_requires_complete_proxy_credentials() {
         let cli = Cli {
             output: Some(PathBuf::from("out.pcapng")),
-            root: false,
             network_backend: NetworkBackend::Rootful,
-            dns: None,
-            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_user: Some("alice".into()),
-            proxy_password: None,
-            proxy_insecure: false,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         assert!(cli.validate().is_err());
@@ -263,16 +273,10 @@ mod tests {
     fn validate_rejects_proxy_insecure_for_non_https_proxy() {
         let cli = Cli {
             output: Some(PathBuf::from("out.pcapng")),
-            root: false,
             network_backend: NetworkBackend::Rootful,
-            dns: None,
-            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
-            proxy_user: None,
-            proxy_password: None,
             proxy_insecure: true,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         assert!(cli.validate().is_err());
@@ -281,17 +285,8 @@ mod tests {
     #[test]
     fn validate_requires_output_for_rootful_backend() {
         let cli = Cli {
-            output: None,
-            root: false,
             network_backend: NetworkBackend::Rootful,
-            dns: None,
-            hosts_file: None,
-            proxy: None,
-            proxy_user: None,
-            proxy_password: None,
-            proxy_insecure: false,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         let err = cli.validate().unwrap_err();
@@ -301,17 +296,8 @@ mod tests {
     #[test]
     fn validate_rejects_rootless_internal_iface() {
         let cli = Cli {
-            output: None,
-            root: false,
-            network_backend: NetworkBackend::RootlessInternal,
-            dns: None,
-            hosts_file: None,
-            proxy: None,
-            proxy_user: None,
-            proxy_password: None,
-            proxy_insecure: false,
             iface: Some("eth0".into()),
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         let err = cli.validate().unwrap_err();
@@ -322,17 +308,8 @@ mod tests {
     #[test]
     fn validate_allows_rootless_internal_relay_proxy() {
         let cli = Cli {
-            output: None,
-            root: false,
-            network_backend: NetworkBackend::RootlessInternal,
-            dns: None,
-            hosts_file: None,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
-            proxy_user: None,
-            proxy_password: None,
-            proxy_insecure: false,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         cli.validate().unwrap();
@@ -341,17 +318,9 @@ mod tests {
     #[test]
     fn validate_allows_rootless_internal_proxy_insecure_for_https_proxy() {
         let cli = Cli {
-            output: None,
-            root: false,
-            network_backend: NetworkBackend::RootlessInternal,
-            dns: None,
-            hosts_file: None,
             proxy: Some("https://proxy.example.com:443".parse().unwrap()),
-            proxy_user: None,
-            proxy_password: None,
             proxy_insecure: true,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         cli.validate().unwrap();
@@ -361,16 +330,7 @@ mod tests {
     fn validate_allows_rootless_internal_output() {
         let cli = Cli {
             output: Some(PathBuf::from("out.pcapng")),
-            root: false,
-            network_backend: NetworkBackend::RootlessInternal,
-            dns: None,
-            hosts_file: None,
-            proxy: None,
-            proxy_user: None,
-            proxy_password: None,
-            proxy_insecure: false,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         cli.validate().unwrap();
@@ -379,17 +339,8 @@ mod tests {
     #[test]
     fn validate_rejects_missing_hosts_file() {
         let cli = Cli {
-            output: None,
-            root: false,
-            network_backend: NetworkBackend::RootlessInternal,
-            dns: None,
             hosts_file: Some(PathBuf::from("/definitely/missing/childflow.hosts")),
-            proxy: None,
-            proxy_user: None,
-            proxy_password: None,
-            proxy_insecure: false,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         let err = cli.validate().unwrap_err();
@@ -401,17 +352,58 @@ mod tests {
         let cli = Cli {
             output: Some(PathBuf::from("out.pcapng")),
             root: true,
-            network_backend: NetworkBackend::RootlessInternal,
-            dns: None,
-            hosts_file: None,
-            proxy: None,
-            proxy_user: None,
-            proxy_password: None,
-            proxy_insecure: false,
-            iface: None,
-            command: vec!["curl".into()],
+            ..make_cli()
         };
 
         assert_eq!(cli.selected_backend(), NetworkBackend::Rootful);
+    }
+
+    #[test]
+    fn validate_root_flag_overrides_hidden_backend_and_requires_rootful_constraints() {
+        let cli = Cli {
+            root: true,
+            network_backend: NetworkBackend::RootlessInternal,
+            ..make_cli()
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("`--output` is required"));
+    }
+
+    #[test]
+    fn validate_root_flag_allows_iface_when_output_is_present() {
+        let cli = Cli {
+            root: true,
+            output: Some(PathBuf::from("out.pcapng")),
+            iface: Some("eth0".into()),
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_hidden_rootful_backend_allows_iface_when_output_is_present() {
+        let cli = Cli {
+            network_backend: NetworkBackend::Rootful,
+            output: Some(PathBuf::from("out.pcapng")),
+            iface: Some("eth0".into()),
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rootful_backend_allows_https_proxy_insecure_when_output_is_present() {
+        let cli = Cli {
+            network_backend: NetworkBackend::Rootful,
+            output: Some(PathBuf::from("out.pcapng")),
+            proxy: Some("https://proxy.example.com:443".parse().unwrap()),
+            proxy_insecure: true,
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
     }
 }
