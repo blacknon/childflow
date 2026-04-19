@@ -11,18 +11,28 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release.yml"
+      - ".github/workflows/demo-test.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  demo-test:
+    uses: ./.github/workflows/demo-test.yml
+
   release:
+    needs: demo-test
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

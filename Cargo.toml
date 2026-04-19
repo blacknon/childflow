@@ -7,7 +7,9 @@ description = "Forces DNS/proxy/interface for a child process tree and captures 
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+etherparse = "0.15"
 nix = { version = "0.31.2", features = [
     "mount",
     "process",
@@ -15,6 +17,7 @@ nix = { version = "0.31.2", features = [
     "signal",
     "fs",
 ] }
+openssl = "0.10"
 pcap-file = "2"
 pnet_datalink = "0.35.0"
 socket2 = { version = "0.6.3", features = ["all"] }

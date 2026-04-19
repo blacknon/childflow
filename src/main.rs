@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Blacknon. All rights reserved.
+// Use of this source code is governed by an MIT license
+// that can be found in the LICENSE file.
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("childflow is Linux-only. On macOS, use the Docker-based workflow in README.md.");
 
@@ -13,28 +17,19 @@ mod cli;
 #[cfg(target_os = "linux")]
 mod dns;
 #[cfg(target_os = "linux")]
+mod hosts;
+#[cfg(target_os = "linux")]
 mod namespace;
 #[cfg(target_os = "linux")]
-mod net;
+mod network;
+#[cfg(target_os = "linux")]
+mod preflight;
+#[cfg(target_os = "linux")]
+mod proxy;
 #[cfg(target_os = "linux")]
 mod tproxy;
 #[cfg(target_os = "linux")]
 mod util;
-
-#[cfg(target_os = "linux")]
-use std::fs::File;
-#[cfg(target_os = "linux")]
-use std::io::Write;
-#[cfg(target_os = "linux")]
-use std::net::{IpAddr, Ipv4Addr};
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
-#[cfg(target_os = "linux")]
-use std::process;
-#[cfg(target_os = "linux")]
-use std::thread;
-#[cfg(target_os = "linux")]
-use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
@@ -44,6 +39,14 @@ use clap::Parser;
 use nix::sys::wait::{waitpid, WaitStatus};
 #[cfg(target_os = "linux")]
 use nix::unistd::{fork, pipe, ForkResult};
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::UnixStream;
+#[cfg(target_os = "linux")]
+use std::process;
 
 #[cfg(target_os = "linux")]
 use capture::CaptureHandle;
@@ -52,11 +55,13 @@ use cgroup::CgroupManager;
 #[cfg(target_os = "linux")]
 use cli::Cli;
 #[cfg(target_os = "linux")]
-use dns::DnsHandle;
+use dns::DnsPlan;
 #[cfg(target_os = "linux")]
-use net::{NetworkContext, NetworkPlan};
+use hosts::HostsPlan;
 #[cfg(target_os = "linux")]
-use tproxy::{ProxyServer, ProxyUpstreamConfig, TproxyHandle};
+use network::NetworkBackend;
+#[cfg(target_os = "linux")]
+use proxy::{ProxyPlan, TproxyHandle};
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -75,23 +80,52 @@ fn main() {
 fn real_main() -> Result<i32> {
     let cli = Cli::parse();
     cli.validate()?;
-    util::ensure_root()?;
+    preflight::run(&cli)?;
+    let backend = cli.selected_backend();
 
+    let namespace_mode = network::namespace_mode(backend);
     let run_id = util::unique_run_id();
-    let network_plan = NetworkPlan::new();
-    let dns_config = prepare_dns_config(&run_id, cli.dns, network_plan.host_ip())?;
+    let network_plan = network::NetworkPlan::new();
+    let child_bootstrap = network::prepare_child_bootstrap(&cli, &network_plan)?;
+    let dns_plan = DnsPlan::prepare(
+        &run_id,
+        backend,
+        cli.dns,
+        network_plan.host_ipv4(),
+        network_plan.host_ipv6(),
+    )?;
+    let hosts_plan = HostsPlan::prepare(&run_id, cli.hosts_file.as_deref())?;
+    let proxy_plan = ProxyPlan::from_cli(&cli)?;
+    let child_proxy_env = proxy_plan
+        .as_ref()
+        .map(ProxyPlan::child_env)
+        .unwrap_or_default();
 
     let (read_fd, write_fd) = pipe().context("failed to create bootstrap pipe")?;
+    let (ready_read_fd, ready_write_fd) =
+        pipe().context("failed to create child bootstrap ready pipe")?;
+    let (tap_parent, tap_child) =
+        UnixStream::pair().context("failed to create rootless tap transfer socket pair")?;
 
     match unsafe { fork().context("fork failed")? } {
         ForkResult::Child => {
             drop(write_fd);
+            drop(ready_read_fd);
+            drop(tap_parent);
             let read_file = File::from(read_fd);
-            if let Err(err) = namespace::child_enter_and_exec(
-                read_file,
-                dns_config.resolv_guard.as_ref().map(|g| g.path.as_path()),
-                &cli.command,
-            ) {
+            let ready_file = File::from(ready_write_fd);
+            let child_network_bootstrap = child_bootstrap.namespace_bootstrap();
+            if let Err(err) = namespace::child_enter_and_exec(namespace::ChildExecParams {
+                mode: namespace_mode,
+                release_pipe: read_file,
+                ready_pipe: child_network_bootstrap.as_ref().map(|_| ready_file),
+                tap_transfer: child_network_bootstrap.as_ref().map(|_| tap_child),
+                resolv_conf: dns_plan.resolv_conf_path(),
+                hosts_file: hosts_plan.hosts_path(),
+                network_bootstrap: child_network_bootstrap.as_ref(),
+                extra_env: &child_proxy_env,
+                command: &cli.command,
+            }) {
                 eprintln!("childflow: child bootstrap failed: {err:#}");
                 process::exit(127);
             }
@@ -100,63 +134,221 @@ fn real_main() -> Result<i32> {
         }
         ForkResult::Parent { child } => {
             drop(read_fd);
+            drop(ready_write_fd);
+            drop(tap_child);
             let mut release_file = File::from(write_fd);
+            let mut ready_file = File::from(ready_read_fd);
+            let mut child_bootstrap = child_bootstrap;
 
-            let cgroup = CgroupManager::create(&run_id, child)
-                .with_context(|| format!("failed to create cgroup for pid {child}"))?;
+            let runtime = match backend {
+                NetworkBackend::Rootful => {
+                    let runtime = ParentRuntime::start(
+                        &run_id,
+                        child,
+                        &cli,
+                        &network_plan,
+                        &dns_plan,
+                        proxy_plan.as_ref(),
+                        &mut child_bootstrap,
+                    )?;
 
-            let proxy = if let Some(proxy_spec) = cli.proxy.clone() {
-                let upstream = ProxyUpstreamConfig {
-                    server: ProxyServer {
-                        host: proxy_spec.host,
-                        port: proxy_spec.port,
-                    },
-                    kind: proxy_spec.kind,
-                    bind_interface: cli.iface.clone(),
-                };
-                Some(TproxyHandle::start(upstream).context("failed to start transparent proxy")?)
-            } else {
-                None
+                    release_file
+                        .write_all(&[1])
+                        .context("failed to release child after namespace bootstrap")?;
+                    drop(ready_file);
+                    drop(release_file);
+                    runtime
+                }
+                NetworkBackend::RootlessInternal => {
+                    namespace::configure_user_namespace(child).context(
+                        "failed to configure the child user namespace for the `rootless-internal` backend",
+                    )?;
+
+                    release_file
+                        .write_all(&[1])
+                        .context("failed to release child for rootless tap bootstrap")?;
+
+                    let mut ready = [0_u8; 1];
+                    ready_file
+                        .read_exact(&mut ready)
+                        .context("failed to wait for the child to finish rootless tap bootstrap")?;
+                    drop(ready_file);
+
+                    match &mut child_bootstrap {
+                        network::ChildBootstrap::RootlessInternal(bootstrap) => {
+                            let tap =
+                                network::rootless_internal::tap::TapHandle::receive_from_stream(
+                                    &tap_parent,
+                                )
+                            .context("failed to receive the rootless tap fd from the child")?;
+                            bootstrap.set_tap(tap);
+                        }
+                        network::ChildBootstrap::Rootful => unreachable!(
+                            "rootless-internal backend must not be paired with rootful child bootstrap"
+                        ),
+                    }
+
+                    let runtime = ParentRuntime::start(
+                        &run_id,
+                        child,
+                        &cli,
+                        &network_plan,
+                        &dns_plan,
+                        proxy_plan.as_ref(),
+                        &mut child_bootstrap,
+                    )?;
+
+                    release_file
+                        .write_all(&[1])
+                        .context("failed to release child after starting the rootless userspace networking engine")?;
+                    drop(release_file);
+                    runtime
+                }
             };
-
-            let net = NetworkContext::setup(
-                &network_plan,
-                &run_id,
-                child,
-                &cli,
-                proxy.as_ref().map(TproxyHandle::listen_port),
-            )
-            .context("failed to prepare namespaces / veth / routing / iptables")?;
-
-            let dns = dns_config
-                .upstream
-                .map(|upstream| DnsHandle::start(network_plan.host_ip(), upstream))
-                .transpose()
-                .context("failed to start DNS forwarder")?;
-
-            let capture =
-                CaptureHandle::start(net.host_veth(), &cli.output).with_context(|| {
-                    format!("failed to start packet capture on {}", net.host_veth())
-                })?;
-
-            release_file
-                .write_all(&[1])
-                .context("failed to release child after namespace bootstrap")?;
-            drop(release_file);
 
             let status = waitpid(child, None).context("waitpid failed")?;
 
-            // Give the AF_PACKET capture loop a moment to drain the final frames.
-            thread::sleep(Duration::from_millis(250));
-
-            drop(capture);
-            drop(dns);
-            drop(proxy);
-            drop(net);
-            drop(cgroup);
+            runtime.shutdown()?;
 
             Ok(wait_status_to_exit_code(status))
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct ParentRuntime {
+    capture: Option<CaptureHandle>,
+    dns: Option<dns::DnsHandle>,
+    network: network::NetworkContext,
+    proxy: Option<TproxyHandle>,
+    cgroup: Option<CgroupManager>,
+}
+
+#[cfg(target_os = "linux")]
+impl ParentRuntime {
+    fn start(
+        run_id: &str,
+        child: nix::unistd::Pid,
+        cli: &Cli,
+        network_plan: &network::NetworkPlan,
+        dns_plan: &DnsPlan,
+        proxy_plan: Option<&ProxyPlan>,
+        child_bootstrap: &mut network::ChildBootstrap,
+    ) -> Result<Self> {
+        let cgroup = match cli.selected_backend() {
+            NetworkBackend::Rootful => Some(
+                CgroupManager::create(run_id, child)
+                    .with_context(|| format!("failed to create cgroup for pid {child}"))?,
+            ),
+            NetworkBackend::RootlessInternal => match CgroupManager::create(run_id, child) {
+                Ok(manager) => Some(manager),
+                Err(err) => {
+                    crate::util::debug(format!(
+                        "failed to create a dedicated cgroup for the `rootless-internal` backend: {err:#}. Continuing without cgroup-based cleanup for this phase"
+                    ));
+                    None
+                }
+            },
+        };
+
+        let proxy = proxy_plan
+            .and_then(ProxyPlan::transparent_rootful)
+            .map(|plan| {
+                plan.start().context(
+                    "failed to start transparent proxy listener. Check CAP_NET_ADMIN/CAP_NET_RAW, Linux TPROXY support, and whether `IP_TRANSPARENT` is permitted on this host",
+                )
+            })
+            .transpose()?;
+
+        let network = network::setup(network::NetworkSetupParams {
+            plan: network_plan,
+            run_id,
+            child_pid: child,
+            cli,
+            dns_plan,
+            tproxy_port: proxy.as_ref().map(TproxyHandle::listen_port),
+            child_bootstrap,
+            proxy_plan,
+        })
+        .context("failed to prepare the selected network backend. Check backend preflight output, kernel namespace support, and whether the requested backend phase is implemented on this host")?;
+
+        let dns = match network.dns_bind_addrs() {
+            Some((bind_ipv4, bind_ipv6)) => dns_plan
+                .start_forwarder(bind_ipv4, bind_ipv6)
+                .context("failed to start DNS forwarder on port 53 inside the host namespace. Check whether another service already owns that bind address/port, and whether local firewall policy permits the listener")?,
+            None => None,
+        };
+
+        let capture = match (network.capture_mode(), cli.output.as_ref()) {
+            (Some(mode), Some(output_path)) => {
+                Some(CaptureHandle::start(mode, output_path).with_context(|| {
+                    "failed to start packet capture. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected capture path for the selected backend".to_string()
+                })?)
+            }
+            _ => None,
+        };
+
+        Ok(Self {
+            capture,
+            dns,
+            network,
+            proxy,
+            cgroup,
+        })
+    }
+
+    fn shutdown(self) -> Result<()> {
+        let Self {
+            capture,
+            dns,
+            network,
+            proxy,
+            cgroup,
+        } = self;
+        let mut failures = Vec::new();
+
+        if let Some(capture) = capture {
+            if let Err(err) = capture.shutdown() {
+                failures.push(format!("{err:#}"));
+            }
+        }
+
+        if let Some(dns) = dns {
+            if let Err(err) = dns.shutdown() {
+                failures.push(format!("{err:#}"));
+            }
+        }
+
+        if let Some(proxy) = proxy {
+            if let Err(err) = proxy.shutdown() {
+                failures.push(format!("{err:#}"));
+            }
+        }
+
+        if let Err(err) = match network {
+            network::NetworkContext::Rootful(ctx) => {
+                drop(ctx);
+                Ok(())
+            }
+            network::NetworkContext::RootlessInternal(ctx) => ctx.shutdown(),
+        } {
+            failures.push(format!("{err:#}"));
+        }
+
+        drop(cgroup);
+
+        if failures.is_empty() {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "one or more runtime components failed during shutdown:\n{}",
+            failures
+                .iter()
+                .map(|failure| format!("- {failure}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 }
 
@@ -166,165 +358,5 @@ fn wait_status_to_exit_code(status: WaitStatus) -> i32 {
         WaitStatus::Exited(_, code) => code,
         WaitStatus::Signaled(_, signal, _) => 128 + signal as i32,
         _ => 1,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn maybe_write_resolv_conf(run_id: &str, content: &str) -> Result<Option<TempFileGuard>> {
-    let path = PathBuf::from(format!("/tmp/childflow-resolv-{run_id}.conf"));
-    std::fs::write(&path, content).with_context(|| {
-        format!(
-            "failed to write temporary resolv.conf at {}",
-            path.display()
-        )
-    })?;
-
-    Ok(Some(TempFileGuard { path }))
-}
-
-#[cfg(target_os = "linux")]
-fn prepare_dns_config(
-    run_id: &str,
-    dns: Option<Ipv4Addr>,
-    inherited_dns_ip: Ipv4Addr,
-) -> Result<DnsConfig> {
-    if let Some(dns) = dns {
-        let content = format!("nameserver {dns}\noptions timeout:1 attempts:1\n");
-        return Ok(DnsConfig {
-            resolv_guard: maybe_write_resolv_conf(run_id, &content)?,
-            upstream: None,
-        });
-    }
-
-    let host_resolv =
-        std::fs::read_to_string("/etc/resolv.conf").context("failed to read /etc/resolv.conf")?;
-    let inherited = build_inherited_dns_config(&host_resolv, inherited_dns_ip)?;
-
-    Ok(DnsConfig {
-        resolv_guard: maybe_write_resolv_conf(run_id, &inherited.resolv_conf)?,
-        upstream: Some(inherited.upstream),
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn build_inherited_dns_config(
-    host_resolv: &str,
-    inherited_dns_ip: Ipv4Addr,
-) -> Result<InheritedDnsConfig> {
-    let mut output = Vec::new();
-    let mut upstream = None;
-
-    for line in host_resolv.lines() {
-        let trimmed = line.trim();
-
-        if let Some(rest) = trimmed.strip_prefix("nameserver") {
-            let addr = rest.trim();
-            match addr.parse::<IpAddr>() {
-                Ok(IpAddr::V4(ip)) => {
-                    if upstream.is_none() {
-                        upstream = Some(ip);
-                    }
-                }
-                Ok(IpAddr::V6(_)) => {}
-                Err(_) => {}
-            }
-            continue;
-        }
-
-        if trimmed.starts_with("search ")
-            || trimmed.starts_with("domain ")
-            || trimmed.starts_with("options ")
-        {
-            output.push(trimmed.to_string());
-        }
-    }
-
-    let upstream = upstream
-        .ok_or_else(|| anyhow::anyhow!("no usable IPv4 nameserver found in /etc/resolv.conf"))?;
-
-    output.push(format!("nameserver {inherited_dns_ip}"));
-    if !output.iter().any(|line| line.starts_with("options ")) {
-        output.push("options timeout:1 attempts:1".to_string());
-    }
-
-    Ok(InheritedDnsConfig {
-        upstream,
-        resolv_conf: format!("{}\n", output.join("\n")),
-    })
-}
-
-#[cfg(target_os = "linux")]
-struct InheritedDnsConfig {
-    upstream: Ipv4Addr,
-    resolv_conf: String,
-}
-
-#[cfg(target_os = "linux")]
-struct DnsConfig {
-    resolv_guard: Option<TempFileGuard>,
-    upstream: Option<Ipv4Addr>,
-}
-
-#[cfg(target_os = "linux")]
-struct TempFileGuard {
-    path: PathBuf,
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_inherited_dns_config_rewrites_nameserver_and_preserves_options() {
-        let host_resolv = "\
-# Generated by test
-nameserver 8.8.8.8
-search example.internal
-options edns0 trust-ad
-";
-
-        let config = build_inherited_dns_config(host_resolv, Ipv4Addr::new(10, 0, 0, 2)).unwrap();
-
-        assert_eq!(config.upstream, Ipv4Addr::new(8, 8, 8, 8));
-        assert_eq!(
-            config.resolv_conf,
-            "search example.internal\noptions edns0 trust-ad\nnameserver 10.0.0.2\n"
-        );
-    }
-
-    #[test]
-    fn build_inherited_dns_config_adds_default_options_when_missing() {
-        let host_resolv = "\
-nameserver 2001:4860:4860::8888
-domain example.internal
-nameserver 1.1.1.1
-";
-
-        let config =
-            build_inherited_dns_config(host_resolv, Ipv4Addr::new(172, 16, 0, 10)).unwrap();
-
-        assert_eq!(config.upstream, Ipv4Addr::new(1, 1, 1, 1));
-        assert_eq!(
-            config.resolv_conf,
-            "domain example.internal\nnameserver 172.16.0.10\noptions timeout:1 attempts:1\n"
-        );
-    }
-
-    #[test]
-    fn build_inherited_dns_config_rejects_missing_ipv4_nameserver() {
-        let host_resolv = "\
-nameserver 2001:4860:4860::8888
-search example.internal
-";
-
-        let err = build_inherited_dns_config(host_resolv, Ipv4Addr::new(10, 0, 0, 2)).unwrap_err();
-        assert!(err.to_string().contains("no usable IPv4 nameserver found"));
     }
 }

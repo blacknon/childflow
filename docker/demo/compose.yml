@@ -1,0 +1,156 @@
+services:
+  origin-http:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - python
+      - /demo/origin_server.py
+      - --port
+      - "8080"
+      - --body
+      - origin-http-ok
+    networks:
+      backend:
+        ipv4_address: 10.241.0.10
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 8080), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  origin-https:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - bash
+      - -lc
+      - |
+        /demo/create-self-signed-cert.sh origin-https /tmp/origin.crt /tmp/origin.key
+        exec python /demo/origin_server.py --port 8443 --body origin-https-ok --tls-cert /tmp/origin.crt --tls-key /tmp/origin.key
+    networks:
+      backend:
+        ipv4_address: 10.241.0.11
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 8443), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  proxy-http:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - python
+      - /demo/proxy_server.py
+      - --port
+      - "3128"
+      - --user
+      - demo
+      - --password
+      - demo
+    networks:
+      client: {}
+      backend:
+        ipv4_address: 10.241.0.20
+    extra_hosts:
+      - "origin-http.demo:10.241.0.10"
+      - "origin-https.demo:10.241.0.11"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 3128), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  proxy-https:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - bash
+      - -lc
+      - |
+        /demo/create-self-signed-cert.sh proxy-https /tmp/proxy.crt /tmp/proxy.key
+        exec python /demo/proxy_server.py --port 3443 --tls-cert /tmp/proxy.crt --tls-key /tmp/proxy.key --user demo --password demo
+    networks:
+      client: {}
+      backend:
+        ipv4_address: 10.241.0.21
+    extra_hosts:
+      - "origin-http.demo:10.241.0.10"
+      - "origin-https.demo:10.241.0.11"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 3443), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  childflow-demo:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    working_dir: /workspaces/childflow
+    volumes:
+      - ../..:/workspaces/childflow
+    privileged: true
+    tty: true
+    stdin_open: true
+    extra_hosts:
+      - "origin-http.demo:10.241.0.10"
+      - "origin-https.demo:10.241.0.11"
+    depends_on:
+      origin-http:
+        condition: service_healthy
+      origin-https:
+        condition: service_healthy
+      proxy-http:
+        condition: service_healthy
+      proxy-https:
+        condition: service_healthy
+    networks:
+      client: {}
+
+networks:
+  client:
+    ipam:
+      config:
+        - subnet: 10.240.0.0/24
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.241.0.0/24
