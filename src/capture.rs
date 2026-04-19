@@ -176,6 +176,12 @@ fn capture_loop(mode: CaptureMode, output_path: &Path, stop: Arc<AtomicBool>) ->
             Err(err)
                 if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut => {}
             Err(err) => {
+                if stop.load(Ordering::Relaxed) {
+                    crate::util::debug(format!(
+                        "stopping AF_PACKET capture on {interface_name} after shutdown signal: {err}"
+                    ));
+                    break;
+                }
                 return Err(err)
                     .with_context(|| format!("AF_PACKET receive failed on {interface_name}"));
             }

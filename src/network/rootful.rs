@@ -1007,8 +1007,14 @@ impl NetworkContext {
         let mut failures = Vec::new();
 
         while let Some(action) = self.cleanup_actions.pop() {
-            if let Err(err) = run_cleanup_action(action) {
-                failures.push(format!("{err:#}"));
+            match run_cleanup_action(&action) {
+                Ok(()) => {}
+                Err(err) if is_ignorable_cleanup_error(&action, &err) => {
+                    debug(format!("{err:#}"));
+                }
+                Err(err) => {
+                    failures.push(format!("{err:#}"));
+                }
             }
         }
 
@@ -1234,7 +1240,7 @@ where
     }
 }
 
-fn run_cleanup_action(action: CleanupAction) -> Result<()> {
+fn run_cleanup_action(action: &CleanupAction) -> Result<()> {
     match action {
         CleanupAction::RestoreFile { path, value } => {
             fs::write(&path, format!("{value}\n")).with_context(|| format!("cleanup `{path}`"))
@@ -1243,16 +1249,41 @@ fn run_cleanup_action(action: CleanupAction) -> Result<()> {
             label,
             program,
             args,
-        } => run_command(program, args)
+        } => run_command(program, args.to_vec())
             .map(|_| ())
             .with_context(|| format!("cleanup `{label}`")),
-        CleanupAction::RunIptables { label, table, args } => run_iptables(table, args)
+        CleanupAction::RunIptables { label, table, args } => run_iptables(table, args.to_vec())
             .map(|_| ())
             .with_context(|| format!("cleanup `{label}`")),
-        CleanupAction::RunIp6tables { label, table, args } => run_ip6tables(table, args)
+        CleanupAction::RunIp6tables { label, table, args } => run_ip6tables(table, args.to_vec())
             .map(|_| ())
             .with_context(|| format!("cleanup `{label}`")),
     }
+}
+
+fn is_ignorable_cleanup_error(action: &CleanupAction, err: &anyhow::Error) -> bool {
+    match action {
+        CleanupAction::RestoreFile { path, .. } => {
+            path.contains("/proc/sys/net/ipv4/conf/")
+                && path.ends_with("/rp_filter")
+                && error_chain_has_io_kind(err, std::io::ErrorKind::NotFound)
+        }
+        CleanupAction::RunCommand { label, .. } => {
+            *label == "delete host veth pair" && error_chain_contains(err, "Cannot find device")
+        }
+        CleanupAction::RunIptables { .. } | CleanupAction::RunIp6tables { .. } => false,
+    }
+}
+
+fn error_chain_has_io_kind(err: &anyhow::Error, kind: std::io::ErrorKind) -> bool {
+    err.chain()
+        .filter_map(|source| source.downcast_ref::<std::io::Error>())
+        .any(|io_err| io_err.kind() == kind)
+}
+
+fn error_chain_contains(err: &anyhow::Error, needle: &str) -> bool {
+    err.chain()
+        .any(|source| source.to_string().contains(needle))
 }
 
 fn replace_action_flag(args: &[String], from: &str, to: &str) -> Vec<String> {
@@ -1331,5 +1362,20 @@ mod tests {
         let replaced =
             replace_action_flag(&["-A".into(), "FORWARD".into(), "-A".into()], "-A", "-D");
         assert_eq!(replaced, vec!["-D", "FORWARD", "-A"]);
+    }
+
+    #[test]
+    fn error_chain_has_io_kind_finds_context_wrapped_not_found() {
+        let err = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("cleanup `/proc/sys/net/ipv4/conf/test/rp_filter`");
+        assert!(error_chain_has_io_kind(&err, std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn error_chain_contains_finds_nested_command_error_message() {
+        let err = anyhow!("command failed: `ip link del cfh123`")
+            .context("stderr: Cannot find device \"cfh123\"")
+            .context("cleanup `delete host veth pair`");
+        assert!(error_chain_contains(&err, "Cannot find device"));
     }
 }
