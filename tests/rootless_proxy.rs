@@ -20,18 +20,15 @@ fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()
     let host_ip = discover_reachable_host_ipv4()?;
     let output_path = unique_temp_capture_path("rootless-local-http");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_childflow"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args([
-            "-o",
-            output_path.to_str().unwrap(),
-            "--",
-            "python3",
-            "-c",
-            "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
-            &format!("http://{host_ip}:{}/hello", server_addr.port()),
-        ])
-        .output()
+    let output = run_childflow_command(&[
+        "-o",
+        output_path.to_str().unwrap(),
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
         .context("failed to run childflow rootless-internal local HTTP smoke test")?;
 
     assert!(
@@ -51,8 +48,27 @@ fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()
     assert_eq!(request_line, "GET /hello HTTP/1.1");
 
     assert_capture_file_written(&output_path)?;
+    assert_capture_has_enhanced_packets(&output_path, 4)?;
     let _ = std::fs::remove_file(&output_path);
     Ok(())
+}
+
+fn run_childflow_command(args: &[&str]) -> Result<std::process::Output> {
+    let binary = env!("CARGO_BIN_EXE_childflow");
+    let mut command = if unsafe { nix::libc::geteuid() } == 0 {
+        let mut command = Command::new(binary);
+        command.args(args);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg(binary).args(args);
+        command
+    };
+
+    command.current_dir(env!("CARGO_MANIFEST_DIR"));
+    command
+        .output()
+        .with_context(|| format!("failed to execute childflow command `{binary}`"))
 }
 
 #[test]
@@ -531,6 +547,128 @@ fn assert_capture_file_written(path: &PathBuf) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+fn assert_capture_has_enhanced_packets(path: &PathBuf, minimum_packets: usize) -> Result<()> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("failed to read capture output {}", path.display()))?;
+    let packet_count = count_pcapng_enhanced_packets(&bytes).with_context(|| {
+        format!(
+            "failed to parse pcapng blocks while checking {}",
+            path.display()
+        )
+    })?;
+
+    assert!(
+        packet_count >= minimum_packets,
+        "expected at least {minimum_packets} enhanced packet blocks in {}, found {packet_count}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn count_pcapng_enhanced_packets(bytes: &[u8]) -> Result<usize> {
+    const SECTION_HEADER_BLOCK: u32 = 0x0A0D0D0A;
+    const ENHANCED_PACKET_BLOCK: u32 = 0x00000006;
+    const BYTE_ORDER_MAGIC: u32 = 0x1A2B3C4D;
+    const SWAPPED_BYTE_ORDER_MAGIC: u32 = 0x4D3C2B1A;
+
+    if bytes.len() < 12 {
+        bail!("pcapng file is too short to contain a section header");
+    }
+
+    let mut offset = 0usize;
+    let mut little_endian = true;
+    let mut saw_section_header = false;
+    let mut packet_count = 0usize;
+
+    while offset + 12 <= bytes.len() {
+        let block_type = read_u32_le(bytes, offset)?;
+        let total_length_le = read_u32_le(bytes, offset + 4)?;
+
+        if block_type == SECTION_HEADER_BLOCK {
+            let magic = read_u32_le(bytes, offset + 8)?;
+            little_endian = match magic {
+                BYTE_ORDER_MAGIC => true,
+                SWAPPED_BYTE_ORDER_MAGIC => false,
+                other => bail!("unexpected pcapng byte-order magic: 0x{other:08x}"),
+            };
+            saw_section_header = true;
+        }
+
+        let total_length = if little_endian {
+            total_length_le
+        } else {
+            read_u32_be(bytes, offset + 4)?
+        } as usize;
+
+        if total_length < 12 {
+            bail!("pcapng block at offset {offset} has an invalid length of {total_length}");
+        }
+
+        let block_end = offset
+            .checked_add(total_length)
+            .ok_or_else(|| anyhow!("pcapng block length overflowed at offset {offset}"))?;
+        if block_end > bytes.len() {
+            bail!(
+                "pcapng block at offset {offset} extends past the end of the file (len {total_length})"
+            );
+        }
+
+        let trailing_length = if little_endian {
+            read_u32_le(bytes, block_end - 4)?
+        } else {
+            read_u32_be(bytes, block_end - 4)?
+        } as usize;
+        if trailing_length != total_length {
+            bail!(
+                "pcapng block at offset {offset} has mismatched lengths: {total_length} vs {trailing_length}"
+            );
+        }
+
+        let normalized_block_type = if little_endian {
+            block_type
+        } else {
+            read_u32_be(bytes, offset)?
+        };
+        if normalized_block_type == ENHANCED_PACKET_BLOCK {
+            packet_count += 1;
+        }
+
+        offset = block_end;
+    }
+
+    if !saw_section_header {
+        bail!("pcapng file did not contain a section header block");
+    }
+    if offset != bytes.len() {
+        bail!(
+            "pcapng file has {} trailing bytes after the last full block",
+            bytes.len() - offset
+        );
+    }
+
+    Ok(packet_count)
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| anyhow!("offset overflow while reading little-endian u32"))?;
+    let slice = bytes.get(offset..end).ok_or_else(|| {
+        anyhow!("unexpected EOF while reading little-endian u32 at offset {offset}")
+    })?;
+    Ok(u32::from_le_bytes(slice.try_into().unwrap()))
+}
+
+fn read_u32_be(bytes: &[u8], offset: usize) -> Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| anyhow!("offset overflow while reading big-endian u32"))?;
+    let slice = bytes
+        .get(offset..end)
+        .ok_or_else(|| anyhow!("unexpected EOF while reading big-endian u32 at offset {offset}"))?;
+    Ok(u32::from_be_bytes(slice.try_into().unwrap()))
 }
 
 fn unique_temp_capture_path(prefix: &str) -> PathBuf {
