@@ -104,25 +104,32 @@ impl CaptureHandle {
         })
     }
 
-    fn stop_and_join(&mut self) {
+    fn stop_and_join(&mut self) -> Result<()> {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(join) = self.join.take() {
             match join.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
-                    crate::util::warn(format!("packet capture stopped with an error: {err:#}"));
+                    return Err(err).context("packet capture stopped with an error");
                 }
                 Err(_) => {
-                    crate::util::warn("packet capture thread panicked");
+                    bail!("packet capture thread panicked");
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn shutdown(mut self) -> Result<()> {
+        self.stop_and_join()
     }
 }
 
 impl Drop for CaptureHandle {
     fn drop(&mut self) {
-        self.stop_and_join();
+        if let Err(err) = self.stop_and_join() {
+            crate::util::warn(format!("{err:#}"));
+        }
     }
 }
 

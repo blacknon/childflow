@@ -99,23 +99,34 @@ impl DnsHandle {
         Ok(Self { stop, joins })
     }
 
-    fn stop_and_join(&mut self) {
+    fn stop_and_join(&mut self) -> Result<()> {
         self.stop.store(true, Ordering::Relaxed);
+        let mut failures = Vec::new();
         while let Some(join) = self.joins.pop() {
             match join.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
-                    crate::util::warn(format!("DNS forwarder stopped with an error: {err:#}"));
+                    failures.push(format!("{err:#}"));
                 }
-                Err(_) => crate::util::warn("DNS forwarder thread panicked"),
+                Err(_) => failures.push("DNS forwarder thread panicked".to_string()),
             }
         }
+        if failures.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!(failures.join("\n"));
+    }
+
+    pub fn shutdown(mut self) -> Result<()> {
+        self.stop_and_join()
     }
 }
 
 impl Drop for DnsHandle {
     fn drop(&mut self) {
-        self.stop_and_join();
+        if let Err(err) = self.stop_and_join() {
+            crate::util::warn(format!("DNS forwarder stopped with an error: {err:#}"));
+        }
     }
 }
 

@@ -32,19 +32,6 @@ mod tproxy;
 mod util;
 
 #[cfg(target_os = "linux")]
-use std::fs::File;
-#[cfg(target_os = "linux")]
-use std::io::{Read, Write};
-#[cfg(target_os = "linux")]
-use std::os::unix::net::UnixStream;
-#[cfg(target_os = "linux")]
-use std::process;
-#[cfg(target_os = "linux")]
-use std::thread;
-#[cfg(target_os = "linux")]
-use std::time::Duration;
-
-#[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
 #[cfg(target_os = "linux")]
 use clap::Parser;
@@ -52,6 +39,14 @@ use clap::Parser;
 use nix::sys::wait::{waitpid, WaitStatus};
 #[cfg(target_os = "linux")]
 use nix::unistd::{fork, pipe, ForkResult};
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::UnixStream;
+#[cfg(target_os = "linux")]
+use std::process;
 
 #[cfg(target_os = "linux")]
 use capture::CaptureHandle;
@@ -213,9 +208,7 @@ fn real_main() -> Result<i32> {
 
             let status = waitpid(child, None).context("waitpid failed")?;
 
-            // Give the AF_PACKET capture loop a moment to drain the final frames.
-            thread::sleep(Duration::from_millis(250));
-            drop(runtime);
+            runtime.shutdown()?;
 
             Ok(wait_status_to_exit_code(status))
         }
@@ -224,11 +217,11 @@ fn real_main() -> Result<i32> {
 
 #[cfg(target_os = "linux")]
 struct ParentRuntime {
-    _capture: Option<CaptureHandle>,
-    _dns: Option<dns::DnsHandle>,
-    _network: network::NetworkContext,
-    _proxy: Option<TproxyHandle>,
-    _cgroup: Option<CgroupManager>,
+    capture: Option<CaptureHandle>,
+    dns: Option<dns::DnsHandle>,
+    network: network::NetworkContext,
+    proxy: Option<TproxyHandle>,
+    cgroup: Option<CgroupManager>,
 }
 
 #[cfg(target_os = "linux")]
@@ -296,12 +289,66 @@ impl ParentRuntime {
         };
 
         Ok(Self {
-            _capture: capture,
-            _dns: dns,
-            _network: network,
-            _proxy: proxy,
-            _cgroup: cgroup,
+            capture,
+            dns,
+            network,
+            proxy,
+            cgroup,
         })
+    }
+
+    fn shutdown(self) -> Result<()> {
+        let Self {
+            capture,
+            dns,
+            network,
+            proxy,
+            cgroup,
+        } = self;
+        let mut failures = Vec::new();
+
+        if let Some(capture) = capture {
+            if let Err(err) = capture.shutdown() {
+                failures.push(format!("{err:#}"));
+            }
+        }
+
+        if let Some(dns) = dns {
+            if let Err(err) = dns.shutdown() {
+                failures.push(format!("{err:#}"));
+            }
+        }
+
+        if let Some(proxy) = proxy {
+            if let Err(err) = proxy.shutdown() {
+                failures.push(format!("{err:#}"));
+            }
+        }
+
+        if let Err(err) = match network {
+            network::NetworkContext::Rootful(ctx) => {
+                drop(ctx);
+                Ok(())
+            }
+            network::NetworkContext::RootlessInternal(ctx) => ctx.shutdown(),
+        } {
+            failures.push(format!("{err:#}"));
+        }
+
+        drop(cgroup);
+
+        if failures.is_empty() {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "one or more runtime components failed during shutdown:\n{}",
+            failures
+                .iter()
+                .map(|failure| format!("- {failure}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 }
 

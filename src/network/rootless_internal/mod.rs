@@ -63,12 +63,16 @@ impl ChildBootstrap {
 }
 
 pub struct NetworkContext {
-    _engine: engine::EngineHandle,
+    engine: engine::EngineHandle,
 }
 
 impl NetworkContext {
     pub fn capture_mode(&self) -> Option<crate::capture::CaptureMode> {
         None
+    }
+
+    pub fn shutdown(self) -> Result<()> {
+        self.engine.shutdown()
     }
 }
 
@@ -109,5 +113,5 @@ pub fn setup(
     )
     .context("failed to start the rootless-internal userspace networking engine")?;
 
-    Ok(NetworkContext { _engine: engine })
+    Ok(NetworkContext { engine })
 }

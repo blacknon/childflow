@@ -56,25 +56,30 @@ impl EngineHandle {
         })
     }
 
-    fn stop_and_join(&mut self) {
+    fn stop_and_join(&mut self) -> Result<()> {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(join) = self.join.take() {
             match join.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => {
-                    util::warn(format!(
-                        "rootless-internal engine stopped with an error: {err:#}"
-                    ));
+                    return Err(err).context("rootless-internal engine stopped with an error");
                 }
-                Err(_) => util::warn("rootless-internal engine thread panicked"),
+                Err(_) => anyhow::bail!("rootless-internal engine thread panicked"),
             }
         }
+        Ok(())
+    }
+
+    pub fn shutdown(mut self) -> Result<()> {
+        self.stop_and_join()
     }
 }
 
 impl Drop for EngineHandle {
     fn drop(&mut self) {
-        self.stop_and_join();
+        if let Err(err) = self.stop_and_join() {
+            util::warn(format!("{err:#}"));
+        }
     }
 }
 
