@@ -1243,7 +1243,7 @@ where
 fn run_cleanup_action(action: &CleanupAction) -> Result<()> {
     match action {
         CleanupAction::RestoreFile { path, value } => {
-            fs::write(&path, format!("{value}\n")).with_context(|| format!("cleanup `{path}`"))
+            fs::write(path, format!("{value}\n")).with_context(|| format!("cleanup `{path}`"))
         }
         CleanupAction::RunCommand {
             label,
