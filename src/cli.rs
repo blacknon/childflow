@@ -113,17 +113,6 @@ impl Cli {
             bail!("`--proxy-insecure` is only valid with an `https://` upstream proxy");
         }
 
-        match self.selected_backend() {
-            NetworkBackend::Rootful => {
-                if self.output.is_none() {
-                    bail!(
-                        "`--output` is required with the `rootful` backend because packet capture currently depends on the host-side veth capture path"
-                    );
-                }
-            }
-            NetworkBackend::RootlessInternal => {}
-        }
-
         Ok(())
     }
 }
@@ -283,14 +272,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_requires_output_for_rootful_backend() {
+    fn validate_allows_rootful_backend_without_output() {
         let cli = Cli {
             network_backend: NetworkBackend::Rootful,
             ..make_cli()
         };
 
-        let err = cli.validate().unwrap_err();
-        assert!(err.to_string().contains("`--output` is required"));
+        cli.validate().unwrap();
     }
 
     #[test]
@@ -359,22 +347,20 @@ mod tests {
     }
 
     #[test]
-    fn validate_root_flag_overrides_hidden_backend_and_requires_rootful_constraints() {
+    fn validate_root_flag_overrides_hidden_backend_and_allows_rootful_without_output() {
         let cli = Cli {
             root: true,
             network_backend: NetworkBackend::RootlessInternal,
             ..make_cli()
         };
 
-        let err = cli.validate().unwrap_err();
-        assert!(err.to_string().contains("`--output` is required"));
+        cli.validate().unwrap();
     }
 
     #[test]
-    fn validate_root_flag_allows_iface_when_output_is_present() {
+    fn validate_root_flag_allows_iface_without_output() {
         let cli = Cli {
             root: true,
-            output: Some(PathBuf::from("out.pcapng")),
             iface: Some("eth0".into()),
             ..make_cli()
         };
@@ -383,10 +369,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_hidden_rootful_backend_allows_iface_when_output_is_present() {
+    fn validate_hidden_rootful_backend_allows_iface_without_output() {
         let cli = Cli {
             network_backend: NetworkBackend::Rootful,
-            output: Some(PathBuf::from("out.pcapng")),
             iface: Some("eth0".into()),
             ..make_cli()
         };

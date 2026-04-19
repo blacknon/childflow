@@ -16,12 +16,11 @@ This document collects the lower-level backend notes, capture details, troublesh
 | Explicit upstream proxy | Yes, via transparent interception path | Yes, via parent-side relay engine |
 | Transparent proxy / TPROXY | Yes | Not supported |
 | `--iface` | Yes | Not supported |
-| Packet capture | Yes, via host-side AF_PACKET on the veth path | Yes, via tap/engine-boundary capture when `--output` is set |
+| Packet capture | Optional, via host-side AF_PACKET on the veth path when `--output` is set | Optional, via tap/engine-boundary capture when `--output` is set |
 | Status | Current feature-complete backend | Experimental |
 
 ## Backend Notes
 
-- `rootful` currently requires `--output`
 - `rootful` is enabled explicitly with `--root` when you want the current feature-complete backend
 - `rootless-internal` currently rejects `--iface` and transparent proxy / TPROXY behavior because those paths are not implemented yet
 - `rootless-internal` supports child isolation, DNS relay, outbound TCP, generic UDP relay, IPv4 / IPv6 ICMP echo relay for `ping`, traceroute-style ICMP error relay for both UDP and ICMP echo probes, best-effort direct relay for other outbound ICMP request types, relay-based HTTP / HTTPS / SOCKS5 upstream proxying, `/etc/hosts` override, and tap/engine-boundary packet capture via `--output`

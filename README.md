@@ -125,7 +125,7 @@ Notes:
 
 - `--iface` is not supported by `rootless-internal`
 - `--proxy-insecure` is valid only for `https://` upstream proxies
-- `rootful` currently requires `--output`
+- packet capture is optional on both backends; use `--output` when you want a `pcapng` artifact
 
 ### Backend Comparison
 
@@ -139,7 +139,7 @@ Notes:
 | Proxy support | Yes, via parent-side relay engine | Yes, via transparent interception path |
 | Transparent proxy / TPROXY | No | Yes |
 | `--iface` | No | Yes |
-| Packet capture | Yes, at tap / engine boundary | Yes, at host-side veth |
+| Packet capture | Optional, at tap / engine boundary when `--output` is set | Optional, at host-side veth when `--output` is set |
 | Status | Experimental default backend | Current feature-complete backend |
 
 ### Which backend should I use?
