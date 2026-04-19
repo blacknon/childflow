@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Blacknon. All rights reserved.
+// Use of this source code is governed by an MIT license
+// that can be found in the LICENSE file.
+
 use std::path::Path;
 use std::process::{self, Command};
 use std::time::{SystemTime, UNIX_EPOCH};

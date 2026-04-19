@@ -100,6 +100,41 @@ What is not captured:
 
 ### `rootless-internal`
 
+Capture happens at the `tap0` / userspace-engine boundary, shown below as `tap0`.
+
+```mermaid
+flowchart LR
+    subgraph ChildNetNS["child netns"]
+        CP["child process"]
+        TAP["tap0"]
+        CP --> TAP
+    end
+
+    subgraph ParentSide["parent-side userspace engine"]
+        ENG["userspace engine"]
+        DNSR["DNS relay"]
+        PROXY["HTTP / HTTPS / SOCKS5 upstream proxying"]
+        ICMP["ICMP echo / traceroute relay"]
+        UDPR["UDP relay"]
+    end
+
+    OD["original destination"]
+    DNSU["upstream DNS"]
+    PCAP[("pcapng\ncurrent capture")]
+
+    TAP --> ENG
+    ENG -. captured .-> PCAP
+    ENG --> UDPR
+    UDPR --> OD
+    ENG --> ICMP
+    ICMP --> OD
+    ENG --> DNSR
+    DNSR --> DNSU
+    ENG --> PROXY
+    PROXY --> OD
+    ENG --> TAP
+```
+
 Capture is taken at the `tap0` / userspace-engine boundary instead of the host-side veth. That means the file shows what the child emitted into the isolated rootless network stack and what the engine returned to the child, not the host-side TCP stream after proxying or relay.
 
 ## Requirements

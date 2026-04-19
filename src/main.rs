@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Blacknon. All rights reserved.
+// Use of this source code is governed by an MIT license
+// that can be found in the LICENSE file.
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("childflow is Linux-only. On macOS, use the Docker-based workflow in README.md.");
 
