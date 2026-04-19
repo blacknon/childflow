@@ -15,6 +15,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 
 #[test]
+fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-local-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let output_path = unique_temp_capture_path("rootless-local-http");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_childflow"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-o",
+            output_path.to_str().unwrap(),
+            "--",
+            "python3",
+            "-c",
+            "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+            &format!("http://{host_ip}:{}/hello", server_addr.port()),
+        ])
+        .output()
+        .context("failed to run childflow rootless-internal local HTTP smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "childflow-local-ok");
+
+    let request_line = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("local HTTP server did not receive a request from the childflow run")?;
+    assert_eq!(request_line, "GET /hello HTTP/1.1");
+
+    assert_capture_file_written(&output_path)?;
+    let _ = std::fs::remove_file(&output_path);
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires privileged linux namespaces, outbound network access, curl, and a local proxy listener"]
 fn rootless_internal_routes_https_through_relay_http_proxy() -> Result<()> {
     let (proxy_addr, requests) = spawn_http_connect_proxy()?;
@@ -390,6 +431,49 @@ fn spawn_http_connect_proxy() -> Result<(SocketAddr, Receiver<String>)> {
 
         if let Err(err) = result {
             let _ = request_tx.send(format!("proxy-error: {err:#}"));
+        }
+    });
+
+    Ok((addr, request_rx))
+}
+
+fn spawn_local_http_server(body: &'static str) -> Result<(SocketAddr, Receiver<String>)> {
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .context("failed to bind local HTTP server")?;
+    let addr = listener
+        .local_addr()
+        .context("failed to query local HTTP server address")?;
+    let (request_tx, request_rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result: Result<()> = (|| {
+            let (mut stream, _) = listener
+                .accept()
+                .context("local HTTP server accept failed")?;
+            let request = read_http_headers(&mut stream)
+                .context("failed to read local HTTP server request")?;
+            let request_line = request
+                .lines()
+                .next()
+                .ok_or_else(|| anyhow!("local HTTP server request was empty"))?
+                .to_string();
+            request_tx
+                .send(request_line)
+                .context("failed to publish local HTTP request line to test thread")?;
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .context("failed to write local HTTP server response")?;
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            let _ = request_tx.send(format!("server-error: {err:#}"));
         }
     });
 

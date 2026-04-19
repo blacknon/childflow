@@ -24,6 +24,41 @@ const ROOTLESS_INTERNAL_NAMESPACE_PATHS: &[&str] = &[
     "/proc/self/ns/mnt",
 ];
 
+#[derive(Default)]
+struct PreflightReport {
+    fatal: Vec<String>,
+    warnings: Vec<String>,
+}
+
+impl PreflightReport {
+    fn push_fatal(&mut self, message: impl Into<String>) {
+        self.fatal.push(message.into());
+    }
+
+    fn push_warning(&mut self, message: impl Into<String>) {
+        self.warnings.push(message.into());
+    }
+
+    fn emit_warnings(&self) {
+        for warning in &self.warnings {
+            crate::util::warn(format!("preflight: {warning}"));
+        }
+    }
+
+    fn finish(self, backend_name: &str) -> Result<()> {
+        self.emit_warnings();
+
+        if self.fatal.is_empty() {
+            return Ok(());
+        }
+
+        bail!(
+            "preflight checks failed for the `{backend_name}` backend:\n{}",
+            render_issue_list(&self.fatal)
+        );
+    }
+}
+
 pub fn run(cli: &Cli) -> Result<()> {
     match cli.selected_backend() {
         NetworkBackend::Rootful => run_rootful_preflight(cli),
@@ -37,74 +72,67 @@ fn run_rootful_preflight(cli: &Cli) -> Result<()> {
     let path_env = env::var_os("PATH").unwrap_or_default();
     let missing_commands = find_missing_commands(ROOTFUL_REQUIRED_COMMANDS, &path_env);
     let unwritable_paths = find_unwritable_paths(ROOTFUL_REQUIRED_SYSCTLS);
-    let issues = build_rootful_issue_messages(&missing_commands, &unwritable_paths);
+    let mut report = build_rootful_report(&missing_commands, &unwritable_paths);
 
-    if issues.is_empty() {
-        if cli.proxy.is_some() {
-            crate::util::debug(
-                "rootful preflight passed. Transparent proxy mode will still require Linux TPROXY support (`xt_TPROXY`, `xt_socket`, policy routing, and `IP_TRANSPARENT`) during setup",
-            );
-        }
-        return Ok(());
+    if cli.proxy.is_some() {
+        report.push_warning(
+            "transparent proxy mode still depends on Linux TPROXY support (`xt_TPROXY`, `xt_socket`, policy routing, and `IP_TRANSPARENT`) during setup",
+        );
     }
 
-    bail!(
-        "preflight checks failed for the `rootful` backend before childflow touched host networking:\n{}",
-        render_issue_list(&issues)
-    );
+    report.finish("rootful")
 }
 
 fn run_rootless_internal_preflight() -> Result<()> {
     let path_env = env::var_os("PATH").unwrap_or_default();
-    let issues = collect_rootless_internal_issues(&path_env);
-
-    if issues.is_empty() {
-        return Ok(());
-    }
-
-    bail!(
-        "preflight checks failed for the `rootless-internal` backend:\n{}",
-        render_issue_list(&issues)
-    );
+    collect_rootless_internal_report(&path_env).finish("rootless-internal")
 }
 
-fn collect_rootless_internal_issues(path_env: &OsStr) -> Vec<String> {
-    let mut issues = Vec::new();
+fn collect_rootless_internal_report(path_env: &OsStr) -> PreflightReport {
+    let mut report = PreflightReport::default();
 
     let missing_commands = find_missing_commands(ROOTLESS_INTERNAL_REQUIRED_COMMANDS, path_env);
     if !missing_commands.is_empty() {
-        issues.push(format!(
+        report.push_fatal(format!(
             "missing required external commands for the `rootless-internal` backend: {}. Install `iproute2` so childflow can configure `tap0`, loopback, and default routes inside the child namespace.",
             missing_commands.join(", ")
         ));
     }
 
-    issues.extend(find_missing_paths(ROOTLESS_INTERNAL_NAMESPACE_PATHS));
+    for issue in find_missing_paths(ROOTLESS_INTERNAL_NAMESPACE_PATHS) {
+        report.push_fatal(issue);
+    }
 
     match parse_proc_u64("/proc/sys/user/max_user_namespaces") {
-        Ok(Some(0)) => issues.push(
-            "`/proc/sys/user/max_user_namespaces` is `0`; enable user namespaces before using the `rootless-internal` backend".to_string(),
+        Ok(Some(0)) => report.push_fatal(
+            "`/proc/sys/user/max_user_namespaces` is `0`; enable user namespaces before using the `rootless-internal` backend",
         ),
-        Ok(Some(_)) | Ok(None) => {}
-        Err(err) => issues.push(err.to_string()),
+        Ok(Some(_)) => {}
+        Ok(None) => report.push_warning(
+            "`/proc/sys/user/max_user_namespaces` is unavailable in this environment; namespace availability will be determined during setup",
+        ),
+        Err(err) => report.push_warning(err.to_string()),
     }
 
     if unsafe { nix::libc::geteuid() } != 0 {
         match parse_proc_u64("/proc/sys/kernel/unprivileged_userns_clone") {
-            Ok(Some(0)) => issues.push(
-                "`/proc/sys/kernel/unprivileged_userns_clone` is disabled; enable unprivileged user namespaces or run with sufficient privileges".to_string(),
+            Ok(Some(0)) => report.push_fatal(
+                "`/proc/sys/kernel/unprivileged_userns_clone` is disabled; enable unprivileged user namespaces or run with sufficient privileges",
             ),
-            Ok(Some(_)) | Ok(None) => {}
-            Err(err) => issues.push(err.to_string()),
+            Ok(Some(_)) => {}
+            Ok(None) => report.push_warning(
+                "`/proc/sys/kernel/unprivileged_userns_clone` is unavailable; non-root user-namespace setup may still fail later on this host",
+            ),
+            Err(err) => report.push_warning(err.to_string()),
         }
     }
 
     match check_tun_device("/dev/net/tun") {
         Ok(()) => {}
-        Err(err) => issues.push(err.to_string()),
+        Err(err) => report.push_fatal(err.to_string()),
     }
 
-    issues
+    report
 }
 
 fn check_tun_device(path: &str) -> Result<()> {
@@ -152,27 +180,27 @@ fn find_missing_paths(paths: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn build_rootful_issue_messages(
+fn build_rootful_report(
     missing_commands: &[String],
     unwritable_paths: &[String],
-) -> Vec<String> {
-    let mut issues = Vec::new();
+) -> PreflightReport {
+    let mut report = PreflightReport::default();
 
     if !missing_commands.is_empty() {
-        issues.push(format!(
+        report.push_fatal(format!(
             "missing required external commands: {}. Install `iproute2` for `ip`, and install an `iptables` / `ip6tables` userspace compatible with your kernel firewall backend.",
             missing_commands.join(", ")
         ));
     }
 
     if !unwritable_paths.is_empty() {
-        issues.push(format!(
+        report.push_fatal(format!(
             "required sysctl files are not writable: {}. Check root privileges, container restrictions, and whether `/proc/sys` is mounted read-write.",
             unwritable_paths.join(", ")
         ));
     }
 
-    issues
+    report
 }
 
 fn render_issue_list(issues: &[String]) -> String {
@@ -232,8 +260,9 @@ mod tests {
 
     #[test]
     fn build_rootful_issue_messages_reports_only_real_failures() {
-        let issues = build_rootful_issue_messages(&["ip".into()], &[]);
-        assert_eq!(issues.len(), 1);
+        let report = build_rootful_report(&["ip".into()], &[]);
+        assert_eq!(report.fatal.len(), 1);
+        assert!(report.warnings.is_empty());
     }
 
     #[test]
@@ -248,5 +277,13 @@ mod tests {
             parse_proc_u64("/tmp/childflow-preflight/definitely-missing").unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn preflight_report_finish_succeeds_with_only_warnings() {
+        let mut report = PreflightReport::default();
+        report.push_warning("heads up");
+
+        report.finish("rootless-internal").unwrap();
     }
 }
