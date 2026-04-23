@@ -24,16 +24,15 @@ pub struct Cli {
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
 
-    /// Use the rootful backend. Without this flag, childflow uses the default rootless backend.
-    #[arg(long = "root")]
+    /// Compatibility alias for `--network-backend rootful`.
+    #[arg(long = "root", hide = true)]
     pub root: bool,
 
-    /// Select the networking backend. This is kept as a hidden compatibility escape hatch; use `--root` for the public CLI.
+    /// Select the networking backend. `rootless-internal` is experimental and still under construction.
     #[arg(
         long = "network-backend",
         value_enum,
-        default_value_t = NetworkBackend::RootlessInternal,
-        hide = true
+        default_value_t = NetworkBackend::Rootful
     )]
     pub network_backend: NetworkBackend,
 
@@ -45,7 +44,7 @@ pub struct Cli {
     #[arg(long = "hosts-file")]
     pub hosts_file: Option<PathBuf>,
 
-    /// Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080. `--root` uses transparent interception, while the default rootless backend relays outbound TCP through the selected proxy from the parent-side engine.
+    /// Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080.
     #[arg(short = 'p', long = "proxy")]
     pub proxy: Option<ProxySpec>,
 
@@ -84,10 +83,28 @@ impl Cli {
             bail!("missing command to execute");
         }
 
-        if matches!(self.selected_backend(), NetworkBackend::RootlessInternal)
-            && self.iface.is_some()
-        {
-            bail!("`--iface` is not supported by the `rootless-internal` backend");
+        if matches!(self.selected_backend(), NetworkBackend::RootlessInternal) {
+            if self.iface.is_some() {
+                bail!("`--iface` is not supported by the `rootless-internal` backend");
+            }
+
+            if self.output.is_some() {
+                bail!(
+                    "`--output` is not yet supported by the `rootless-internal` backend during this experimental phase"
+                );
+            }
+
+            if self.proxy.is_some() {
+                bail!(
+                    "`--proxy` is not yet supported by the `rootless-internal` backend during this experimental phase"
+                );
+            }
+
+            if self.proxy_user.is_some() || self.proxy_password.is_some() || self.proxy_insecure {
+                bail!(
+                    "proxy authentication and TLS options are not yet supported by the `rootless-internal` backend"
+                );
+            }
         }
 
         if let Some(path) = &self.hosts_file {
@@ -210,7 +227,7 @@ mod tests {
         Cli {
             output: None,
             root: false,
-            network_backend: NetworkBackend::RootlessInternal,
+            network_backend: NetworkBackend::Rootful,
             dns: None,
             hosts_file: None,
             proxy: None,
@@ -284,6 +301,7 @@ mod tests {
     #[test]
     fn validate_rejects_rootless_internal_iface() {
         let cli = Cli {
+            network_backend: NetworkBackend::RootlessInternal,
             iface: Some("eth0".into()),
             ..make_cli()
         };
@@ -294,34 +312,43 @@ mod tests {
     }
 
     #[test]
-    fn validate_allows_rootless_internal_relay_proxy() {
+    fn validate_rejects_rootless_internal_proxy() {
         let cli = Cli {
+            network_backend: NetworkBackend::RootlessInternal,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             ..make_cli()
         };
 
-        cli.validate().unwrap();
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("`--proxy`"));
+        assert!(err.to_string().contains("rootless-internal"));
     }
 
     #[test]
-    fn validate_allows_rootless_internal_proxy_insecure_for_https_proxy() {
+    fn validate_rejects_rootless_internal_proxy_tls_options() {
         let cli = Cli {
+            network_backend: NetworkBackend::RootlessInternal,
             proxy: Some("https://proxy.example.com:443".parse().unwrap()),
             proxy_insecure: true,
             ..make_cli()
         };
 
-        cli.validate().unwrap();
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("rootless-internal"));
+        assert!(err.to_string().contains("not yet supported"));
     }
 
     #[test]
-    fn validate_allows_rootless_internal_output() {
+    fn validate_rejects_rootless_internal_output() {
         let cli = Cli {
+            network_backend: NetworkBackend::RootlessInternal,
             output: Some(PathBuf::from("out.pcapng")),
             ..make_cli()
         };
 
-        cli.validate().unwrap();
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("`--output`"));
+        assert!(err.to_string().contains("rootless-internal"));
     }
 
     #[test]
@@ -338,7 +365,6 @@ mod tests {
     #[test]
     fn selected_backend_uses_root_flag() {
         let cli = Cli {
-            output: Some(PathBuf::from("out.pcapng")),
             root: true,
             ..make_cli()
         };
@@ -386,6 +412,16 @@ mod tests {
             output: Some(PathBuf::from("out.pcapng")),
             proxy: Some("https://proxy.example.com:443".parse().unwrap()),
             proxy_insecure: true,
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rootful_backend_allows_output() {
+        let cli = Cli {
+            output: Some(PathBuf::from("out.pcapng")),
             ..make_cli()
         };
 

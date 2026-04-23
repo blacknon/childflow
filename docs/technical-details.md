@@ -8,23 +8,22 @@ This document collects the lower-level backend notes, capture details, troublesh
 | Feature | `rootful` | `rootless-internal` |
 | --- | --- | --- |
 | Isolated execution | Yes | Yes |
-| DNS override | Yes | Yes, via child `resolv.conf` rewrite and internal DNS relay |
+| DNS override | Yes | Planned next phase |
 | `/etc/hosts` override | Yes | Yes |
-| Outbound TCP | Yes | Yes |
-| ICMP | Yes | IPv4 / IPv6 echo requests and replies, traceroute-style ICMP error relay for both UDP and ICMP echo probes, plus best-effort direct non-echo ICMP relay when raw sockets are available |
-| UDP | Yes | Yes |
-| Explicit upstream proxy | Yes, via transparent interception path | Yes, via parent-side relay engine |
+| Outbound TCP | Yes | Not yet implemented |
+| ICMP | Yes | Not yet implemented |
+| UDP | Yes | Not yet implemented |
+| Explicit upstream proxy | Yes, via transparent interception path | Not yet implemented |
 | Transparent proxy / TPROXY | Yes | Not supported |
 | `--iface` | Yes | Not supported |
-| Packet capture | Optional, via host-side AF_PACKET on the veth path when `--output` is set | Optional, via tap/engine-boundary capture when `--output` is set |
+| Packet capture | Optional, via host-side AF_PACKET on the veth path when `--output` is set | Not yet implemented |
 | Status | Current feature-complete backend | Experimental |
 
 ## Backend Notes
 
-- `rootful` is enabled explicitly with `--root` when you want the current feature-complete backend
-- `rootless-internal` currently rejects `--iface` and transparent proxy / TPROXY behavior because those paths are not implemented yet
-- `rootless-internal` supports child isolation, DNS relay, outbound TCP, generic UDP relay, IPv4 / IPv6 ICMP echo relay for `ping`, traceroute-style ICMP error relay for both UDP and ICMP echo probes, best-effort direct relay for other outbound ICMP request types, relay-based HTTP / HTTPS / SOCKS5 upstream proxying, `/etc/hosts` override, and tap/engine-boundary packet capture via `--output`
-- broader non-echo ICMP relay depends on the parent process being able to open raw ICMP sockets on the host; when that is blocked, `ping` and `traceroute` still work through their dedicated paths, but other ICMP request types may fail with a warning
+- `rootful` is the default backend and remains the feature-complete path in this phase
+- `rootless-internal` is currently limited to backend selection, backend-specific validation, and backend-specific preflight checks
+- `rootless-internal` currently rejects `--iface`, `--proxy`, proxy-auth / proxy-TLS options, and `--output` because those paths are not implemented yet in phase 1
 
 ## How It Works
 
@@ -41,13 +40,8 @@ This document collects the lower-level backend notes, capture details, troublesh
 ### `rootless-internal`
 
 1. `childflow` validates CLI arguments and runs preflight checks.
-2. A child is forked and unshares user, network, and mount namespaces when available.
-3. The child creates `tap0`, gets a rewritten `resolv.conf`, and receives a merged `/etc/hosts` view when `--hosts-file` is set.
-4. The parent-side userspace engine attaches to the tap and relays UDP, outbound TCP, IPv4 / IPv6 ICMP echo requests, and traceroute-style ICMP error responses for both UDP and ICMP echo probes.
-5. If `--proxy` is set, the parent-side engine tunnels outbound TCP through HTTP, HTTPS, or SOCKS5 upstream proxying.
-6. If `--output` is set, packet capture is written from the tap/engine boundary.
-
-For non-root users, `childflow` first tries direct uid/gid mapping, then falls back to `newuidmap` / `newgidmap`, and finally to a uid-only mapping when the host rejects gid mapping but still permits enough user-namespace functionality to continue.
+2. The backend-specific preflight confirms Linux namespace handles, user-namespace availability, and `/dev/net/tun`.
+3. The rootless internal networking engine remains under construction and will be enabled in later phases.
 
 ## Packet Capture Behavior
 
@@ -99,56 +93,21 @@ What is not captured:
 
 ### `rootless-internal`
 
-Capture happens at the `tap0` / userspace-engine boundary, shown below as `tap0`.
-
-```mermaid
-flowchart LR
-    subgraph ChildNetNS["child netns"]
-        CP["child process"]
-        TAP["tap0"]
-        CP --> TAP
-    end
-
-    subgraph ParentSide["parent-side userspace engine"]
-        ENG["userspace engine"]
-        DNSR["DNS relay"]
-        PROXY["HTTP / HTTPS / SOCKS5 upstream proxying"]
-        ICMP["ICMP echo / traceroute relay"]
-        UDPR["UDP relay"]
-    end
-
-    OD["original destination"]
-    DNSU["upstream DNS"]
-    PCAP[("pcapng\ncurrent capture")]
-
-    TAP --> ENG
-    ENG -. captured .-> PCAP
-    ENG --> UDPR
-    UDPR --> OD
-    ENG --> ICMP
-    ICMP --> OD
-    ENG --> DNSR
-    DNSR --> DNSU
-    ENG --> PROXY
-    PROXY --> OD
-    ENG --> TAP
-```
-
-Capture is taken at the `tap0` / userspace-engine boundary instead of the host-side veth. That means the file shows what the child emitted into the isolated rootless network stack and what the engine returned to the child, not the host-side TCP stream after proxying or relay.
+Capture is not implemented in phase 1. The future design is still expected to write capture at the `tap0` / userspace-engine boundary instead of the host-side veth, but that path is intentionally deferred until later phases.
 
 ## Requirements
 
 ### Host requirements
 
 - Linux only
-- `ip`
-- `iptables`
-- `ip6tables`
 - kernel support for network namespaces, policy routing, and veth
 
 ### `rootful`
 
 - root privileges
+- `ip`
+- `iptables`
+- `ip6tables`
 - writable `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding`
 - transparent proxy mode additionally depends on Linux TPROXY support such as `xt_TPROXY`, `xt_socket`, and `IP_TRANSPARENT`
 - packet capture depends on AF_PACKET support and privileges equivalent to `CAP_NET_RAW`
@@ -158,7 +117,7 @@ Capture is taken at the `tap0` / userspace-engine boundary instead of the host-s
 - Linux namespace support for user, network, and mount namespaces
 - `/dev/net/tun`
 - user namespace support enabled on the host
-- on Debian / Ubuntu style hosts, the `uidmap` package is recommended so `childflow` can fall back to `newuidmap` / `newgidmap` when direct `/proc/<pid>/*_map` writes are rejected
+- TUN/TAP access permitted by the host or container runtime
 
 ## Troubleshooting
 
@@ -166,8 +125,8 @@ Typical checks:
 
 ```bash
 which ip iptables ip6tables
-childflow -- true
-sudo childflow --root -o /tmp/test.pcapng -- true
+childflow --network-backend rootful -- true
+sudo childflow --network-backend rootful -o /tmp/test.pcapng -- true
 docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test
 sudo ip route show default
 sudo ip -6 route show default
@@ -180,21 +139,11 @@ Common failures:
 - `ip`, `iptables`, or `ip6tables` not found:
   install `iproute2` and the appropriate `iptables` userspace package
 - privilege check fails:
-  rerun `--root` with `sudo`; if this still fails inside a container or VM, verify the required capabilities are actually granted
+  rerun `--network-backend rootful` with `sudo`; if this still fails inside a container or VM, verify the required capabilities are actually granted
 - `rootless-internal` preflight fails:
   check user namespace availability, `/dev/net/tun`, and whether the host exposes `/proc/self/ns/{user,net,mnt}`
-- `rootless-internal` namespace setup fails for a non-root user:
-  install the Debian / Ubuntu `uidmap` package, check `/etc/subuid` and `/etc/subgid`, and rerun with `CHILDFLOW_DEBUG=1`
-- `rootless-internal` reaches TCP destinations but DNS still fails:
-  verify the selected upstream resolver is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1`
-- `rootless-internal` proxying does not seem to take effect:
-  verify the configured upstream proxy is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1`
-- `rootless-internal` drops UDP traffic:
-  verify that the remote peer actually sends a UDP response back; the current relay forwards datagrams, but it does not maintain richer session semantics beyond request/response forwarding
-- `rootless-internal` can reach TCP destinations but `ping` still fails:
-  the current rootless ICMP path only handles echo traffic; rerun with `CHILDFLOW_DEBUG=1` and confirm the target family matches the command you used
-- `rootless-internal` can run `ping` and both UDP-style and ICMP-mode `traceroute`, but another raw-ICMP tool still fails:
-  broader non-echo ICMP relay now exists as a best-effort path and depends on raw ICMP socket access in the parent namespace; rerun with `CHILDFLOW_DEBUG=1` and check the warning for raw-socket permission or host policy failures
+- `rootless-internal` rejects `--proxy` or `--output`:
+  that is expected in phase 1; those features are intentionally blocked until later phases land
 - packet capture startup fails:
   verify AF_PACKET support or rootless tap access, depending on the backend
 
@@ -209,10 +158,7 @@ Host conflicts to keep in mind:
 
 - Linux only
 - backend support is still asymmetric: `rootful` is the feature-complete path, while `rootless-internal` is still experimental
-- direct traffic is dual-stack, but correctness still depends on the host having usable IPv4 and IPv6 upstream connectivity
-- proxy mode currently targets TCP traffic
-- rootless ICMP support is broader now, but arbitrary non-echo ICMP still depends on raw-socket access and may vary across hosts
-- DNS handling is designed around `resolv.conf`-driven resolution inside the child namespace
+- `rootless-internal` is intentionally limited to phase-1 scaffolding in the current branch state
 - abnormal termination can still leave partial host-side network changes behind even though rollback is attempted
 
 ## Safety Notes

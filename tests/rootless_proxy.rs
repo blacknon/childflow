@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 
 #[test]
+#[ignore = "phase 1 keeps rootless-internal behind backend/preflight scaffolding only; enable in later phases"]
 fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()> {
     let (server_addr, requests) = spawn_local_http_server("childflow-local-ok")?;
     let host_ip = discover_reachable_host_ipv4()?;

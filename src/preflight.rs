@@ -13,7 +13,6 @@ use crate::cli::Cli;
 use crate::network::NetworkBackend;
 
 const ROOTFUL_REQUIRED_COMMANDS: &[&str] = &["ip", "iptables", "ip6tables"];
-const ROOTLESS_INTERNAL_REQUIRED_COMMANDS: &[&str] = &["ip"];
 const ROOTFUL_REQUIRED_SYSCTLS: &[&str] = &[
     "/proc/sys/net/ipv4/ip_forward",
     "/proc/sys/net/ipv6/conf/all/forwarding",
@@ -90,14 +89,7 @@ fn run_rootless_internal_preflight() -> Result<()> {
 
 fn collect_rootless_internal_report(path_env: &OsStr) -> PreflightReport {
     let mut report = PreflightReport::default();
-
-    let missing_commands = find_missing_commands(ROOTLESS_INTERNAL_REQUIRED_COMMANDS, path_env);
-    if !missing_commands.is_empty() {
-        report.push_fatal(format!(
-            "missing required external commands for the `rootless-internal` backend: {}. Install `iproute2` so childflow can configure `tap0`, loopback, and default routes inside the child namespace.",
-            missing_commands.join(", ")
-        ));
-    }
+    let _ = path_env;
 
     for issue in find_missing_paths(ROOTLESS_INTERNAL_NAMESPACE_PATHS) {
         report.push_fatal(issue);
@@ -263,6 +255,15 @@ mod tests {
         let report = build_rootful_report(&["ip".into()], &[]);
         assert_eq!(report.fatal.len(), 1);
         assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn rootless_internal_preflight_does_not_require_external_commands() {
+        let report = collect_rootless_internal_report(OsStr::new(""));
+        assert!(!report
+            .fatal
+            .iter()
+            .any(|issue| issue.contains("missing required external commands")));
     }
 
     #[test]
