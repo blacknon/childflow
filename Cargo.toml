@@ -1,9 +1,14 @@
 [package]
 name = "childflow"
 version = "0.2.0"
-edition = "2021"
-license = "MIT"
 description = "Forces DNS/proxy/interface for a child process tree and captures only its packets"
+readme = "README.md"
+repository = "https://github.com/blacknon/childflow"
+license = "MIT"
+edition = "2021"
+rust-version = "1.85"
+keywords = ["cli", "linux", "namespace", "network", "pcap"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 anyhow = "1"
