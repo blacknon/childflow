@@ -1,33 +1,31 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - master
-    tags:
-      - "v*"
-    paths:
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/demo-test.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   demo-test:
     uses: ./.github/workflows/demo-test.yml
 
-  release:
+  release-assets:
+    name: Release Asset Build (x86_64-unknown-linux-gnu)
     needs: demo-test
     runs-on: ubuntu-24.04
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+
+      - name: Get version
+        id: package_version
+        shell: bash
+        run: |
+          VERSION="$(awk -F '\"' '/^version = / { print $2; exit }' Cargo.toml)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install system dependencies
         run: |
@@ -38,32 +36,69 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Package release archive
-        env:
-          BIN_NAME: childflow
-          TARGET: x86_64-unknown-linux-gnu
-          VERSION: ${{ github.ref_name }}
+        shell: bash
         run: |
-          mkdir -p dist
-          cp target/release/${BIN_NAME} dist/${BIN_NAME}
-          cp README.md LICENSE dist/
-          tar -C dist -czf dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz ${BIN_NAME} README.md LICENSE
-          shasum -a 256 dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz > dist/${BIN_NAME}-${VERSION}-${TARGET}.tar.gz.sha256
+          VERSION="${{ steps.package_version.outputs.version }}"
+          TARGET="x86_64-unknown-linux-gnu"
+          ARCHIVE="childflow-${VERSION}.${TARGET}.tar.gz"
+          mkdir -p dist/package
+          cp target/release/childflow dist/package/childflow
+          cp README.md LICENSE dist/package/
+          tar -C dist/package -czf "dist/${ARCHIVE}" childflow README.md LICENSE
 
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: childflow-${{ github.ref_name }}-x86_64-unknown-linux-gnu
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
+          name: build-x86_64-unknown-linux-gnu
+          path: dist/childflow-${{ steps.package_version.outputs.version }}.x86_64-unknown-linux-gnu.tar.gz
 
-      - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  create-release:
+    name: Create Draft Release
+    needs: release-assets
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.package_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Get version
+        id: package_version
+        shell: bash
+        run: |
+          VERSION="$(awk -F '\"' '/^version = / { print $2; exit }' Cargo.toml)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          VERSION="${{ steps.package_version.outputs.version }}"
+          if gh release view "$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --repo "$GH_REPO" --title "childflow v$VERSION" --draft
+          else
+            gh release create "$VERSION" --repo "$GH_REPO" --target "$GITHUB_SHA" --title "childflow v$VERSION" --draft --notes ""
+          fi
+
+  upload-release-assets:
+    name: Upload Release Asset
+    needs: [create-release, release-assets]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v5
         with:
-          files: |
-            dist/*.tar.gz
-            dist/*.sha256
+          name: build-x86_64-unknown-linux-gnu
+          path: release-assets
+
+      - name: Upload release asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.version }}" \
+            --repo "$GH_REPO" \
+            release-assets/childflow-${{ needs.create-release.outputs.version }}.x86_64-unknown-linux-gnu.tar.gz \
+            --clobber
