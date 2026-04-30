@@ -12,10 +12,13 @@ childflow - isolate one command tree's network, control its DNS / proxy behavior
 
 `childflow` runs one command tree in an isolated network context and applies DNS, hosts, proxy, and capture controls only to that tree.
 
+This is useful for tools that do not honor proxy environment variables consistently. `childflow` forces the proxy at the command tree's network path instead of relying on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD`-style interception.
+
 It has two Linux backends: `rootless-internal` for the default day-to-day path, and `rootful` via `--root` when you need host-integrated behavior such as `--iface` or transparent interception.
 
 - affects only the target command tree, not the whole host session
 - can force DNS, `/etc/hosts`, proxying, and packet capture per command tree
+- can force proxying without depending on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD` tricks
 - defaults to `rootless-internal`
 - uses `--root` only for features like `--iface` and transparent interception
 
@@ -112,6 +115,10 @@ childflow --hosts-file ./hosts.override -- curl http://demo.internal
 
 ```bash
 childflow -p http://127.0.0.1:8080 -- curl https://example.com
+```
+
+```bash
+childflow -p http://127.0.0.1:8080 -- gobuster dir -u http://target.local/ -w ./wordlist.txt
 ```
 
 ```bash
