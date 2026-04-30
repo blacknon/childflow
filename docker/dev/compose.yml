@@ -4,6 +4,8 @@ services:
       context: ../..
       dockerfile: docker/dev/Dockerfile
     working_dir: /workspaces/childflow
+    environment:
+      CARGO_TARGET_DIR: /tmp/childflow-target
     volumes:
       - ../..:/workspaces/childflow
     tty: true
