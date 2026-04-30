@@ -2,7 +2,7 @@ childflow
 ===
 
 <p align="center">
-<img src="./img/childflow-proxy-demo.gif" width="720" />
+<img src="./img/childflow.gif" width="720" />
 </p>
 
 childflow - isolate one command tree's network, control its DNS / proxy behavior, and capture only its traffic.
