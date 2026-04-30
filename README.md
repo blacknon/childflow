@@ -58,23 +58,38 @@ If you are evaluating from macOS or another non-Linux environment, use the Docke
 $ childflow --help
 Launch a child process tree inside its own netns and capture only its packets
 
-Usage:
-  childflow [OPTIONS] -- <COMMAND>...
+Usage: childflow [OPTIONS] [COMMAND]...
+
+Arguments:
+  [COMMAND]...  Command to execute
 
 Options:
-  -c, --capture <PATH>           Write only the target command tree's traffic as pcapng
-  -C, --capture-point <VIEW>     Capture point or view for --capture: child, egress, wire-egress, or both
-      --root                     Use the rootful backend
-  -d, --dns <IP>                 Force DNS traffic for the child tree to this resolver
-      --hosts-file <PATH>        Overlay an /etc/hosts-format file for the child tree
-  -p, --proxy <URI>              Upstream proxy: http://, https://, or socks5://
-  -U, --proxy-user <USER>        Username for upstream proxy authentication
-  -P, --proxy-password <PASS>    Password for upstream proxy authentication
-      --proxy-insecure           Ignore certificate trust errors for https proxies
-  -i, --iface <NAME>             Force host-side direct egress interface on --root
-  -h, --help                     Print help
-  -V, --version                  Print version
-
+  -c, --capture <OUTPUT>
+          Write only the target command tree's traffic as pcapng
+  -C, --capture-point <OUTPUT_VIEW>
+          Select which capture point or view `--capture` should write. `child` is the current stable view [default: child] [possible values: child, egress, wire-egress, both]
+      --root
+          Use the rootful backend. Without this flag, childflow uses the default rootless backend
+      --doctor
+          Diagnose whether the current host is ready for the selected backend
+  -d, --dns <DNS>
+          Force DNS traffic for the child tree to this IPv4 or IPv6 resolver
+      --hosts-file <HOSTS_FILE>
+          Bind-mount an `/etc/hosts`-format file over the child's `/etc/hosts` so those entries are consulted first during name resolution
+  -p, --proxy <PROXY>
+          Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080. `--root` uses transparent interception, while the default rootless backend relays outbound TCP through the selected proxy from the parent-side engine
+  -U, --proxy-user <PROXY_USER>
+          Username for upstream proxy authentication
+  -P, --proxy-password <PROXY_PASSWORD>
+          Password for upstream proxy authentication
+      --proxy-insecure
+          Ignore certificate trust errors for https:// upstream proxies while still validating the hostname
+  -i, --iface <IFACE>
+          Force the host-side egress interface for the child's direct traffic
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ### example
