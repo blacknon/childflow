@@ -4,7 +4,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::cli::{Cli, ProxyScheme, ProxySpec};
+use crate::cli::{Cli, OutputView, ProxyScheme, ProxySpec};
 
 use super::types::ProxyEnvVar;
 
@@ -69,7 +69,9 @@ mod tests {
     fn base_cli() -> Cli {
         Cli {
             output: None,
+            output_view: OutputView::Child,
             root: false,
+            doctor: false,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,

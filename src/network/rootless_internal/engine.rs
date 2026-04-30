@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
-use crate::capture::FrameCaptureWriter;
+use crate::capture::CaptureWriters;
 use crate::proxy::rootless_relay::ProxyUpstreamConfig;
 use crate::util;
 
@@ -36,7 +36,7 @@ pub struct EngineConfig {
     pub dns_upstream: Option<IpAddr>,
     pub allow_ipv6_outbound: bool,
     pub proxy_upstream: Option<ProxyUpstreamConfig>,
-    pub capture: Option<FrameCaptureWriter>,
+    pub capture: Option<CaptureWriters>,
 }
 
 pub struct EngineHandle {
@@ -197,7 +197,7 @@ fn handle_tcp_packet(
     event_tx: &Sender<RemoteEvent>,
     connections: &mut HashMap<FlowKey, ConnectionState>,
     proxy_upstream: Option<&ProxyUpstreamConfig>,
-    capture: &mut Option<FrameCaptureWriter>,
+    capture: &mut Option<CaptureWriters>,
     tcp: &ParsedTcpPacket,
 ) -> Result<()> {
     let key = FlowKey {
@@ -388,7 +388,7 @@ fn handle_udp_packet(
     addr_plan: &AddressPlan,
     dns_upstream: Option<IpAddr>,
     allow_ipv6_outbound: bool,
-    capture: &mut Option<FrameCaptureWriter>,
+    capture: &mut Option<CaptureWriters>,
     event_tx: &Sender<RemoteEvent>,
     udp: &ParsedUdpPacket,
 ) -> Result<()> {
@@ -467,7 +467,7 @@ fn drain_remote_events(
     child_mac: &mut Option<[u8; 6]>,
     event_rx: &Receiver<RemoteEvent>,
     connections: &mut HashMap<FlowKey, ConnectionState>,
-    capture: &mut Option<FrameCaptureWriter>,
+    capture: &mut Option<CaptureWriters>,
 ) -> Result<()> {
     loop {
         match event_rx.try_recv() {
@@ -552,12 +552,12 @@ fn drain_remote_events(
     Ok(())
 }
 
-fn capture_frame(capture: &mut Option<FrameCaptureWriter>, frame: &[u8], message: &str) {
+fn capture_frame(capture: &mut Option<CaptureWriters>, frame: &[u8], message: &str) {
     let Some(writer) = capture.as_mut() else {
         return;
     };
 
-    if let Err(err) = writer.write_frame(frame) {
+    if let Err(err) = writer.write(frame) {
         util::warn(format!(
             "{message}: {err:#}. Disabling rootless capture for the rest of this run"
         ));

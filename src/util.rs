@@ -8,17 +8,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
-pub fn ensure_root() -> Result<()> {
-    let euid = unsafe { nix::libc::geteuid() };
-    if euid != 0 {
-        bail!(
-            "the `rootful` backend must run as root on Linux because it creates network namespaces, changes routing/sysctl/iptables state, and opens AF_PACKET capture sockets.\nHint: rerun with `sudo -- childflow --root ...`, or use the default rootless backend when its current feature set is sufficient."
-        );
-    }
-
-    Ok(())
-}
-
 pub fn run_entropy() -> u32 {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

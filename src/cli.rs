@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 use crate::network::NetworkBackend;
 
@@ -16,17 +16,24 @@ use crate::network::NetworkBackend;
     name = "childflow",
     version,
     about = "Launch a child process tree inside its own netns and capture only its packets",
-    trailing_var_arg = true,
-    arg_required_else_help = true
+    trailing_var_arg = true
 )]
 pub struct Cli {
     /// Write only the target command tree's traffic as pcapng.
-    #[arg(short = 'o', long = "output")]
+    #[arg(short = 'c', long = "capture")]
     pub output: Option<PathBuf>,
+
+    /// Select which capture point or view `--capture` should write. `child` is the current stable view.
+    #[arg(short = 'C', long = "capture-point", value_enum, default_value_t = OutputView::Child)]
+    pub output_view: OutputView,
 
     /// Use the rootful backend. Without this flag, childflow uses the default rootless backend.
     #[arg(long = "root")]
     pub root: bool,
+
+    /// Diagnose whether the current host is ready for the selected backend.
+    #[arg(long = "doctor")]
+    pub doctor: bool,
 
     /// Select the networking backend. This is kept as a hidden compatibility escape hatch; use `--root` for the public CLI.
     #[arg(
@@ -50,11 +57,11 @@ pub struct Cli {
     pub proxy: Option<ProxySpec>,
 
     /// Username for upstream proxy authentication.
-    #[arg(long = "proxy-user")]
+    #[arg(short = 'U', long = "proxy-user")]
     pub proxy_user: Option<String>,
 
     /// Password for upstream proxy authentication.
-    #[arg(long = "proxy-password")]
+    #[arg(short = 'P', long = "proxy-password")]
     pub proxy_password: Option<String>,
 
     /// Ignore certificate trust errors for https:// upstream proxies while still validating the hostname.
@@ -66,7 +73,7 @@ pub struct Cli {
     pub iface: Option<String>,
 
     /// Command to execute.
-    #[arg(required = true)]
+    #[arg(required_unless_present = "doctor")]
     pub command: Vec<String>,
 }
 
@@ -80,6 +87,10 @@ impl Cli {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.doctor {
+            return Ok(());
+        }
+
         if self.command.is_empty() {
             bail!("missing command to execute");
         }
@@ -94,6 +105,10 @@ impl Cli {
             if !path.exists() {
                 bail!("`--hosts-file` path does not exist: {}", path.display());
             }
+        }
+
+        if self.output_view != OutputView::Child && self.output.is_none() {
+            bail!("`--capture-point` requires `--capture`");
         }
 
         if self.proxy_user.is_some() != self.proxy_password.is_some() {
@@ -202,6 +217,14 @@ pub enum ProxyScheme {
     Socks5,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OutputView {
+    Child,
+    Egress,
+    WireEgress,
+    Both,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,7 +232,9 @@ mod tests {
     fn make_cli() -> Cli {
         Cli {
             output: None,
+            output_view: OutputView::Child,
             root: false,
+            doctor: false,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,
@@ -336,6 +361,53 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_output_view_without_output_path() {
+        let cli = Cli {
+            output_view: OutputView::Egress,
+            ..make_cli()
+        };
+
+        let err = cli.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("`--capture-point` requires `--capture`"));
+    }
+
+    #[test]
+    fn validate_allows_rootless_egress_output_view() {
+        let cli = Cli {
+            output: Some(PathBuf::from("out.pcapng")),
+            output_view: OutputView::Both,
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_allows_rootful_egress_output_view() {
+        let cli = Cli {
+            root: true,
+            output: Some(PathBuf::from("out.pcapng")),
+            output_view: OutputView::Egress,
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_allows_rootless_wire_egress_output_view() {
+        let cli = Cli {
+            output: Some(PathBuf::from("out.pcapng")),
+            output_view: OutputView::WireEgress,
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
     fn selected_backend_uses_root_flag() {
         let cli = Cli {
             output: Some(PathBuf::from("out.pcapng")),
@@ -390,5 +462,17 @@ mod tests {
         };
 
         cli.validate().unwrap();
+    }
+
+    #[test]
+    fn doctor_flag_allows_empty_command() {
+        let cli = Cli {
+            doctor: true,
+            command: Vec::new(),
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+        assert_eq!(cli.selected_backend(), NetworkBackend::RootlessInternal);
     }
 }

@@ -27,3 +27,15 @@ The script verifies:
 - `childflow` still writes non-empty `pcapng` capture files during the run
 
 The demo runner container defaults to the non-root `childflow` user, then invokes `childflow` itself through `sudo` inside the script so namespace setup stays reliable across CI environments while the demo still exercises the default rootless path.
+
+## Render a GIF
+
+The demo runner image also includes `vhs` and `ffmpeg` so it can record terminal demos.
+
+From the repo root:
+
+```bash
+mise run demo:gif
+```
+
+That runs [docker/demo/render-gif.sh](render-gif.sh), which builds `childflow` inside the demo runner and renders [docker/demo/tapes/proxy-demo.tape](tapes/proxy-demo.tape) to `img/childflow-proxy-demo.gif`.

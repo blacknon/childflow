@@ -21,7 +21,7 @@ fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()
     let output_path = unique_temp_capture_path("rootless-local-http");
 
     let output = run_childflow_command(&[
-        "-o",
+        "-c",
         output_path.to_str().unwrap(),
         "--",
         "python3",
@@ -45,6 +45,108 @@ fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()
     let request_line = requests
         .recv_timeout(std::time::Duration::from_secs(5))
         .context("local HTTP server did not receive a request from the childflow run")?;
+    assert_eq!(request_line, "GET /hello HTTP/1.1");
+
+    assert_capture_file_written(&output_path)?;
+    assert_capture_has_enhanced_packets(&output_path, 4)?;
+    let _ = std::fs::remove_file(&output_path);
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_routes_local_http_through_relay_proxy() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-proxy-ok")?;
+    let (proxy_addr, proxy_requests) = spawn_http_connect_proxy()?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "-p",
+        &format!("http://{host_ip}:{}", proxy_addr.port()),
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal local relay proxy smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-proxy-ok"
+    );
+
+    let proxy_request_line = proxy_requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("proxy did not receive a CONNECT request from the childflow run")?;
+    assert_eq!(
+        proxy_request_line,
+        format!("CONNECT {host_ip}:{} HTTP/1.1", server_addr.port())
+    );
+
+    let request_line = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("local HTTP server did not receive a request from the proxied run")?;
+    assert_eq!(request_line, "GET /hello HTTP/1.1");
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_proxy_and_dns_override_write_capture_for_local_http() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-proxy-dns-ok")?;
+    let (proxy_addr, proxy_requests) = spawn_http_connect_proxy()?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let output_path = unique_temp_capture_path("rootless-local-proxy-dns");
+
+    let output = run_childflow_command(&[
+        "-c",
+        output_path.to_str().unwrap(),
+        "-d",
+        "1.1.1.1",
+        "-p",
+        &format!("http://{host_ip}:{}", proxy_addr.port()),
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context(
+        "failed to run childflow rootless-internal local relay proxy + DNS override smoke test",
+    )?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-proxy-dns-ok"
+    );
+
+    let proxy_request_line = proxy_requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("proxy did not receive a CONNECT request from the proxy + DNS override run")?;
+    assert_eq!(
+        proxy_request_line,
+        format!("CONNECT {host_ip}:{} HTTP/1.1", server_addr.port())
+    );
+
+    let request_line = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("local HTTP server did not receive a request from the proxy + DNS override run")?;
     assert_eq!(request_line, "GET /hello HTTP/1.1");
 
     assert_capture_file_written(&output_path)?;
@@ -223,7 +325,7 @@ fn rootless_internal_writes_capture_for_https_request() -> Result<()> {
         .args([
             "--network-backend",
             "rootless-internal",
-            "-o",
+            "-c",
             output_path.to_str().unwrap(),
             "--",
             "curl",
@@ -260,7 +362,7 @@ fn rootless_internal_writes_capture_for_proxy_flow() -> Result<()> {
         .args([
             "--network-backend",
             "rootless-internal",
-            "-o",
+            "-c",
             output_path.to_str().unwrap(),
             "-p",
             &format!("http://{host_ip}:{}", proxy_addr.port()),
@@ -287,6 +389,44 @@ fn rootless_internal_writes_capture_for_proxy_flow() -> Result<()> {
         .context("proxy did not receive a CONNECT request from the rootless capture + proxy run")?;
     assert_connects_to_https_target(&request_line);
     assert_capture_file_written(&output_path)?;
+    let _ = std::fs::remove_file(&output_path);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires privileged linux namespaces, outbound network access, curl, and CAP_NET_RAW-equivalent privileges on the host egress interface"]
+fn rootless_internal_writes_wire_egress_capture_for_https_request() -> Result<()> {
+    let output_path = unique_temp_capture_path("rootless-wire-egress-output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_childflow"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "--network-backend",
+            "rootless-internal",
+            "-C",
+            "wire-egress",
+            "-c",
+            output_path.to_str().unwrap(),
+            "--",
+            "curl",
+            "-fsSL",
+            "--max-time",
+            "30",
+            "https://example.com",
+        ])
+        .output()
+        .context("failed to run childflow rootless-internal wire-egress capture smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_capture_file_written(&output_path)?;
+    assert_capture_has_enhanced_packets(&output_path, 1)?;
     let _ = std::fs::remove_file(&output_path);
     Ok(())
 }

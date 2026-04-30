@@ -5,7 +5,7 @@ services:
       dockerfile: docker/demo/Dockerfile
     working_dir: /demo
     command:
-      - python
+      - python3
       - /demo/origin_server.py
       - --port
       - "8080"
@@ -13,11 +13,11 @@ services:
       - origin-http-ok
     networks:
       backend:
-        ipv4_address: 10.241.0.10
+        ipv4_address: 10.243.0.10
     healthcheck:
       test:
         - CMD
-        - python
+        - python3
         - -c
         - |
           import socket
@@ -37,14 +37,14 @@ services:
       - -lc
       - |
         /demo/create-self-signed-cert.sh origin-https /tmp/origin.crt /tmp/origin.key
-        exec python /demo/origin_server.py --port 8443 --body origin-https-ok --tls-cert /tmp/origin.crt --tls-key /tmp/origin.key
+        exec python3 /demo/origin_server.py --port 8443 --body origin-https-ok --tls-cert /tmp/origin.crt --tls-key /tmp/origin.key
     networks:
       backend:
-        ipv4_address: 10.241.0.11
+        ipv4_address: 10.243.0.11
     healthcheck:
       test:
         - CMD
-        - python
+        - python3
         - -c
         - |
           import socket
@@ -60,7 +60,7 @@ services:
       dockerfile: docker/demo/Dockerfile
     working_dir: /demo
     command:
-      - python
+      - python3
       - /demo/proxy_server.py
       - --port
       - "3128"
@@ -71,14 +71,14 @@ services:
     networks:
       client: {}
       backend:
-        ipv4_address: 10.241.0.20
+        ipv4_address: 10.243.0.20
     extra_hosts:
-      - "origin-http.demo:10.241.0.10"
-      - "origin-https.demo:10.241.0.11"
+      - "origin-http.demo:10.243.0.10"
+      - "origin-https.demo:10.243.0.11"
     healthcheck:
       test:
         - CMD
-        - python
+        - python3
         - -c
         - |
           import socket
@@ -98,18 +98,18 @@ services:
       - -lc
       - |
         /demo/create-self-signed-cert.sh proxy-https /tmp/proxy.crt /tmp/proxy.key
-        exec python /demo/proxy_server.py --port 3443 --tls-cert /tmp/proxy.crt --tls-key /tmp/proxy.key --user demo --password demo
+        exec python3 /demo/proxy_server.py --port 3443 --tls-cert /tmp/proxy.crt --tls-key /tmp/proxy.key --user demo --password demo
     networks:
       client: {}
       backend:
-        ipv4_address: 10.241.0.21
+        ipv4_address: 10.243.0.21
     extra_hosts:
-      - "origin-http.demo:10.241.0.10"
-      - "origin-https.demo:10.241.0.11"
+      - "origin-http.demo:10.243.0.10"
+      - "origin-https.demo:10.243.0.11"
     healthcheck:
       test:
         - CMD
-        - python
+        - python3
         - -c
         - |
           import socket
@@ -130,8 +130,8 @@ services:
     tty: true
     stdin_open: true
     extra_hosts:
-      - "origin-http.demo:10.241.0.10"
-      - "origin-https.demo:10.241.0.11"
+      - "origin-http.demo:10.243.0.10"
+      - "origin-https.demo:10.243.0.11"
     depends_on:
       origin-http:
         condition: service_healthy
@@ -148,9 +148,9 @@ networks:
   client:
     ipam:
       config:
-        - subnet: 10.240.0.0/24
+        - subnet: 10.242.0.0/24
   backend:
     internal: true
     ipam:
       config:
-        - subnet: 10.241.0.0/24
+        - subnet: 10.243.0.0/24
