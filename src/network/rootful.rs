@@ -16,6 +16,9 @@ use crate::capture::{
     derive_output_paths, CaptureMetadata, CaptureMode, CapturePlan, RootfulEgressRewrite,
 };
 use crate::cli::{Cli, OutputView};
+use crate::sandbox::{
+    SandboxPolicy, BLOCK_METADATA_IPV4, BLOCK_METADATA_IPV6, PRIVATE_IPV4_CIDRS, PRIVATE_IPV6_CIDRS,
+};
 use crate::util::{debug, read_file_trimmed, run_command, warn};
 
 pub struct NetworkContext {
@@ -117,6 +120,7 @@ impl NetworkContext {
         ctx.prepare_sysctls()?;
         ctx.create_veth_pair(child_pid)?;
         ctx.configure_child_namespace(child_pid)?;
+        ctx.install_sandbox_policy_rules(SandboxPolicy::from_cli(cli))?;
         ctx.install_forwarding_rules()?;
         ctx.install_interface_forcing()?;
         ctx.install_tproxy_rules()?;
@@ -557,6 +561,167 @@ impl NetworkContext {
             "nat",
             replace_action_flag(&nat6_args, "-A", "-D"),
         );
+
+        Ok(())
+    }
+
+    fn install_sandbox_policy_rules(&mut self, policy: SandboxPolicy) -> Result<()> {
+        if policy.offline {
+            let drop_v4 = vec![
+                "-A".into(),
+                "PREROUTING".into(),
+                "-i".into(),
+                self.host_veth.clone(),
+                "-j".into(),
+                "DROP".into(),
+            ];
+            run_iptables("mangle", drop_v4.clone())
+                .context("failed to install IPv4 offline drop rule")?;
+            self.push_cleanup_iptables(
+                "remove IPv4 offline drop rule",
+                "mangle",
+                replace_action_flag(&drop_v4, "-A", "-D"),
+            );
+
+            let drop_v6 = vec![
+                "-A".into(),
+                "PREROUTING".into(),
+                "-i".into(),
+                self.host_veth.clone(),
+                "-j".into(),
+                "DROP".into(),
+            ];
+            run_ip6tables("mangle", drop_v6.clone())
+                .context("failed to install IPv6 offline drop rule")?;
+            self.push_cleanup_ip6tables(
+                "remove IPv6 offline drop rule",
+                "mangle",
+                replace_action_flag(&drop_v6, "-A", "-D"),
+            );
+            return Ok(());
+        }
+
+        if !policy.block_private && !policy.block_metadata {
+            return Ok(());
+        }
+
+        let bypass_v4 = vec![
+            "-A".into(),
+            "PREROUTING".into(),
+            "-i".into(),
+            self.host_veth.clone(),
+            "-d".into(),
+            self.subnet_v4_cidr.clone(),
+            "-j".into(),
+            "RETURN".into(),
+        ];
+        run_iptables("mangle", bypass_v4.clone())
+            .context("failed to install IPv4 sandbox-subnet bypass rule")?;
+        self.push_cleanup_iptables(
+            "remove IPv4 sandbox-subnet bypass rule",
+            "mangle",
+            replace_action_flag(&bypass_v4, "-A", "-D"),
+        );
+
+        let bypass_v6 = vec![
+            "-A".into(),
+            "PREROUTING".into(),
+            "-i".into(),
+            self.host_veth.clone(),
+            "-d".into(),
+            self.subnet_v6_cidr.clone(),
+            "-j".into(),
+            "RETURN".into(),
+        ];
+        run_ip6tables("mangle", bypass_v6.clone())
+            .context("failed to install IPv6 sandbox-subnet bypass rule")?;
+        self.push_cleanup_ip6tables(
+            "remove IPv6 sandbox-subnet bypass rule",
+            "mangle",
+            replace_action_flag(&bypass_v6, "-A", "-D"),
+        );
+
+        if policy.block_metadata {
+            let metadata_v4 = vec![
+                "-A".into(),
+                "PREROUTING".into(),
+                "-i".into(),
+                self.host_veth.clone(),
+                "-d".into(),
+                BLOCK_METADATA_IPV4.to_string(),
+                "-j".into(),
+                "DROP".into(),
+            ];
+            run_iptables("mangle", metadata_v4.clone())
+                .context("failed to install IPv4 metadata drop rule")?;
+            self.push_cleanup_iptables(
+                "remove IPv4 metadata drop rule",
+                "mangle",
+                replace_action_flag(&metadata_v4, "-A", "-D"),
+            );
+
+            let metadata_v6 = vec![
+                "-A".into(),
+                "PREROUTING".into(),
+                "-i".into(),
+                self.host_veth.clone(),
+                "-d".into(),
+                BLOCK_METADATA_IPV6.to_string(),
+                "-j".into(),
+                "DROP".into(),
+            ];
+            run_ip6tables("mangle", metadata_v6.clone())
+                .context("failed to install IPv6 metadata drop rule")?;
+            self.push_cleanup_ip6tables(
+                "remove IPv6 metadata drop rule",
+                "mangle",
+                replace_action_flag(&metadata_v6, "-A", "-D"),
+            );
+        }
+
+        if policy.block_private {
+            for cidr in PRIVATE_IPV4_CIDRS {
+                let args = vec![
+                    "-A".into(),
+                    "PREROUTING".into(),
+                    "-i".into(),
+                    self.host_veth.clone(),
+                    "-d".into(),
+                    (*cidr).to_string(),
+                    "-j".into(),
+                    "DROP".into(),
+                ];
+                run_iptables("mangle", args.clone()).with_context(|| {
+                    format!("failed to install IPv4 private-range drop rule for {cidr}")
+                })?;
+                self.push_cleanup_iptables(
+                    "remove IPv4 private-range drop rule",
+                    "mangle",
+                    replace_action_flag(&args, "-A", "-D"),
+                );
+            }
+
+            for cidr in PRIVATE_IPV6_CIDRS {
+                let args = vec![
+                    "-A".into(),
+                    "PREROUTING".into(),
+                    "-i".into(),
+                    self.host_veth.clone(),
+                    "-d".into(),
+                    (*cidr).to_string(),
+                    "-j".into(),
+                    "DROP".into(),
+                ];
+                run_ip6tables("mangle", args.clone()).with_context(|| {
+                    format!("failed to install IPv6 private-range drop rule for {cidr}")
+                })?;
+                self.push_cleanup_ip6tables(
+                    "remove IPv6 private-range drop rule",
+                    "mangle",
+                    replace_action_flag(&args, "-A", "-D"),
+                );
+            }
+        }
 
         Ok(())
     }

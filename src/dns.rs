@@ -48,7 +48,11 @@ impl DnsPlan {
         &self,
         bind_ipv4: Ipv4Addr,
         bind_ipv6: Ipv6Addr,
+        offline: bool,
     ) -> Result<Option<DnsHandle>> {
+        if offline {
+            return Ok(None);
+        }
         self.rootful_upstream
             .map(|upstream| DnsHandle::start(bind_ipv4, bind_ipv6, upstream))
             .transpose()

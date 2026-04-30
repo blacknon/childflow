@@ -17,6 +17,7 @@ use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
 use crate::capture::CaptureWriters;
 use crate::proxy::rootless_relay::ProxyUpstreamConfig;
+use crate::sandbox::{BlockReason, SandboxPolicy};
 use crate::util;
 
 use super::addr::AddressPlan;
@@ -35,6 +36,7 @@ use super::transport::{
 pub struct EngineConfig {
     pub dns_upstream: Option<IpAddr>,
     pub allow_ipv6_outbound: bool,
+    pub sandbox_policy: SandboxPolicy,
     pub proxy_upstream: Option<ProxyUpstreamConfig>,
     pub capture: Option<CaptureWriters>,
 }
@@ -150,6 +152,7 @@ fn run_engine(
                             &addr_plan,
                             &event_tx,
                             &mut connections,
+                            config.sandbox_policy,
                             config.proxy_upstream.as_ref(),
                             &mut config.capture,
                             &tcp,
@@ -162,6 +165,7 @@ fn run_engine(
                             &addr_plan,
                             config.dns_upstream,
                             config.allow_ipv6_outbound,
+                            config.sandbox_policy,
                             &mut config.capture,
                             &event_tx,
                             &udp,
@@ -196,6 +200,7 @@ fn handle_tcp_packet(
     addr_plan: &AddressPlan,
     event_tx: &Sender<RemoteEvent>,
     connections: &mut HashMap<FlowKey, ConnectionState>,
+    sandbox_policy: SandboxPolicy,
     proxy_upstream: Option<&ProxyUpstreamConfig>,
     capture: &mut Option<CaptureWriters>,
     tcp: &ParsedTcpPacket,
@@ -213,6 +218,11 @@ fn handle_tcp_packet(
     }
 
     if tcp.syn && !tcp.ack {
+        if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(key.remote_ip) {
+            deny_tcp_connect(tap, addr_plan, capture, tcp, reason)?;
+            return Ok(());
+        }
+
         let remote_addr = key.remote_addr();
         let command_tx = match connect_remote(
             remote_addr,
@@ -388,6 +398,7 @@ fn handle_udp_packet(
     addr_plan: &AddressPlan,
     dns_upstream: Option<IpAddr>,
     allow_ipv6_outbound: bool,
+    sandbox_policy: SandboxPolicy,
     capture: &mut Option<CaptureWriters>,
     event_tx: &Sender<RemoteEvent>,
     udp: &ParsedUdpPacket,
@@ -413,6 +424,27 @@ fn handle_udp_packet(
                 capture,
                 &frame,
                 "failed to capture a synthetic rootless DNS AAAA response frame",
+            );
+            return Ok(());
+        }
+
+        if sandbox_policy.offline {
+            let response = synthesize_empty_dns_response(&udp.payload)?;
+            let frame = packet::build_udp_frame(
+                addr_plan.gateway_mac,
+                udp.meta.src_mac,
+                udp.meta.dst_ip,
+                udp.meta.src_ip,
+                53,
+                udp.src_port,
+                &response,
+            )?;
+            tap.write_all(&frame)
+                .context("failed to write synthetic offline DNS response to tap")?;
+            capture_frame(
+                capture,
+                &frame,
+                "failed to capture a synthetic rootless offline DNS response frame",
             );
             return Ok(());
         }
@@ -444,6 +476,16 @@ fn handle_udp_packet(
         return Ok(());
     }
 
+    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(udp.meta.dst_ip) {
+        util::debug(format!(
+            "rootless-internal dropped UDP flow to {}:{} ({})",
+            udp.meta.dst_ip,
+            udp.dst_port,
+            reason.describe()
+        ));
+        return Ok(());
+    }
+
     spawn_udp_worker(
         event_tx.clone(),
         UdpRelayRequest {
@@ -458,6 +500,45 @@ fn handle_udp_packet(
         },
     );
 
+    Ok(())
+}
+
+fn deny_tcp_connect(
+    tap: &mut TapHandle,
+    addr_plan: &AddressPlan,
+    capture: &mut Option<CaptureWriters>,
+    tcp: &ParsedTcpPacket,
+    reason: BlockReason,
+) -> Result<()> {
+    util::debug(format!(
+        "rootless-internal denied TCP connect to {}:{} ({})",
+        tcp.meta.dst_ip,
+        tcp.dst_port,
+        reason.describe()
+    ));
+    let rst = packet::build_tcp_frame(TcpReply {
+        src_mac: addr_plan.gateway_mac,
+        dst_mac: tcp.meta.src_mac,
+        src_ip: tcp.meta.dst_ip,
+        dst_ip: tcp.meta.src_ip,
+        src_port: tcp.dst_port,
+        dst_port: tcp.src_port,
+        seq: 0,
+        ack: tcp.sequence_number.wrapping_add(1),
+        syn: false,
+        ack_flag: true,
+        fin: false,
+        rst: true,
+        psh: false,
+        payload: &[],
+    })?;
+    tap.write_all(&rst)
+        .context("failed to write TCP RST after sandbox policy denial")?;
+    capture_frame(
+        capture,
+        &rst,
+        "failed to capture a rootless TCP RST frame after sandbox policy denial",
+    );
     Ok(())
 }
 

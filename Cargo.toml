@@ -1,9 +1,9 @@
 [package]
 name = "childflow"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
-description = "Forces DNS/proxy/interface for a child process tree and captures only its packets"
+description = "A per-command-tree network sandbox for Linux"
 
 [dependencies]
 anyhow = "1"

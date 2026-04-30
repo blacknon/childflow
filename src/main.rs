@@ -29,6 +29,10 @@ mod preflight;
 #[cfg(target_os = "linux")]
 mod proxy;
 #[cfg(target_os = "linux")]
+mod sandbox;
+#[cfg(target_os = "linux")]
+mod summary;
+#[cfg(target_os = "linux")]
 mod tproxy;
 #[cfg(target_os = "linux")]
 mod util;
@@ -213,10 +217,12 @@ fn real_main() -> Result<i32> {
             };
 
             let status = waitpid(child, None).context("waitpid failed")?;
+            let exit_code = wait_status_to_exit_code(status);
 
             runtime.shutdown()?;
+            summary::print_run_summary(&cli, exit_code);
 
-            Ok(wait_status_to_exit_code(status))
+            Ok(exit_code)
         }
     }
 }
@@ -278,9 +284,10 @@ impl ParentRuntime {
         })
         .context("failed to prepare the selected network backend. Check backend preflight output, kernel namespace support, and whether the requested backend phase is implemented on this host")?;
 
+        let sandbox_policy = sandbox::SandboxPolicy::from_cli(cli);
         let dns = match network.dns_bind_addrs() {
             Some((bind_ipv4, bind_ipv6)) => dns_plan
-                .start_forwarder(bind_ipv4, bind_ipv6)
+                .start_forwarder(bind_ipv4, bind_ipv6, sandbox_policy.offline)
                 .context("failed to start DNS forwarder on port 53 inside the host namespace. Check whether another service already owns that bind address/port, and whether local firewall policy permits the listener")?,
             None => None,
         };

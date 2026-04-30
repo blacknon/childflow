@@ -155,6 +155,70 @@ fn rootless_internal_proxy_and_dns_override_write_capture_for_local_http() -> Re
     Ok(())
 }
 
+#[test]
+fn rootless_internal_offline_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-offline-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--offline",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal offline smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected offline childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "offline sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_block_private_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-private-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--block-private",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal block-private smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected block-private childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "block-private sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
 fn run_childflow_command(args: &[&str]) -> Result<std::process::Output> {
     let binary = env!("CARGO_BIN_EXE_childflow");
     let mut command = if unsafe { nix::libc::geteuid() } == 0 {

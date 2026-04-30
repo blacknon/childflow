@@ -79,6 +79,9 @@ mod tests {
             proxy_user: None,
             proxy_password: None,
             proxy_insecure: false,
+            offline: false,
+            block_private: false,
+            block_metadata: false,
             iface: None,
             command: vec!["curl".into()],
         }
