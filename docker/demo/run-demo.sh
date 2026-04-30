@@ -38,7 +38,7 @@ fi
 
 echo "[demo] verifying HTTP proxy auth failure"
 if run_childflow \
-  -o "$tmpdir/http-auth-fail.pcapng" \
+  -c "$tmpdir/http-auth-fail.pcapng" \
   -p http://proxy-http:3128 \
   -- \
   curl --connect-timeout 5 --max-time 10 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
@@ -48,7 +48,7 @@ fi
 
 echo "[demo] verifying HTTPS proxy cert failure"
 if run_childflow \
-  -o "$tmpdir/https-cert-fail.pcapng" \
+  -c "$tmpdir/https-cert-fail.pcapng" \
   -p https://proxy-https:3443 \
   --proxy-user demo \
   --proxy-password demo \
@@ -60,7 +60,7 @@ fi
 
 echo "[demo] verifying authenticated HTTP proxy flow"
 run_childflow \
-  -o "$tmpdir/http-proxy.pcapng" \
+  -c "$tmpdir/http-proxy.pcapng" \
   -p http://proxy-http:3128 \
   --proxy-user demo \
   --proxy-password demo \
@@ -71,7 +71,7 @@ grep -q "origin-http-ok" "$http_proxy_output"
 
 echo "[demo] verifying authenticated HTTPS proxy flow"
 run_childflow \
-  -o "$tmpdir/https-proxy.pcapng" \
+  -c "$tmpdir/https-proxy.pcapng" \
   -p https://proxy-https:3443 \
   --proxy-user demo \
   --proxy-password demo \
