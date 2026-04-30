@@ -26,6 +26,7 @@ cargo build
 
 The development image includes `libssl-dev` and `pkg-config` because HTTPS upstream proxy support now depends on OpenSSL through `native-tls`.
 It also installs the Rust `clippy` component so the container can run the repo's lint command directly.
+`CARGO_TARGET_DIR` is set to `/tmp/childflow-target` in the dev compose service so containerized builds do not depend on bind-mounted workspace ownership.
 For non-root rootless testing, it also installs `uidmap` and pre-populates `/etc/subuid` and `/etc/subgid` for the `childflow` user. That lets `childflow` exercise the same `newuidmap` / `newgidmap` fallback path it uses on Debian-like hosts when direct uid/gid map writes are rejected.
 For proxy debugging, it also includes `busybox-static`, so you can use `/bin/busybox wget` as a single-binary HTTP client inside the container.
 It also builds a tiny Go single-binary HTTP client at `/usr/local/bin/proxycheck`, which prints the selected proxy and then performs the request.
@@ -47,7 +48,7 @@ For the experimental rootless backend, a useful smoke check is:
 
 ```bash
 cargo run -- -- curl https://example.com
-cargo run -- -o /tmp/rootless.pcapng -- curl https://example.com
+cargo run -- -c /tmp/rootless.pcapng -- curl https://example.com
 ```
 
 For a single-binary relay proxy check against something like Burp on `host.docker.internal:8080`:
@@ -64,7 +65,7 @@ If the image build fails during `apt-get install` with a message about free spac
 ```bash
 sudo cargo run --release -- \
   --root \
-  -o /tmp/capture.pcapng \
+  -c /tmp/capture.pcapng \
   -- curl https://example.com
 ```
 

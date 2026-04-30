@@ -1,0 +1,5 @@
+[tasks."generate_gif"]
+description = "Build the demo container and render the README demo gif with VHS"
+run = """
+    docker compose -f docker/demo/compose.yml run --build --rm childflow-demo bash /workspaces/childflow/docker/demo/render-gif.sh
+"""

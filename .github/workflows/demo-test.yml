@@ -42,3 +42,21 @@ jobs:
 
       - name: Run Docker Demo Test
         run: docker compose -f docker/demo/compose.yml run --rm childflow-demo /workspaces/childflow/docker/demo/run-demo.sh
+
+      - name: Run Docker E2E Test
+        run: docker compose -f docker/e2e/compose.yml run --build --rm childflow-e2e bash /workspaces/childflow/docker/e2e/run-e2e.sh
+
+  rootless-smoke:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Run rootless smoke tests in the dev container
+        run: docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test --test rootless_proxy -- --nocapture

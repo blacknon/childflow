@@ -12,7 +12,10 @@ use nix::sched::{setns, CloneFlags};
 use nix::unistd::Pid;
 
 use super::types::NetworkPlan;
-use crate::cli::Cli;
+use crate::capture::{
+    derive_output_paths, CaptureMetadata, CaptureMode, CapturePlan, RootfulEgressRewrite,
+};
+use crate::cli::{Cli, OutputView};
 use crate::util::{debug, read_file_trimmed, run_command, warn};
 
 pub struct NetworkContext {
@@ -24,6 +27,9 @@ pub struct NetworkContext {
     host_ipv6: Ipv6Addr,
     child_ipv6: Ipv6Addr,
     subnet_v6_cidr: String,
+    egress_ipv4: Option<Ipv4Addr>,
+    egress_ipv6: Option<Ipv6Addr>,
+    wire_egress_iface: Option<String>,
     iface: Option<String>,
     route_mark: Option<u32>,
     route_table: Option<u32>,
@@ -76,6 +82,9 @@ impl NetworkContext {
             host_ipv6: plan.host_ipv6,
             child_ipv6: plan.child_ipv6,
             subnet_v6_cidr: plan.subnet_v6_cidr.clone(),
+            egress_ipv4: None,
+            egress_ipv6: None,
+            wire_egress_iface: None,
             iface: cli.iface.clone(),
             route_mark: cli.iface.as_ref().map(|_| plan.route_mark),
             route_table: cli.iface.as_ref().map(|_| plan.route_table),
@@ -94,6 +103,17 @@ impl NetworkContext {
             ctx.host_veth, ctx.child_veth
         ));
 
+        if cli.output.is_some() && matches!(cli.output_view, OutputView::Egress | OutputView::Both)
+        {
+            let (egress_ipv4, egress_ipv6) = discover_rootful_egress_ips(cli.iface.as_deref())?;
+            ctx.egress_ipv4 = egress_ipv4;
+            ctx.egress_ipv6 = egress_ipv6;
+        }
+
+        if cli.output.is_some() && cli.output_view == OutputView::WireEgress {
+            ctx.wire_egress_iface = Some(discover_rootful_wire_egress_iface(cli.iface.as_deref())?);
+        }
+
         ctx.prepare_sysctls()?;
         ctx.create_veth_pair(child_pid)?;
         ctx.configure_child_namespace(child_pid)?;
@@ -104,12 +124,77 @@ impl NetworkContext {
         Ok(ctx)
     }
 
-    pub fn host_veth(&self) -> &str {
-        &self.host_veth
-    }
-
     pub fn dns_bind_addrs(&self) -> (Ipv4Addr, Ipv6Addr) {
         (self.host_ipv4, self.host_ipv6)
+    }
+
+    pub fn capture_plan(&self, output_path: &Path, output_view: OutputView) -> Result<CapturePlan> {
+        let mode = CaptureMode::AfPacket {
+            interface_name: self.host_veth.clone(),
+        };
+
+        match output_view {
+            OutputView::Child => Ok(CapturePlan::ChildOnly {
+                mode,
+                output_path: output_path.to_path_buf(),
+                metadata: CaptureMetadata::new(
+                    "child",
+                    "rootful",
+                    "isolated",
+                    self.host_veth.clone(),
+                ),
+            }),
+            OutputView::Egress => Ok(CapturePlan::RootfulSyntheticEgress {
+                mode,
+                output_path: output_path.to_path_buf(),
+                rewrite: self.rootful_egress_rewrite()?,
+            }),
+            OutputView::WireEgress => Ok(CapturePlan::ChildOnly {
+                mode: CaptureMode::AfPacket {
+                    interface_name: self.rootful_wire_egress_iface()?.to_string(),
+                },
+                output_path: output_path.to_path_buf(),
+                metadata: CaptureMetadata::new(
+                    "wire-egress",
+                    "rootful",
+                    "wire",
+                    self.rootful_wire_egress_iface()?.to_string(),
+                ),
+            }),
+            OutputView::Both => {
+                let (child_output_path, egress_output_path) =
+                    derive_output_paths(output_path, output_view)?;
+                Ok(CapturePlan::RootfulChildAndSyntheticEgress {
+                    mode,
+                    child_output_path,
+                    egress_output_path,
+                    rewrite: self.rootful_egress_rewrite()?,
+                })
+            }
+        }
+    }
+
+    fn rootful_egress_rewrite(&self) -> Result<RootfulEgressRewrite> {
+        if self.egress_ipv4.is_none() && self.egress_ipv6.is_none() {
+            return Err(anyhow!(
+                "failed to determine any rootful host egress address for the synthetic `--capture-point egress` capture. Check the host default route or retry with `--iface` to pin the egress interface."
+            ));
+        }
+
+        Ok(RootfulEgressRewrite {
+            child_ipv4: self.child_ipv4,
+            child_ipv6: self.child_ipv6,
+            host_egress_ipv4: self.egress_ipv4,
+            host_egress_ipv6: self.egress_ipv6,
+        })
+    }
+
+    fn rootful_wire_egress_iface(&self) -> Result<&str> {
+        self.wire_egress_iface.as_deref().ok_or_else(|| {
+            anyhow!(
+                "failed to determine the rootful wire-egress interface for `--capture-point wire-egress`. Check the host default route or retry with `--iface` to pin the egress interface."
+            )
+        })
     }
 
     fn push_cleanup_command(
@@ -1217,6 +1302,103 @@ fn build_default_route6_delete_args(
     args
 }
 
+fn discover_rootful_egress_ips(
+    iface: Option<&str>,
+) -> Result<(Option<Ipv4Addr>, Option<Ipv6Addr>)> {
+    let ipv4 = discover_route_get_src_v4(iface).with_context(|| match iface {
+        Some(iface) => format!(
+            "failed to determine the rootful IPv4 egress source address for interface {iface}"
+        ),
+        None => "failed to determine the rootful IPv4 egress source address from the default route"
+            .to_string(),
+    })?;
+
+    let ipv6 = match discover_route_get_src_v6(iface) {
+        Ok(value) => value,
+        Err(err) => {
+            debug(format!(
+                "could not determine a rootful IPv6 egress source address: {err:#}. IPv6 synthetic egress capture may be unavailable on this host"
+            ));
+            None
+        }
+    };
+
+    Ok((Some(ipv4), ipv6))
+}
+
+fn discover_rootful_wire_egress_iface(iface: Option<&str>) -> Result<String> {
+    match iface {
+        Some(iface) => Ok(iface.to_string()),
+        None => discover_route_get_dev_v4().context(
+            "failed to determine the rootful wire-egress interface from the default route",
+        ),
+    }
+}
+
+fn discover_route_get_src_v4(iface: Option<&str>) -> Result<Ipv4Addr> {
+    let mut args = vec!["route".into(), "get".into(), "1.1.1.1".into()];
+    if let Some(iface) = iface {
+        args.push("oif".into());
+        args.push(iface.into());
+    }
+    let output = run_command("ip", args).context("failed to inspect IPv4 route-get output")?;
+    parse_route_get_src_v4(&output)
+}
+
+fn discover_route_get_dev_v4() -> Result<String> {
+    let output = run_command("ip", vec!["route".into(), "get".into(), "1.1.1.1".into()])
+        .context("failed to inspect IPv4 route-get output")?;
+    parse_route_get_dev(&output)
+}
+
+fn discover_route_get_src_v6(iface: Option<&str>) -> Result<Option<Ipv6Addr>> {
+    let mut args = vec![
+        "-6".into(),
+        "route".into(),
+        "get".into(),
+        "2606:4700:4700::1111".into(),
+    ];
+    if let Some(iface) = iface {
+        args.push("oif".into());
+        args.push(iface.into());
+    }
+    let output = run_command("ip", args).context("failed to inspect IPv6 route-get output")?;
+    parse_route_get_src_v6(&output).map(Some)
+}
+
+fn parse_route_get_src_v4(output: &str) -> Result<Ipv4Addr> {
+    let tokens: Vec<&str> = output.split_whitespace().collect();
+    tokens
+        .windows(2)
+        .find(|pair| pair[0] == "src")
+        .ok_or_else(|| anyhow!("no `src` token found in route-get output: {output}"))?[1]
+        .parse::<Ipv4Addr>()
+        .with_context(|| {
+            format!("failed to parse IPv4 `src` token from route-get output: {output}")
+        })
+}
+
+fn parse_route_get_src_v6(output: &str) -> Result<Ipv6Addr> {
+    let tokens: Vec<&str> = output.split_whitespace().collect();
+    tokens
+        .windows(2)
+        .find(|pair| pair[0] == "src")
+        .ok_or_else(|| anyhow!("no `src` token found in IPv6 route-get output: {output}"))?[1]
+        .parse::<Ipv6Addr>()
+        .with_context(|| {
+            format!("failed to parse IPv6 `src` token from route-get output: {output}")
+        })
+}
+
+fn parse_route_get_dev(output: &str) -> Result<String> {
+    let tokens: Vec<&str> = output.split_whitespace().collect();
+    Ok(tokens
+        .windows(2)
+        .find(|pair| pair[0] == "dev")
+        .ok_or_else(|| anyhow!("no `dev` token found in route-get output: {output}"))?[1]
+        .to_string())
+}
+
 fn with_netns<T, F>(pid: Pid, f: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,
@@ -1355,6 +1537,30 @@ mod tests {
     fn parse_default_route_rejects_invalid_gateway() {
         let err = parse_default_route("default via not-an-ip dev eth0").unwrap_err();
         assert!(err.to_string().contains("failed to parse default gateway"));
+    }
+
+    #[test]
+    fn parse_route_get_src_v4_extracts_source_address() {
+        let parsed =
+            parse_route_get_src_v4("1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.10 uid 1000")
+                .unwrap();
+        assert_eq!(parsed, Ipv4Addr::new(192, 0, 2, 10));
+    }
+
+    #[test]
+    fn parse_route_get_src_v6_extracts_source_address() {
+        let parsed = parse_route_get_src_v6(
+            "2606:4700:4700::1111 from :: via 2001:db8::1 dev eth0 src 2001:db8::10 metric 1024 pref medium",
+        )
+        .unwrap();
+        assert_eq!(parsed, "2001:db8::10".parse::<Ipv6Addr>().unwrap());
+    }
+
+    #[test]
+    fn parse_route_get_dev_extracts_interface_name() {
+        let parsed =
+            parse_route_get_dev("1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.10 uid 1000").unwrap();
+        assert_eq!(parsed, "eth0");
     }
 
     #[test]

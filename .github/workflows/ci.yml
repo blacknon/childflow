@@ -50,3 +50,18 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+  rootless-smoke:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Run rootless smoke tests in the dev container
+        run: docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test --test rootless_proxy -- --nocapture

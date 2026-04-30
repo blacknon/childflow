@@ -1,105 +1,55 @@
 childflow Technical Details
 ===
 
-This document collects the lower-level backend notes, capture details, troubleshooting guidance, and maintainer-oriented commands that are intentionally kept out of the top-level README.
+This document keeps the lower-level backend, capture, troubleshooting, and maintainer notes that are intentionally trimmed out of the top-level README.
 
-## Backend Matrix
+## Backend Summary
 
-| Feature | `rootful` | `rootless-internal` |
+| Feature | `rootless-internal` | `rootful` |
 | --- | --- | --- |
 | Isolated execution | Yes | Yes |
-| DNS override | Yes | Yes, via child `resolv.conf` rewrite and internal DNS relay |
+| DNS override | Yes | Yes |
 | `/etc/hosts` override | Yes | Yes |
 | Outbound TCP | Yes | Yes |
-| ICMP | Yes | IPv4 / IPv6 echo requests and replies, traceroute-style ICMP error relay for both UDP and ICMP echo probes, plus best-effort direct non-echo ICMP relay when raw sockets are available |
 | UDP | Yes | Yes |
-| Explicit upstream proxy | Yes, via transparent interception path | Yes, via parent-side relay engine |
-| Transparent proxy / TPROXY | Yes | Not supported |
-| `--iface` | Yes | Not supported |
-| Packet capture | Optional, via host-side AF_PACKET on the veth path when `--output` is set | Optional, via tap/engine-boundary capture when `--output` is set |
-| Status | Current feature-complete backend | Experimental |
+| ICMP | Echo, traceroute-style errors, and best-effort broader relay | Yes |
+| Explicit upstream proxy | Yes | Yes |
+| Transparent proxy / TPROXY | No | Yes |
+| `--iface` | No | Yes |
+| Capture | `child`, `egress`, `wire-egress`, `both` | `child`, `egress`, `wire-egress`, `both` |
+| Status | Default and recommended path | Advanced fallback |
 
-## Backend Notes
+Use `rootless-internal` by default. Use `--root` when you need host-integrated behavior such as `--iface` or transparent interception.
 
-- `rootful` is enabled explicitly with `--root` when you want the current feature-complete backend
-- `rootless-internal` currently rejects `--iface` and transparent proxy / TPROXY behavior because those paths are not implemented yet
-- `rootless-internal` supports child isolation, DNS relay, outbound TCP, generic UDP relay, IPv4 / IPv6 ICMP echo relay for `ping`, traceroute-style ICMP error relay for both UDP and ICMP echo probes, best-effort direct relay for other outbound ICMP request types, relay-based HTTP / HTTPS / SOCKS5 upstream proxying, `/etc/hosts` override, and tap/engine-boundary packet capture via `--output`
-- broader non-echo ICMP relay depends on the parent process being able to open raw ICMP sockets on the host; when that is blocked, `ping` and `traceroute` still work through their dedicated paths, but other ICMP request types may fail with a warning
-
-## How It Works
-
-### `rootful`
-
-1. `childflow` validates CLI arguments and runs preflight checks.
-2. A child is forked and unshares the required namespaces.
-3. A veth pair connects the child namespace to the host namespace.
-4. The host enables forwarding and installs IPv4 / IPv6 NAT and forwarding rules.
-5. Optional policy-routing rules force direct traffic through `--iface`.
-6. Optional TPROXY rules redirect TCP traffic to the local transparent listener, which then connects to the configured upstream proxy.
-7. Packet capture runs on the host-side veth.
+## Backend Flow
 
 ### `rootless-internal`
 
-1. `childflow` validates CLI arguments and runs preflight checks.
-2. A child is forked and unshares user, network, and mount namespaces when available.
-3. The child creates `tap0`, gets a rewritten `resolv.conf`, and receives a merged `/etc/hosts` view when `--hosts-file` is set.
-4. The parent-side userspace engine attaches to the tap and relays UDP, outbound TCP, IPv4 / IPv6 ICMP echo requests, and traceroute-style ICMP error responses for both UDP and ICMP echo probes.
-5. If `--proxy` is set, the parent-side engine tunnels outbound TCP through HTTP, HTTPS, or SOCKS5 upstream proxying.
-6. If `--output` is set, packet capture is written from the tap/engine boundary.
-
-For non-root users, `childflow` first tries direct uid/gid mapping, then falls back to `newuidmap` / `newgidmap`, and finally to a uid-only mapping when the host rejects gid mapping but still permits enough user-namespace functionality to continue.
-
-## Packet Capture Behavior
+1. Validate CLI and run preflight.
+2. Fork the child and unshare user, network, and mount namespaces when available.
+3. Create `tap0`, rewrite `resolv.conf`, and overlay `/etc/hosts` when requested.
+4. Attach the parent-side userspace engine to the tap.
+5. Relay outbound TCP, UDP, DNS, and supported ICMP paths.
+6. Optionally tunnel outbound TCP through HTTP / HTTPS / SOCKS5 upstream proxying.
+7. Optionally write capture from the tap / engine boundary, or from the discovered host egress interface for `wire-egress`.
 
 ### `rootful`
 
-Capture happens on the host-side veth, shown below as `cfhXXXX`.
+1. Validate CLI and run preflight.
+2. Fork the child and unshare namespaces.
+3. Create a veth pair between child and host namespaces.
+4. Enable forwarding and install NAT / forwarding rules.
+5. Optionally install policy-routing rules for `--iface`.
+6. Optionally install TPROXY rules for proxy interception.
+7. Optionally start AF_PACKET capture.
 
-```mermaid
-flowchart LR
-    subgraph ChildNetNS["child netns"]
-        CP["child process"]
-        CV["child veth\ncfcXXXX"]
-        CP --> CV
-    end
+For non-root users, `childflow` first tries direct uid/gid mapping, then falls back to `newuidmap` / `newgidmap`, and finally to uid-only mapping when the host allows enough user-namespace functionality to continue.
 
-    subgraph HostNetNS["host netns"]
-        HV["host veth\ncfhXXXX"]
-        PR["PREROUTING\nTPROXY / NAT / routing"]
-        TL["transparent listener"]
-        DNSF["local DNS forwarder"]
-        UP["upstream proxy"]
-        DNSU["upstream DNS"]
-    end
+## Capture Points
 
-    OD["original destination"]
-    PCAP[("pcapng\ncurrent capture")]
-
-    CV --> HV
-    HV --> PR
-    HV -. captured .-> PCAP
-    PR --> TL
-    TL --> UP
-    UP --> OD
-    PR --> DNSF
-    DNSF --> DNSU
-```
-
-What is captured:
-
-- packets emitted by the target process tree into the isolated namespace
-- DNS requests from that process tree before they leave the host-side veth
-- TCP flows before later host-side TPROXY, NAT, or proxy relaying stages
-
-What is not captured:
-
-- packets generated by unrelated host processes
-- traffic after it leaves the host-side veth and is rewritten or relayed later in the host stack
-- packets created by the upstream proxy server itself on another machine
+`childflow` captures only the target command tree's traffic. The important part is not just whether capture is enabled, but where each capture mode is anchored.
 
 ### `rootless-internal`
-
-Capture happens at the `tap0` / userspace-engine boundary, shown below as `tap0`.
 
 ```mermaid
 flowchart LR
@@ -110,55 +60,95 @@ flowchart LR
     end
 
     subgraph ParentSide["parent-side userspace engine"]
-        ENG["userspace engine"]
-        DNSR["DNS relay"]
-        PROXY["HTTP / HTTPS / SOCKS5 upstream proxying"]
-        ICMP["ICMP echo / traceroute relay"]
-        UDPR["UDP relay"]
+        ENG["userspace relay engine"]
+        FLOW["logical egress reconstruction"]
     end
 
-    OD["original destination"]
-    DNSU["upstream DNS"]
-    PCAP[("pcapng\ncurrent capture")]
+    subgraph HostNetNS["host netns"]
+        SOCK["host socket"]
+        WIRE["host egress interface"]
+    end
 
-    TAP --> ENG
-    ENG -. captured .-> PCAP
-    ENG --> UDPR
-    UDPR --> OD
-    ENG --> ICMP
-    ICMP --> OD
-    ENG --> DNSR
-    DNSR --> DNSU
-    ENG --> PROXY
-    PROXY --> OD
-    ENG --> TAP
+    REM["remote destination or proxy"]
+
+    TAP --> ENG --> SOCK --> WIRE --> REM
+    ENG --> FLOW
+
+    C1["child\ncurrent isolated view"] -. capture .-> TAP
+    C1 -. capture .-> ENG
+    C2["egress\nlogical synthetic view"] -. build from .-> FLOW
+    C3["wire-egress\nreal host-side wire view"] -. capture .-> WIRE
 ```
 
-Capture is taken at the `tap0` / userspace-engine boundary instead of the host-side veth. That means the file shows what the child emitted into the isolated rootless network stack and what the engine returned to the child, not the host-side TCP stream after proxying or relay.
+- `child`
+  capture is written at the `tap0` / userspace-engine boundary
+- `egress`
+  logical synthetic view reconstructed from the rootless child-side capture plus the discovered host egress IP
+- `wire-egress`
+  real AF_PACKET capture on the discovered host egress interface; with upstream proxying enabled, this shows the host-to-proxy wire view
+- `both`
+  writes `.child.pcapng` from the `child` point and `.egress.pcapng` from the logical `egress` view
+
+### `rootful`
+
+```mermaid
+flowchart LR
+    subgraph ChildNetNS["child netns"]
+        CP["child process"]
+        CV["child veth"]
+        CP --> CV
+    end
+
+    subgraph HostNetNS["host netns"]
+        HV["host veth"]
+        NAT["routing / NAT / TPROXY"]
+        WIRE["host egress interface"]
+    end
+
+    REM["remote destination or proxy"]
+
+    CV --> HV --> NAT --> WIRE --> REM
+
+    C1["child\ncurrent isolated view"] -. capture .-> HV
+    C2["egress\nsynthetic host-egress view"] -. rewrite from .-> HV
+    C3["wire-egress\nreal host-side wire view"] -. capture .-> WIRE
+```
+
+- `child`
+  capture is taken on the host-side veth before later NAT, routing, or proxy interception
+- `egress`
+  synthetic view derived from that veth capture by rewriting the child endpoint IP to the discovered host egress IP
+- `wire-egress`
+  real AF_PACKET capture on the selected or discovered host egress interface
+- `both`
+  writes `.child.pcapng` from the `child` point and `.egress.pcapng` from the synthetic `egress` view
+
+Generated `pcapng` files also embed metadata describing the capture `view`, `backend`, `kind`, and `interface`.
 
 ## Requirements
 
-### Host requirements
+### Host
 
-- Linux only
+- Linux
 - `ip`
 - `iptables`
 - `ip6tables`
-- kernel support for network namespaces, policy routing, and veth
+- kernel support for namespaces, routing, and veth
+
+### `rootless-internal`
+
+- user, network, and mount namespace support
+- `/dev/net/tun`
+- user namespaces enabled on the host
+- `uidmap` recommended on Debian / Ubuntu style systems
 
 ### `rootful`
 
 - root privileges
-- writable `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding`
-- transparent proxy mode additionally depends on Linux TPROXY support such as `xt_TPROXY`, `xt_socket`, and `IP_TRANSPARENT`
-- packet capture depends on AF_PACKET support and privileges equivalent to `CAP_NET_RAW`
-
-### `rootless-internal`
-
-- Linux namespace support for user, network, and mount namespaces
-- `/dev/net/tun`
-- user namespace support enabled on the host
-- on Debian / Ubuntu style hosts, the `uidmap` package is recommended so `childflow` can fall back to `newuidmap` / `newgidmap` when direct `/proc/<pid>/*_map` writes are rejected
+- writable `/proc/sys/net/ipv4/ip_forward`
+- writable `/proc/sys/net/ipv6/conf/all/forwarding`
+- Linux TPROXY support when transparent interception is used
+- AF_PACKET support and privileges equivalent to `CAP_NET_RAW` for capture
 
 ## Troubleshooting
 
@@ -166,8 +156,9 @@ Typical checks:
 
 ```bash
 which ip iptables ip6tables
+childflow --doctor
 childflow -- true
-sudo childflow --root -o /tmp/test.pcapng -- true
+sudo childflow --root -c /tmp/test.pcapng -- true
 docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test
 sudo ip route show default
 sudo ip -6 route show default
@@ -177,42 +168,33 @@ sudo ip6tables -t mangle -S
 
 Common failures:
 
-- `ip`, `iptables`, or `ip6tables` not found:
-  install `iproute2` and the appropriate `iptables` userspace package
-- privilege check fails:
-  rerun `--root` with `sudo`; if this still fails inside a container or VM, verify the required capabilities are actually granted
-- `rootless-internal` preflight fails:
-  check user namespace availability, `/dev/net/tun`, and whether the host exposes `/proc/self/ns/{user,net,mnt}`
-- `rootless-internal` namespace setup fails for a non-root user:
-  install the Debian / Ubuntu `uidmap` package, check `/etc/subuid` and `/etc/subgid`, and rerun with `CHILDFLOW_DEBUG=1`
-- `rootless-internal` reaches TCP destinations but DNS still fails:
-  verify the selected upstream resolver is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1`
-- `rootless-internal` proxying does not seem to take effect:
-  verify the configured upstream proxy is reachable from the parent namespace and rerun with `CHILDFLOW_DEBUG=1`
-- `rootless-internal` drops UDP traffic:
-  verify that the remote peer actually sends a UDP response back; the current relay forwards datagrams, but it does not maintain richer session semantics beyond request/response forwarding
-- `rootless-internal` can reach TCP destinations but `ping` still fails:
-  the current rootless ICMP path only handles echo traffic; rerun with `CHILDFLOW_DEBUG=1` and confirm the target family matches the command you used
-- `rootless-internal` can run `ping` and both UDP-style and ICMP-mode `traceroute`, but another raw-ICMP tool still fails:
-  broader non-echo ICMP relay now exists as a best-effort path and depends on raw ICMP socket access in the parent namespace; rerun with `CHILDFLOW_DEBUG=1` and check the warning for raw-socket permission or host policy failures
-- packet capture startup fails:
+- `ip`, `iptables`, or `ip6tables` not found
+  install `iproute2` and the appropriate firewall userspace package
+- `rootless-internal` preflight fails
+  check user namespace availability, `/dev/net/tun`, and `/proc/self/ns/{user,net,mnt}`
+- `rootless-internal` namespace setup fails for a non-root user
+  install `uidmap`, check `/etc/subuid` and `/etc/subgid`, then retry with `CHILDFLOW_DEBUG=1`
+- `rootless-internal` DNS or proxying does not behave as expected
+  verify upstream reachability from the parent namespace and retry with `CHILDFLOW_DEBUG=1`
+- `rootless-internal` non-echo ICMP still fails
+  broader ICMP relay depends on raw ICMP socket access in the parent namespace
+- packet capture startup fails
   verify AF_PACKET support or rootless tap access, depending on the backend
 
 Host conflicts to keep in mind:
 
-- existing routing policy rules may interact with `--iface`
+- existing policy-routing rules may interact with `--iface`
 - host firewall managers may rewrite or reject `iptables` / `ip6tables` rules
 - hardened container environments may mount `/proc/sys` read-only or block namespace operations
-- Docker or other orchestration tools may already manipulate forwarding and NAT state on the host
+- Docker or other orchestration tools may already manipulate forwarding and NAT state
 
 ## Limitations
 
 - Linux only
-- backend support is still asymmetric: `rootful` is the feature-complete path, while `rootless-internal` is still experimental
-- direct traffic is dual-stack, but correctness still depends on the host having usable IPv4 and IPv6 upstream connectivity
+- rootless is the main path, but `--iface` and transparent proxy / TPROXY still require `--root`
+- direct traffic is dual-stack only when the host actually has working upstream IPv4 and IPv6 connectivity
 - proxy mode currently targets TCP traffic
-- rootless ICMP support is broader now, but arbitrary non-echo ICMP still depends on raw-socket access and may vary across hosts
-- DNS handling is designed around `resolv.conf`-driven resolution inside the child namespace
+- broader rootless ICMP still depends on host raw-socket access
 - abnormal termination can still leave partial host-side network changes behind even though rollback is attempted
 
 ## Safety Notes
@@ -221,19 +203,14 @@ Host conflicts to keep in mind:
 
 - sysctls such as `net.ipv4.ip_forward`, `net.ipv6.conf.all.forwarding`, and per-interface `rp_filter`
 - host veth devices
-- `iptables` and `ip6tables` filter / nat / mangle rules
+- `iptables` and `ip6tables` rules
 - policy-routing rules and local routes used for `--iface` or TPROXY
 
-Because of that:
-
-- prefer a disposable VM, test machine, or the Docker demo when learning the tool
-- avoid using it casually on a production host
-- review cleanup warnings carefully if the process crashes or is interrupted
-- keep `CHILDFLOW_DEBUG=1` handy when developing or debugging host-specific issues
+Prefer a disposable VM, test host, or the Docker demo when learning or debugging host-specific behavior.
 
 ## Validation
 
-Useful local commands for maintainers:
+Useful maintainer commands:
 
 ```bash
 cargo fmt

@@ -1,0 +1,142 @@
+services:
+  route-gateway:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    working_dir: /workspaces/childflow
+    user: root
+    command:
+      - bash
+      - -lc
+      - |
+        sysctl -w net.ipv4.ip_forward=1
+        iptables -P FORWARD ACCEPT
+        iptables -t nat -A POSTROUTING -d 10.241.0.0/24 -j MASQUERADE
+        exec sleep infinity
+    privileged: true
+    networks:
+      client:
+        ipv4_address: 10.240.0.2
+      routed:
+        ipv4_address: 10.241.0.2
+
+  origin-routed-http:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - python3
+      - /demo/origin_server.py
+      - --port
+      - "8080"
+      - --body
+      - routed-http-ok
+    networks:
+      routed:
+        ipv4_address: 10.241.0.10
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 8080), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  ping-target:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    working_dir: /workspaces/childflow
+    command:
+      - bash
+      - -lc
+      - exec sleep infinity
+    networks:
+      routed:
+        ipv4_address: 10.241.0.30
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -lc
+        - "ip addr show dev eth0 | grep -q '10.241.0.30/'"
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  proxy-http:
+    build:
+      context: ../..
+      dockerfile: docker/demo/Dockerfile
+    working_dir: /demo
+    command:
+      - python3
+      - /demo/proxy_server.py
+      - --port
+      - "3128"
+      - --user
+      - demo
+      - --password
+      - demo
+    networks:
+      client:
+        ipv4_address: 10.240.0.20
+      routed:
+        ipv4_address: 10.241.0.20
+    extra_hosts:
+      - "origin-routed.demo:10.241.0.10"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import socket
+          s = socket.create_connection(("127.0.0.1", 3128), 2)
+          s.close()
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  childflow-e2e:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    working_dir: /workspaces/childflow
+    volumes:
+      - ../..:/workspaces/childflow
+    privileged: true
+    tty: true
+    stdin_open: true
+    extra_hosts:
+      - "origin-routed.demo:10.241.0.10"
+      - "ping-target.demo:10.241.0.30"
+    depends_on:
+      route-gateway:
+        condition: service_started
+      origin-routed-http:
+        condition: service_healthy
+      ping-target:
+        condition: service_healthy
+      proxy-http:
+        condition: service_healthy
+    networks:
+      client:
+        ipv4_address: 10.240.0.10
+
+networks:
+  client:
+    ipam:
+      config:
+        - subnet: 10.240.0.0/24
+  routed:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.241.0.0/24

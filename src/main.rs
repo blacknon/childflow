@@ -17,6 +17,8 @@ mod cli;
 #[cfg(target_os = "linux")]
 mod dns;
 #[cfg(target_os = "linux")]
+mod doctor;
+#[cfg(target_os = "linux")]
 mod hosts;
 #[cfg(target_os = "linux")]
 mod namespace;
@@ -79,6 +81,10 @@ fn main() {
 #[cfg(target_os = "linux")]
 fn real_main() -> Result<i32> {
     let cli = Cli::parse();
+    if cli.doctor {
+        return doctor::run(&cli);
+    }
+
     cli.validate()?;
     preflight::run(&cli)?;
     let backend = cli.selected_backend();
@@ -279,13 +285,16 @@ impl ParentRuntime {
             None => None,
         };
 
-        let capture = match (network.capture_mode(), cli.output.as_ref()) {
-            (Some(mode), Some(output_path)) => {
-                Some(CaptureHandle::start(mode, output_path).with_context(|| {
-                    "failed to start packet capture. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected capture path for the selected backend".to_string()
-                })?)
-            }
-            _ => None,
+        let capture = match cli.output.as_ref() {
+            Some(output_path) => network
+                .capture_plan(output_path, cli.output_view)?
+                .map(|plan| {
+                    CaptureHandle::start(plan).with_context(|| {
+                        "failed to start packet capture. Check CAP_NET_RAW/CAP_NET_ADMIN, AF_PACKET availability, and that the backend created the expected capture path for the selected backend".to_string()
+                    })
+                })
+                .transpose()?,
+            None => None,
         };
 
         Ok(Self {
