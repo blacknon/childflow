@@ -6,7 +6,7 @@ childflow
 </p>
 
 childflow is a per-command-tree network sandbox for Linux.
-Run one command and its child processes in an isolated network context, control DNS / hosts / proxy behavior, apply outbound policy, and capture only that tree's traffic.
+Run one command and its child processes in an isolated network context, control DNS / hosts / proxy behavior, apply outbound policy, capture only that tree's traffic, and emit structured flow logs for that tree.
 
 ## About
 
@@ -17,7 +17,7 @@ This is useful for tools that do not honor proxy environment variables consisten
 It has two Linux backends: `rootless-internal` for the default day-to-day path, and `rootful` via `--root` when you need host-integrated behavior such as `--iface` or transparent interception.
 
 - affects only the target command tree, not the whole host session
-- can force DNS, `/etc/hosts`, proxying, sandbox policy, and packet capture per command tree
+- can force DNS, `/etc/hosts`, proxying, sandbox policy, packet capture, and structured flow logging per command tree
 - can force proxying without depending on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD` tricks
 - can apply allow / deny CIDR policy and default-deny rules to outbound traffic
 - defaults to `rootless-internal`
@@ -171,6 +171,13 @@ childflow \
 ```
 
 ```bash
+childflow \
+  --flow-log ./flow.jsonl \
+  --deny-cidr 10.0.0.0/8 \
+  -- curl https://example.com
+```
+
+```bash
 childflow -p http://127.0.0.1:8080 -- curl https://example.com
 ```
 
@@ -213,6 +220,7 @@ childflow -- traceroute -I -n -q 1 -w 2 8.8.8.8
 | UDP relay                  | Yes                                                               | Yes                                                                    |
 | Proxy support              | Yes, via parent-side relay engine                                 | Yes, via transparent interception path                                 |
 | Policy controls            | Yes                                                               | Yes                                                                    |
+| Structured flow log        | Yes                                                               | Not yet                                                                |
 | `--fail-on-leak`           | Yes                                                               | Not yet                                                                |
 | Transparent proxy / TPROXY | No                                                                | Yes                                                                    |
 | `--iface`                  | No                                                                | Yes                                                                    |
@@ -252,6 +260,41 @@ Current notes:
 
 - `--proxy-only` is primarily a TCP-focused control; in the rootless backend, direct DNS / UDP / ICMP traffic is also blocked rather than relayed
 - `--fail-on-leak` is currently supported only by `rootless-internal`
+
+### Flow Log
+
+`childflow` can emit structured JSON Lines flow events with `--flow-log`.
+
+```bash
+childflow --flow-log ./flow.jsonl -- curl https://example.com
+```
+
+```bash
+childflow --summary --flow-log ./flow.jsonl -- curl https://example.com
+```
+
+Current event types:
+
+- `dns_query`
+- `dns_answer`
+- `connect_attempt`
+- `connect_result`
+- `policy_violation`
+- `flow_end`
+
+Current schema notes:
+
+- every event includes `schema_version: 1`
+- `connect_attempt`, `connect_result`, and `flow_end` include stable `remote_ip` / `remote_port` fields
+- `dns_query` and `dns_answer` include stable `server_ip` / `server_port` fields
+- `policy_violation` includes structured fields such as `action`, `reason_code`, `control`, and `matched_cidr` when applicable
+
+Current notes:
+
+- `--flow-log` is currently supported only by `rootless-internal`
+- each line is standalone JSON, so it is easy to inspect with tools such as `jq`
+- flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
+- `--summary` will also show aggregate flow-log event counts after the run
 
 ### Capture Modes
 

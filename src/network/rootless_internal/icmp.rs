@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
+use crate::flow_log::{FlowLogger, PolicyViolationEvent};
 use crate::sandbox::SandboxPolicy;
 use crate::util;
 
@@ -78,6 +79,7 @@ pub(super) fn handle_icmpv4_packet(
     event_tx: &Sender<RemoteEvent>,
     addr_plan: &AddressPlan,
     sandbox_policy: &SandboxPolicy,
+    flow_log: &mut Option<FlowLogger>,
     leak_detected: &Arc<AtomicBool>,
     icmp: &ParsedIcmpv4Packet,
 ) -> Result<()> {
@@ -88,6 +90,19 @@ pub(super) fn handle_icmpv4_packet(
 
     let is_gateway_target = dst_ip == addr_plan.gateway_ipv4;
     if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(IpAddr::V4(dst_ip)) {
+        if let Some(logger) = flow_log.as_mut() {
+            let matched_cidr = reason.matched_cidr().map(|cidr| cidr.to_string());
+            logger.log_policy_violation(PolicyViolationEvent {
+                protocol: "icmpv4",
+                remote: &dst_ip.to_string(),
+                remote_ip: Some(IpAddr::V4(dst_ip)),
+                remote_port: None,
+                reason_code: reason.code(),
+                control: reason.control(),
+                matched_cidr: matched_cidr.as_deref(),
+                reason: &reason.describe(),
+            })?;
+        }
         if sandbox_policy.fail_on_leak {
             leak_detected.store(true, Ordering::Relaxed);
         }
@@ -143,6 +158,7 @@ pub(super) fn handle_icmpv6_packet(
     event_tx: &Sender<RemoteEvent>,
     addr_plan: &AddressPlan,
     sandbox_policy: &SandboxPolicy,
+    flow_log: &mut Option<FlowLogger>,
     leak_detected: &Arc<AtomicBool>,
     icmp: &ParsedIcmpv6Packet,
 ) -> Result<()> {
@@ -153,6 +169,19 @@ pub(super) fn handle_icmpv6_packet(
 
     let is_gateway_target = dst_ip == addr_plan.gateway_ipv6;
     if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(IpAddr::V6(dst_ip)) {
+        if let Some(logger) = flow_log.as_mut() {
+            let matched_cidr = reason.matched_cidr().map(|cidr| cidr.to_string());
+            logger.log_policy_violation(PolicyViolationEvent {
+                protocol: "icmpv6",
+                remote: &dst_ip.to_string(),
+                remote_ip: Some(IpAddr::V6(dst_ip)),
+                remote_port: None,
+                reason_code: reason.code(),
+                control: reason.control(),
+                matched_cidr: matched_cidr.as_deref(),
+                reason: &reason.describe(),
+            })?;
+        }
         if sandbox_policy.fail_on_leak {
             leak_detected.store(true, Ordering::Relaxed);
         }

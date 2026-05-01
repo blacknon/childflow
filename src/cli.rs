@@ -73,6 +73,10 @@ pub struct Cli {
     #[arg(long = "summary")]
     pub summary: bool,
 
+    /// Write structured flow events as JSON Lines. Currently supported only by the default rootless backend.
+    #[arg(long = "flow-log")]
+    pub flow_log: Option<PathBuf>,
+
     /// Block all outbound networking for the child tree, including DNS forwarding.
     #[arg(long = "offline")]
     pub offline: bool,
@@ -173,6 +177,10 @@ impl Cli {
             bail!(
                 "`--fail-on-leak` is currently supported only by the `rootless-internal` backend"
             );
+        }
+
+        if self.flow_log.is_some() && matches!(self.selected_backend(), NetworkBackend::Rootful) {
+            bail!("`--flow-log` is currently supported only by the `rootless-internal` backend");
         }
 
         Ok(())
@@ -297,6 +305,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: false,
+            flow_log: None,
             offline: false,
             block_private: false,
             block_metadata: false,
@@ -375,6 +384,17 @@ mod tests {
             root: true,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             fail_on_leak: true,
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_flow_log_for_rootful_backend() {
+        let cli = Cli {
+            root: true,
+            flow_log: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
             ..make_cli()
         };
 
