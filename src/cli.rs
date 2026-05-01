@@ -15,7 +15,7 @@ use crate::network::NetworkBackend;
 #[command(
     name = "childflow",
     version,
-    about = "Launch a child process tree inside its own netns and capture only its packets",
+    about = "Run one command tree inside a controlled network sandbox",
     trailing_var_arg = true
 )]
 pub struct Cli {
@@ -67,6 +67,22 @@ pub struct Cli {
     /// Ignore certificate trust errors for https:// upstream proxies while still validating the hostname.
     #[arg(long = "proxy-insecure")]
     pub proxy_insecure: bool,
+
+    /// Print a post-run summary to stderr.
+    #[arg(long = "summary")]
+    pub summary: bool,
+
+    /// Block all outbound networking for the child tree, including DNS forwarding.
+    #[arg(long = "offline")]
+    pub offline: bool,
+
+    /// Block child-tree traffic to private, loopback, link-local, and ULA-style destinations.
+    #[arg(long = "block-private")]
+    pub block_private: bool,
+
+    /// Block common cloud metadata endpoints such as 169.254.169.254.
+    #[arg(long = "block-metadata")]
+    pub block_metadata: bool,
 
     /// Force the host-side egress interface for the child's direct traffic.
     #[arg(short = 'i', long = "iface")]
@@ -242,6 +258,10 @@ mod tests {
             proxy_user: None,
             proxy_password: None,
             proxy_insecure: false,
+            summary: false,
+            offline: false,
+            block_private: false,
+            block_metadata: false,
             iface: None,
             command: vec!["curl".into()],
         }
@@ -462,6 +482,26 @@ mod tests {
         };
 
         cli.validate().unwrap();
+    }
+
+    #[test]
+    fn parse_accepts_baseline_sandbox_flags() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--offline",
+            "--summary",
+            "--block-private",
+            "--block-metadata",
+            "--",
+            "curl",
+            "https://example.com",
+        ]);
+
+        assert!(cli.summary);
+        assert!(cli.offline);
+        assert!(cli.block_private);
+        assert!(cli.block_metadata);
+        assert_eq!(cli.command, vec!["curl", "https://example.com"]);
     }
 
     #[test]

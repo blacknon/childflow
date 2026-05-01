@@ -24,6 +24,7 @@ use crate::cli::{Cli, OutputView};
 use crate::dns::DnsPlan;
 use crate::namespace;
 use crate::proxy::ProxyPlan;
+use crate::sandbox::SandboxPolicy;
 
 use super::types::NetworkPlan;
 
@@ -95,7 +96,12 @@ pub fn setup(
     params: RootlessSetupParams<'_>,
 ) -> Result<NetworkContext> {
     let addr_plan = params.child_bootstrap.addr_plan().clone();
-    let dns_upstream = params.dns_plan.rootless_upstream();
+    let sandbox_policy = SandboxPolicy::from_cli(cli);
+    let dns_upstream = if sandbox_policy.offline {
+        None
+    } else {
+        params.dns_plan.rootless_upstream()
+    };
     let capture_plan = discover_rootless_capture_plan(cli)?;
     let capture = match (cli.output.as_deref(), cli.output_view) {
         (Some(output_path), OutputView::Child) => Some(
@@ -151,6 +157,7 @@ pub fn setup(
         engine::EngineConfig {
             dns_upstream,
             allow_ipv6_outbound: engine::detect_ipv6_outbound(),
+            sandbox_policy,
             proxy_upstream: params
                 .proxy_plan
                 .and_then(ProxyPlan::rootless_upstream)

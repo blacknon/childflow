@@ -41,6 +41,8 @@ fn rootless_internal_reaches_local_http_server_and_writes_capture() -> Result<()
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "childflow-local-ok");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("childflow summary"));
 
     let request_line = requests
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -152,6 +154,183 @@ fn rootless_internal_proxy_and_dns_override_write_capture_for_local_http() -> Re
     assert_capture_file_written(&output_path)?;
     assert_capture_has_enhanced_packets(&output_path, 4)?;
     let _ = std::fs::remove_file(&output_path);
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_offline_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-offline-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--offline",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal offline smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected offline childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "offline sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_block_private_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-private-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--block-private",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal block-private smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected block-private childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "block-private sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_reaches_metadata_alias_without_block() -> Result<()> {
+    let _guard = LoopbackAliasGuard::add(Ipv4Addr::new(169, 254, 169, 254))?;
+    let (server_addr, requests) =
+        spawn_bound_http_server(Ipv4Addr::new(169, 254, 169, 254), "childflow-metadata-ok")?;
+
+    let output = run_childflow_command(&[
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=5).read().decode())",
+        &format!("http://169.254.169.254:{}/latest/meta-data/", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal metadata-alias reachability test")?;
+
+    assert!(
+        output.status.success(),
+        "expected metadata-alias childflow run to succeed, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-metadata-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("metadata alias server did not receive a request")?,
+        "GET /latest/meta-data/ HTTP/1.1"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_block_metadata_blocks_metadata_alias() -> Result<()> {
+    let _guard = LoopbackAliasGuard::add(Ipv4Addr::new(169, 254, 169, 254))?;
+    let (server_addr, requests) = spawn_bound_http_server(
+        Ipv4Addr::new(169, 254, 169, 254),
+        "childflow-metadata-should-not-connect",
+    )?;
+
+    let output = run_childflow_command(&[
+        "--block-metadata",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!(
+            "http://169.254.169.254:{}/latest/meta-data/",
+            server_addr.port()
+        ),
+    ])
+    .context("failed to run childflow rootless-internal block-metadata smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected block-metadata childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "block-metadata sandbox unexpectedly reached the metadata alias server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_summary_is_printed_only_when_requested() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-summary-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--summary",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal summary smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "expected summary-enabled childflow run to succeed, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-summary-ok"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("childflow summary"));
+    assert!(stderr.contains("backend: rootless-internal"));
+    assert!(stderr.contains("sandbox controls: none"));
+    assert!(stderr.contains("capture: disabled"));
+    assert!(stderr.contains("exit: 0"));
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("summary-enabled local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
     Ok(())
 }
 
@@ -594,8 +773,14 @@ fn spawn_http_connect_proxy() -> Result<(SocketAddr, Receiver<String>)> {
 }
 
 fn spawn_local_http_server(body: &'static str) -> Result<(SocketAddr, Receiver<String>)> {
-    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .context("failed to bind local HTTP server")?;
+    spawn_bound_http_server(Ipv4Addr::UNSPECIFIED, body)
+}
+
+fn spawn_bound_http_server(
+    bind_ip: Ipv4Addr,
+    body: &'static str,
+) -> Result<(SocketAddr, Receiver<String>)> {
+    let listener = TcpListener::bind((bind_ip, 0)).context("failed to bind local HTTP server")?;
     let addr = listener
         .local_addr()
         .context("failed to query local HTTP server address")?;
@@ -634,6 +819,42 @@ fn spawn_local_http_server(body: &'static str) -> Result<(SocketAddr, Receiver<S
     });
 
     Ok((addr, request_rx))
+}
+
+struct LoopbackAliasGuard {
+    _ip: Ipv4Addr,
+}
+
+impl LoopbackAliasGuard {
+    fn add(ip: Ipv4Addr) -> Result<Self> {
+        let output = privileged_ip_command(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
+            .output()
+            .context("failed to add loopback alias for metadata test")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("File exists") && !stderr.contains("Address already assigned") {
+                bail!("failed to add loopback alias {ip}: {}", stderr.trim());
+            }
+            return Ok(Self { _ip: ip });
+        }
+        Ok(Self { _ip: ip })
+    }
+}
+
+impl Drop for LoopbackAliasGuard {
+    fn drop(&mut self) {}
+}
+
+fn privileged_ip_command<const N: usize>(args: [&str; N]) -> Command {
+    if unsafe { nix::libc::geteuid() } == 0 {
+        let mut command = Command::new("ip");
+        command.args(args);
+        command
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg("ip").args(args);
+        command
+    }
 }
 
 fn read_http_headers(stream: &mut TcpStream) -> Result<String> {

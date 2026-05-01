@@ -5,19 +5,19 @@ childflow
 <img src="./img/childflow.gif" width="720" />
 </p>
 
-childflow - isolate one command tree's network, control its DNS / proxy behavior, and capture only its traffic.
-**Linux-only** CLI for per-process-tree network isolation, DNS / hosts / proxy forcing, and focused packet capture.
+childflow is a per-command-tree network sandbox for Linux.
+Run one command and its child processes in an isolated network context, control DNS / hosts / proxy behavior, block sensitive destinations, and capture only that tree's traffic.
 
 ## About
 
-`childflow` runs one command tree in an isolated network context and applies DNS, hosts, proxy, and capture controls only to that tree.
+`childflow` runs one command tree in an isolated network context and applies DNS, hosts, proxy, sandbox, and capture controls only to that tree.
 
 This is useful for tools that do not honor proxy environment variables consistently. `childflow` forces the proxy at the command tree's network path instead of relying on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD`-style interception.
 
 It has two Linux backends: `rootless-internal` for the default day-to-day path, and `rootful` via `--root` when you need host-integrated behavior such as `--iface` or transparent interception.
 
 - affects only the target command tree, not the whole host session
-- can force DNS, `/etc/hosts`, proxying, and packet capture per command tree
+- can force DNS, `/etc/hosts`, proxying, baseline sandbox controls, and packet capture per command tree
 - can force proxying without depending on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD` tricks
 - defaults to `rootless-internal`
 - uses `--root` only for features like `--iface` and transparent interception
@@ -59,7 +59,7 @@ If you are evaluating from macOS or another non-Linux environment, use the Docke
 
 ```shell
 $ childflow --help
-Launch a child process tree inside its own netns and capture only its packets
+Run one command tree inside a controlled network sandbox
 
 Usage: childflow [OPTIONS] [COMMAND]...
 
@@ -87,6 +87,14 @@ Options:
           Password for upstream proxy authentication
       --proxy-insecure
           Ignore certificate trust errors for https:// upstream proxies while still validating the hostname
+      --summary
+          Print a post-run summary to stderr
+      --offline
+          Block all outbound networking for the child tree, including DNS forwarding
+      --block-private
+          Block child-tree traffic to private, loopback, link-local, and ULA-style destinations
+      --block-metadata
+          Block common cloud metadata endpoints such as 169.254.169.254
   -i, --iface <IFACE>
           Force the host-side egress interface for the child's direct traffic
   -h, --help
@@ -111,6 +119,18 @@ childflow -d 1.1.1.1 -- curl https://example.com
 
 ```bash
 childflow --hosts-file ./hosts.override -- curl http://demo.internal
+```
+
+```bash
+childflow --offline -- cargo test
+```
+
+```bash
+childflow --block-metadata -- ./my-client
+```
+
+```bash
+childflow --block-private -- curl https://example.com
 ```
 
 ```bash
