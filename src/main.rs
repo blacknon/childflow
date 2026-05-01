@@ -19,6 +19,8 @@ mod dns;
 #[cfg(target_os = "linux")]
 mod doctor;
 #[cfg(target_os = "linux")]
+mod flow_log;
+#[cfg(target_os = "linux")]
 mod hosts;
 #[cfg(target_os = "linux")]
 mod namespace;

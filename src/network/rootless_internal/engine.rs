@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
 use crate::capture::CaptureWriters;
+use crate::flow_log::{ConnectResultStatus, DnsAnswerMode, FlowLogger, PolicyViolationEvent};
 use crate::proxy::rootless_relay::ProxyUpstreamConfig;
 use crate::sandbox::{BlockReason, SandboxPolicy};
 use crate::util;
@@ -39,6 +40,7 @@ pub struct EngineConfig {
     pub sandbox_policy: SandboxPolicy,
     pub proxy_upstream: Option<ProxyUpstreamConfig>,
     pub capture: Option<CaptureWriters>,
+    pub flow_log: Option<FlowLogger>,
 }
 
 pub struct EngineHandle {
@@ -113,6 +115,7 @@ pub(super) enum RemoteEvent {
 struct ConnectionState {
     session: TcpSession,
     command_tx: Sender<ConnectionCommand>,
+    flow_end_logged: bool,
 }
 
 struct UdpRelayRequest {
@@ -124,6 +127,13 @@ struct UdpRelayRequest {
     remote_port: u16,
     hop_limit: u8,
     payload: Vec<u8>,
+}
+
+struct PolicyViolationTarget<'a> {
+    protocol: &'static str,
+    remote: &'a str,
+    remote_ip: Option<IpAddr>,
+    remote_port: Option<u16>,
 }
 
 pub(super) enum ConnectionCommand {
@@ -139,6 +149,7 @@ struct TcpPacketContext<'a> {
     sandbox_policy: SandboxPolicy,
     proxy_upstream: Option<&'a ProxyUpstreamConfig>,
     capture: &'a mut Option<CaptureWriters>,
+    flow_log: &'a mut Option<FlowLogger>,
     leak_detected: &'a Arc<AtomicBool>,
 }
 
@@ -150,6 +161,7 @@ struct UdpPacketContext<'a> {
     sandbox_policy: SandboxPolicy,
     capture: &'a mut Option<CaptureWriters>,
     event_tx: &'a Sender<RemoteEvent>,
+    flow_log: &'a mut Option<FlowLogger>,
     leak_detected: &'a Arc<AtomicBool>,
 }
 
@@ -173,6 +185,7 @@ fn run_engine(
             &event_rx,
             &mut connections,
             &mut config.capture,
+            &mut config.flow_log,
         )?;
 
         match tap.read(&mut buf) {
@@ -195,6 +208,7 @@ fn run_engine(
                                 sandbox_policy: config.sandbox_policy.clone(),
                                 proxy_upstream: config.proxy_upstream.as_ref(),
                                 capture: &mut config.capture,
+                                flow_log: &mut config.flow_log,
                                 leak_detected: &leak_detected,
                             },
                             &tcp,
@@ -211,6 +225,7 @@ fn run_engine(
                                 sandbox_policy: config.sandbox_policy.clone(),
                                 capture: &mut config.capture,
                                 event_tx: &event_tx,
+                                flow_log: &mut config.flow_log,
                                 leak_detected: &leak_detected,
                             },
                             &udp,
@@ -222,6 +237,7 @@ fn run_engine(
                             &event_tx,
                             &addr_plan,
                             &config.sandbox_policy,
+                            &mut config.flow_log,
                             &leak_detected,
                             &icmp,
                         )?;
@@ -232,6 +248,7 @@ fn run_engine(
                             &event_tx,
                             &addr_plan,
                             &config.sandbox_policy,
+                            &mut config.flow_log,
                             &leak_detected,
                             &icmp,
                         )?;
@@ -249,6 +266,17 @@ fn run_engine(
         }
     }
 
+    drain_remote_events(
+        &mut tap,
+        &addr_plan,
+        &mut child_mac,
+        &event_rx,
+        &mut connections,
+        &mut config.capture,
+        &mut config.flow_log,
+    )?;
+    flush_remaining_flow_end_events(&mut connections, &mut config.flow_log)?;
+
     Ok(())
 }
 
@@ -261,6 +289,7 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
         sandbox_policy,
         proxy_upstream,
         capture,
+        flow_log,
         leak_detected,
     } = ctx;
     let key = FlowKey {
@@ -279,20 +308,48 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
         if let Some(reason) =
             sandbox_policy.block_reason_for_tcp_remote_ip(key.remote_ip, proxy_upstream.is_some())
         {
-            note_leak_if_requested(leak_detected, &sandbox_policy, &reason);
+            note_policy_violation(
+                flow_log,
+                leak_detected,
+                &sandbox_policy,
+                PolicyViolationTarget {
+                    protocol: "tcp",
+                    remote: &format!("{}:{}", key.remote_ip, key.remote_port),
+                    remote_ip: Some(key.remote_ip),
+                    remote_port: Some(key.remote_port),
+                },
+                &reason,
+            );
             deny_tcp_connect(tap, addr_plan, capture, tcp, reason)?;
             return Ok(());
         }
 
         let remote_addr = key.remote_addr();
+        log_connect_attempt(flow_log, remote_addr, proxy_upstream.is_some())?;
         let command_tx = match connect_remote(
             remote_addr,
             proxy_upstream,
             event_tx.clone(),
             key.clone(),
         ) {
-            Ok(command_tx) => command_tx,
+            Ok(command_tx) => {
+                log_connect_result(
+                    flow_log,
+                    remote_addr,
+                    proxy_upstream.is_some(),
+                    ConnectResultStatus::Ok,
+                    None,
+                )?;
+                command_tx
+            }
             Err(err) => {
+                log_connect_result(
+                    flow_log,
+                    remote_addr,
+                    proxy_upstream.is_some(),
+                    ConnectResultStatus::Error,
+                    Some(&format!("{err:#}")),
+                )?;
                 util::warn(format!(
                     "rootless-internal could not open outbound TCP connection for {remote_addr}: {err:#}. Returning RST to the child flow"
                 ));
@@ -352,6 +409,7 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
             ConnectionState {
                 session,
                 command_tx,
+                flow_end_logged: false,
             },
         );
         return Ok(());
@@ -463,14 +521,27 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         sandbox_policy,
         capture,
         event_tx,
+        flow_log,
         leak_detected,
     } = ctx;
+    let dns_qtype = dns_query_type_name(&udp.payload);
     if udp.dst_port == 53
         && (udp.meta.dst_ip == IpAddr::V4(addr_plan.gateway_ipv4)
             || udp.meta.dst_ip == IpAddr::V6(addr_plan.gateway_ipv6))
     {
         if sandbox_policy.proxy_only {
-            note_leak_if_requested(leak_detected, &sandbox_policy, &BlockReason::ProxyOnly);
+            note_policy_violation(
+                flow_log,
+                leak_detected,
+                &sandbox_policy,
+                PolicyViolationTarget {
+                    protocol: "dns",
+                    remote: &format!("{}:53", udp.meta.dst_ip),
+                    remote_ip: Some(udp.meta.dst_ip),
+                    remote_port: Some(53),
+                },
+                &BlockReason::ProxyOnly,
+            );
             let response = synthesize_empty_dns_response(&udp.payload)?;
             let frame = packet::build_udp_frame(
                 addr_plan.gateway_mac,
@@ -488,10 +559,18 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 &frame,
                 "failed to capture a synthetic rootless proxy-only DNS response frame",
             );
+            log_dns_answer(
+                flow_log,
+                SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qtype,
+                DnsAnswerMode::SyntheticEmpty,
+                response.len(),
+            )?;
             return Ok(());
         }
 
         if !allow_ipv6_outbound && dns_query_type(&udp.payload) == Some(DNS_TYPE_AAAA) {
+            log_dns_query(flow_log, SocketAddr::new(udp.meta.dst_ip, 53), dns_qtype)?;
             let response = synthesize_empty_dns_response(&udp.payload)?;
             let frame = packet::build_udp_frame(
                 addr_plan.gateway_mac,
@@ -509,10 +588,18 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 &frame,
                 "failed to capture a synthetic rootless DNS AAAA response frame",
             );
+            log_dns_answer(
+                flow_log,
+                SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qtype,
+                DnsAnswerMode::SyntheticEmpty,
+                response.len(),
+            )?;
             return Ok(());
         }
 
         if sandbox_policy.offline {
+            log_dns_query(flow_log, SocketAddr::new(udp.meta.dst_ip, 53), dns_qtype)?;
             let response = synthesize_empty_dns_response(&udp.payload)?;
             let frame = packet::build_udp_frame(
                 addr_plan.gateway_mac,
@@ -530,6 +617,13 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 &frame,
                 "failed to capture a synthetic rootless offline DNS response frame",
             );
+            log_dns_answer(
+                flow_log,
+                SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qtype,
+                DnsAnswerMode::SyntheticEmpty,
+                response.len(),
+            )?;
             return Ok(());
         }
 
@@ -540,6 +634,8 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             return Ok(());
         };
 
+        let server = SocketAddr::new(upstream_ip, 53);
+        log_dns_query(flow_log, server, dns_qtype)?;
         let response = relay_dns_udp(upstream_ip, &udp.payload)?;
         let frame = packet::build_udp_frame(
             addr_plan.gateway_mac,
@@ -557,11 +653,29 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             &frame,
             "failed to capture a rootless DNS UDP response frame",
         );
+        log_dns_answer(
+            flow_log,
+            server,
+            dns_qtype,
+            DnsAnswerMode::Relayed,
+            response.len(),
+        )?;
         return Ok(());
     }
 
     if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(udp.meta.dst_ip) {
-        note_leak_if_requested(leak_detected, &sandbox_policy, &reason);
+        note_policy_violation(
+            flow_log,
+            leak_detected,
+            &sandbox_policy,
+            PolicyViolationTarget {
+                protocol: "udp",
+                remote: &format!("{}:{}", udp.meta.dst_ip, udp.dst_port),
+                remote_ip: Some(udp.meta.dst_ip),
+                remote_port: Some(udp.dst_port),
+            },
+            &reason,
+        );
         util::debug(format!(
             "rootless-internal dropped UDP flow to {}:{} ({})",
             udp.meta.dst_ip,
@@ -595,6 +709,88 @@ fn note_leak_if_requested(
 ) {
     if sandbox_policy.fail_on_leak {
         leak_detected.store(true, Ordering::Relaxed);
+    }
+}
+
+fn note_policy_violation(
+    flow_log: &mut Option<FlowLogger>,
+    leak_detected: &Arc<AtomicBool>,
+    sandbox_policy: &SandboxPolicy,
+    target: PolicyViolationTarget<'_>,
+    reason: &BlockReason,
+) {
+    if let Some(logger) = flow_log.as_mut() {
+        let matched_cidr = reason.matched_cidr().map(|cidr| cidr.to_string());
+        if let Err(err) = logger.log_policy_violation(PolicyViolationEvent {
+            protocol: target.protocol,
+            remote: target.remote,
+            remote_ip: target.remote_ip,
+            remote_port: target.remote_port,
+            reason_code: reason.code(),
+            control: reason.control(),
+            matched_cidr: matched_cidr.as_deref(),
+            reason: &reason.describe(),
+        }) {
+            util::warn(format!("{err:#}"));
+        }
+    }
+    note_leak_if_requested(leak_detected, sandbox_policy, reason);
+}
+
+fn log_connect_attempt(
+    flow_log: &mut Option<FlowLogger>,
+    remote_addr: SocketAddr,
+    via_proxy: bool,
+) -> Result<()> {
+    if let Some(logger) = flow_log.as_mut() {
+        logger.log_connect_attempt(remote_addr, via_proxy)?;
+    }
+    Ok(())
+}
+
+fn log_connect_result(
+    flow_log: &mut Option<FlowLogger>,
+    remote_addr: SocketAddr,
+    via_proxy: bool,
+    status: ConnectResultStatus,
+    error: Option<&str>,
+) -> Result<()> {
+    if let Some(logger) = flow_log.as_mut() {
+        logger.log_connect_result(remote_addr, via_proxy, status, error)?;
+    }
+    Ok(())
+}
+
+fn log_dns_query(
+    flow_log: &mut Option<FlowLogger>,
+    server: SocketAddr,
+    qtype: Option<&'static str>,
+) -> Result<()> {
+    if let Some(logger) = flow_log.as_mut() {
+        logger.log_dns_query(server, qtype)?;
+    }
+    Ok(())
+}
+
+fn log_dns_answer(
+    flow_log: &mut Option<FlowLogger>,
+    server: SocketAddr,
+    qtype: Option<&'static str>,
+    mode: DnsAnswerMode,
+    bytes: usize,
+) -> Result<()> {
+    if let Some(logger) = flow_log.as_mut() {
+        logger.log_dns_answer(server, qtype, mode, bytes)?;
+    }
+    Ok(())
+}
+
+fn dns_query_type_name(payload: &[u8]) -> Option<&'static str> {
+    match dns_query_type(payload) {
+        Some(1) => Some("A"),
+        Some(28) => Some("AAAA"),
+        Some(_) => Some("other"),
+        None => None,
     }
 }
 
@@ -644,6 +840,7 @@ fn drain_remote_events(
     event_rx: &Receiver<RemoteEvent>,
     connections: &mut HashMap<FlowKey, ConnectionState>,
     capture: &mut Option<CaptureWriters>,
+    flow_log: &mut Option<FlowLogger>,
 ) -> Result<()> {
     loop {
         match event_rx.try_recv() {
@@ -694,6 +891,7 @@ fn drain_remote_events(
                     continue;
                 };
                 if let Some(connection) = connections.get_mut(&key) {
+                    log_flow_end_once(connection, flow_log, &key)?;
                     let seq = connection.session.reserve_engine_fin_seq();
                     let frame = packet::build_tcp_frame(TcpReply {
                         src_mac: addr_plan.gateway_mac,
@@ -725,6 +923,31 @@ fn drain_remote_events(
         }
     }
 
+    Ok(())
+}
+
+fn flush_remaining_flow_end_events(
+    connections: &mut HashMap<FlowKey, ConnectionState>,
+    flow_log: &mut Option<FlowLogger>,
+) -> Result<()> {
+    for (key, connection) in connections.iter_mut() {
+        log_flow_end_once(connection, flow_log, key)?;
+    }
+    Ok(())
+}
+
+fn log_flow_end_once(
+    connection: &mut ConnectionState,
+    flow_log: &mut Option<FlowLogger>,
+    key: &FlowKey,
+) -> Result<()> {
+    if connection.flow_end_logged {
+        return Ok(());
+    }
+    if let Some(logger) = flow_log.as_mut() {
+        logger.log_flow_end("tcp", key.remote_addr())?;
+    }
+    connection.flow_end_logged = true;
     Ok(())
 }
 

@@ -22,6 +22,7 @@ use crate::capture::{
 };
 use crate::cli::{Cli, OutputView};
 use crate::dns::DnsPlan;
+use crate::flow_log::FlowLogger;
 use crate::namespace;
 use crate::proxy::ProxyPlan;
 use crate::sandbox::SandboxPolicy;
@@ -155,6 +156,12 @@ pub fn setup(
         }
         (None, _) => None,
     };
+    let flow_log = cli
+        .flow_log
+        .as_deref()
+        .map(FlowLogger::open)
+        .transpose()
+        .context("failed to open the rootless flow log output")?;
     let engine = engine::EngineHandle::start(
         params.child_bootstrap.take_tap(),
         addr_plan.clone(),
@@ -167,6 +174,7 @@ pub fn setup(
                 .and_then(ProxyPlan::rootless_upstream)
                 .cloned(),
             capture,
+            flow_log,
         },
     )
     .context("failed to start the rootless-internal userspace networking engine")?;

@@ -144,6 +144,35 @@ pub enum BlockReason {
 }
 
 impl BlockReason {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::Metadata => "metadata",
+            Self::Private => "private",
+            Self::DeniedCidr(_) => "deny_cidr",
+            Self::DefaultDeny => "default_deny",
+            Self::ProxyOnly => "proxy_only",
+        }
+    }
+
+    pub fn control(&self) -> &'static str {
+        match self {
+            Self::Offline => "--offline",
+            Self::Metadata => "--block-metadata",
+            Self::Private => "--block-private",
+            Self::DeniedCidr(_) => "--deny-cidr",
+            Self::DefaultDeny => "--default-policy",
+            Self::ProxyOnly => "--proxy-only",
+        }
+    }
+
+    pub fn matched_cidr(&self) -> Option<IpNetwork> {
+        match self {
+            Self::DeniedCidr(cidr) => Some(*cidr),
+            _ => None,
+        }
+    }
+
     pub fn describe(&self) -> Cow<'static, str> {
         match self {
             Self::Offline => Cow::Borrowed("blocked by `--offline`"),
@@ -355,6 +384,18 @@ mod tests {
             policy
                 .block_reason_for_tcp_remote_ip(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)), true),
             None
+        );
+    }
+
+    #[test]
+    fn block_reason_exposes_stable_schema_fields() {
+        let reason = BlockReason::DeniedCidr("203.0.113.0/24".parse().unwrap());
+
+        assert_eq!(reason.code(), "deny_cidr");
+        assert_eq!(reason.control(), "--deny-cidr");
+        assert_eq!(
+            reason.matched_cidr(),
+            Some("203.0.113.0/24".parse().unwrap())
         );
     }
 }

@@ -80,6 +80,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: false,
+            flow_log: None,
             offline: false,
             block_private: false,
             block_metadata: false,
