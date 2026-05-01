@@ -297,6 +297,7 @@ Current notes:
 - each line is standalone JSON, so it is easy to inspect with tools such as `jq`
 - flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
 - `--summary` will also show aggregate flow-log event counts after the run
+- the fuller event-by-event schema is documented in [docs/flow-log-schema.md](docs/flow-log-schema.md)
 
 ### Capture Modes
 
