@@ -58,7 +58,7 @@ If you are evaluating from macOS or another non-Linux environment, use the Docke
 
 ## Usage
 
-```shell
+```text
 $ childflow --help
 Run one command tree inside a controlled network sandbox
 
@@ -105,7 +105,7 @@ Options:
       --proxy-only
           Require outbound traffic to use the configured upstream proxy path
       --fail-on-leak
-          Exit non-zero if childflow blocks traffic that the child process did not treat as fatal
+          Exit non-zero if childflow blocks traffic that the child process did not treat as fatal. Currently supported only by the default rootless backend
   -i, --iface <IFACE>
           Force the host-side egress interface for the child's direct traffic
   -h, --help
