@@ -7,7 +7,25 @@ cd "$repo_root"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 export PATH="$CARGO_TARGET_DIR/debug:$CARGO_TARGET_DIR/release:$PATH"
-mkdir -p "$repo_root/docker/demo/profiles/captures" "$repo_root/docker/demo/profiles/logs"
+
+prepare_demo_artifact_dirs() {
+  local capture_dir="$repo_root/docker/demo/profiles/captures"
+  local log_dir="$repo_root/docker/demo/profiles/logs"
+
+  if ! mkdir -p "$capture_dir" "$log_dir" 2>/dev/null; then
+    sudo install -d -m 0775 -o "$(id -un)" -g "$(id -gn)" "$capture_dir" "$log_dir"
+  fi
+
+  if [[ ! -w "$capture_dir" || ! -w "$log_dir" ]]; then
+    sudo chown "$(id -un):$(id -gn)" "$capture_dir" "$log_dir"
+  fi
+
+  sudo rm -f \
+    "$capture_dir/http-origin.pcapng" \
+    "$log_dir/http-origin.jsonl"
+}
+
+prepare_demo_artifact_dirs
 
 run_childflow() {
   childflow "$@"
