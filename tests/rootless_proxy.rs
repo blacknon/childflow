@@ -822,8 +822,7 @@ fn spawn_bound_http_server(
 }
 
 struct LoopbackAliasGuard {
-    ip: Ipv4Addr,
-    remove_on_drop: bool,
+    _ip: Ipv4Addr,
 }
 
 impl LoopbackAliasGuard {
@@ -836,26 +835,14 @@ impl LoopbackAliasGuard {
             if !stderr.contains("File exists") && !stderr.contains("Address already assigned") {
                 bail!("failed to add loopback alias {ip}: {}", stderr.trim());
             }
-            return Ok(Self {
-                ip,
-                remove_on_drop: false,
-            });
+            return Ok(Self { _ip: ip });
         }
-        Ok(Self {
-            ip,
-            remove_on_drop: true,
-        })
+        Ok(Self { _ip: ip })
     }
 }
 
 impl Drop for LoopbackAliasGuard {
-    fn drop(&mut self) {
-        if !self.remove_on_drop {
-            return;
-        }
-        let _ = privileged_ip_command(["addr", "del", &format!("{}/32", self.ip), "dev", "lo"])
-            .output();
-    }
+    fn drop(&mut self) {}
 }
 
 fn privileged_ip_command<const N: usize>(args: [&str; N]) -> Command {
