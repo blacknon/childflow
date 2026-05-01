@@ -100,15 +100,6 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
             .context("failed to notify the parent that child namespace unshare completed")?;
     }
 
-    // Wait for the parent to finish any host-side namespace preparation before
-    // touching child-only mounts or network bootstrap. This also ensures the
-    // rootless parent has installed uid/gid maps after CLONE_NEWUSER completed.
-    wait_for_parent_release(
-        &mut release_pipe,
-        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
-        "parent closed bootstrap pipe before namespace setup completed",
-    )?;
-
     mount(
         None::<&str>,
         "/",
@@ -117,6 +108,17 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
         None::<&str>,
     )
     .context("failed to make mount propagation private")?;
+
+    // Wait for the parent to finish any host-side namespace preparation before
+    // touching child-only bind mounts or network bootstrap. This avoids
+    // follow-on ENOENT noise when the parent aborts early and drops temporary
+    // resolv/hosts files while keeping mount-namespace setup on the original
+    // rootless path that already worked reliably.
+    wait_for_parent_release(
+        &mut release_pipe,
+        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
+        "parent closed bootstrap pipe before namespace setup completed",
+    )?;
 
     if let Some(resolv_conf) = resolv_conf {
         mount(
