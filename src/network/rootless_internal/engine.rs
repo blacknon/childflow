@@ -115,6 +115,26 @@ pub(super) enum ConnectionCommand {
     ShutdownWrite,
 }
 
+struct TcpPacketContext<'a> {
+    tap: &'a mut TapHandle,
+    addr_plan: &'a AddressPlan,
+    event_tx: &'a Sender<RemoteEvent>,
+    connections: &'a mut HashMap<FlowKey, ConnectionState>,
+    sandbox_policy: SandboxPolicy,
+    proxy_upstream: Option<&'a ProxyUpstreamConfig>,
+    capture: &'a mut Option<CaptureWriters>,
+}
+
+struct UdpPacketContext<'a> {
+    tap: &'a mut TapHandle,
+    addr_plan: &'a AddressPlan,
+    dns_upstream: Option<IpAddr>,
+    allow_ipv6_outbound: bool,
+    sandbox_policy: SandboxPolicy,
+    capture: &'a mut Option<CaptureWriters>,
+    event_tx: &'a Sender<RemoteEvent>,
+}
+
 fn run_engine(
     mut tap: TapHandle,
     addr_plan: AddressPlan,
@@ -148,26 +168,30 @@ fn run_engine(
                     Ok(ParsedPacket::Tcp(tcp)) => {
                         child_mac.get_or_insert(tcp.meta.src_mac);
                         handle_tcp_packet(
-                            &mut tap,
-                            &addr_plan,
-                            &event_tx,
-                            &mut connections,
-                            config.sandbox_policy,
-                            config.proxy_upstream.as_ref(),
-                            &mut config.capture,
+                            TcpPacketContext {
+                                tap: &mut tap,
+                                addr_plan: &addr_plan,
+                                event_tx: &event_tx,
+                                connections: &mut connections,
+                                sandbox_policy: config.sandbox_policy,
+                                proxy_upstream: config.proxy_upstream.as_ref(),
+                                capture: &mut config.capture,
+                            },
                             &tcp,
                         )?;
                     }
                     Ok(ParsedPacket::Udp(udp)) => {
                         child_mac.get_or_insert(udp.meta.src_mac);
                         handle_udp_packet(
-                            &mut tap,
-                            &addr_plan,
-                            config.dns_upstream,
-                            config.allow_ipv6_outbound,
-                            config.sandbox_policy,
-                            &mut config.capture,
-                            &event_tx,
+                            UdpPacketContext {
+                                tap: &mut tap,
+                                addr_plan: &addr_plan,
+                                dns_upstream: config.dns_upstream,
+                                allow_ipv6_outbound: config.allow_ipv6_outbound,
+                                sandbox_policy: config.sandbox_policy,
+                                capture: &mut config.capture,
+                                event_tx: &event_tx,
+                            },
                             &udp,
                         )?;
                     }
@@ -195,16 +219,16 @@ fn run_engine(
     Ok(())
 }
 
-fn handle_tcp_packet(
-    tap: &mut TapHandle,
-    addr_plan: &AddressPlan,
-    event_tx: &Sender<RemoteEvent>,
-    connections: &mut HashMap<FlowKey, ConnectionState>,
-    sandbox_policy: SandboxPolicy,
-    proxy_upstream: Option<&ProxyUpstreamConfig>,
-    capture: &mut Option<CaptureWriters>,
-    tcp: &ParsedTcpPacket,
-) -> Result<()> {
+fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result<()> {
+    let TcpPacketContext {
+        tap,
+        addr_plan,
+        event_tx,
+        connections,
+        sandbox_policy,
+        proxy_upstream,
+        capture,
+    } = ctx;
     let key = FlowKey {
         child_ip: tcp.meta.src_ip,
         child_port: tcp.src_port,
@@ -393,16 +417,16 @@ fn handle_tcp_packet(
     Ok(())
 }
 
-fn handle_udp_packet(
-    tap: &mut TapHandle,
-    addr_plan: &AddressPlan,
-    dns_upstream: Option<IpAddr>,
-    allow_ipv6_outbound: bool,
-    sandbox_policy: SandboxPolicy,
-    capture: &mut Option<CaptureWriters>,
-    event_tx: &Sender<RemoteEvent>,
-    udp: &ParsedUdpPacket,
-) -> Result<()> {
+fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result<()> {
+    let UdpPacketContext {
+        tap,
+        addr_plan,
+        dns_upstream,
+        allow_ipv6_outbound,
+        sandbox_policy,
+        capture,
+        event_tx,
+    } = ctx;
     if udp.dst_port == 53
         && (udp.meta.dst_ip == IpAddr::V4(addr_plan.gateway_ipv4)
             || udp.meta.dst_ip == IpAddr::V6(addr_plan.gateway_ipv6))
