@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "linux")]
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
@@ -98,6 +99,173 @@ fn rootless_internal_routes_local_http_through_relay_proxy() -> Result<()> {
         .context("local HTTP server did not receive a request from the proxied run")?;
     assert_eq!(request_line, "GET /hello HTTP/1.1");
 
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_runs_from_profile_toml() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-profile-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let profile_dir = unique_temp_profile_dir("rootless-profile");
+    let profile_path = profile_dir.join("sandbox.toml");
+
+    fs::write(
+        &profile_path,
+        format!(
+            concat!(
+                "default_policy = \"deny\"\n",
+                "allow_cidrs = [\"{host_ip}/32\"]\n",
+                "command = [\n",
+                "  \"python3\",\n",
+                "  \"-c\",\n",
+                "  \"import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())\",\n",
+                "  \"http://{host_ip}:{port}/hello\",\n",
+                "]\n"
+            ),
+            host_ip = host_ip,
+            port = server_addr.port()
+        ),
+    )
+    .context("failed to write childflow profile")?;
+
+    let output = run_childflow_command(&["--profile", profile_path.to_str().unwrap()])
+        .context("failed to run childflow from a profile")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-profile-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("profile-driven local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
+    let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_dir_all(&profile_dir);
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_runs_from_extended_profile_toml() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-profile-extends-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let profile_root = unique_temp_profile_dir("rootless-profile-extends");
+    let child_dir = profile_root.join("child");
+    fs::create_dir_all(&child_dir).context("failed to create child profile directory")?;
+    let base_profile_path = profile_root.join("base.toml");
+    let child_profile_path = child_dir.join("sandbox.toml");
+
+    fs::write(
+        &base_profile_path,
+        format!(
+            concat!(
+                "default_policy = \"deny\"\n",
+                "allow_cidrs = [\"{host_ip}/32\"]\n"
+            ),
+            host_ip = host_ip
+        ),
+    )
+    .context("failed to write base childflow profile")?;
+    fs::write(
+        &child_profile_path,
+        format!(
+            concat!(
+                "extends = \"../base.toml\"\n",
+                "command = [\n",
+                "  \"python3\",\n",
+                "  \"-c\",\n",
+                "  \"import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())\",\n",
+                "  \"http://{host_ip}:{port}/hello\",\n",
+                "]\n"
+            ),
+            host_ip = host_ip,
+            port = server_addr.port()
+        ),
+    )
+    .context("failed to write child childflow profile")?;
+
+    let output = run_childflow_command(&["--profile", child_profile_path.to_str().unwrap()])
+        .context("failed to run childflow from an extended profile")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-profile-extends-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("extended-profile local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
+    let _ = fs::remove_file(&base_profile_path);
+    let _ = fs::remove_file(&child_profile_path);
+    let _ = fs::remove_dir_all(&profile_root);
+    Ok(())
+}
+
+#[test]
+fn dump_profile_prints_effective_merged_toml_without_running_command() -> Result<()> {
+    let profile_dir = unique_temp_profile_dir("rootless-profile-dump");
+    let profile_path = profile_dir.join("sandbox.toml");
+
+    fs::write(
+        &profile_path,
+        r#"
+summary = true
+default_policy = "deny"
+allow_cidrs = ["203.0.113.10/32"]
+command = ["curl", "https://example.com"]
+"#,
+    )
+    .context("failed to write childflow profile for dump-profile")?;
+
+    let output = run_childflow_command(&[
+        "--profile",
+        profile_path.to_str().unwrap(),
+        "--deny-cidr",
+        "198.51.100.0/24",
+        "--dump-profile",
+    ])
+    .context("failed to run childflow dump-profile command")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("summary = true"));
+    assert!(stdout.contains("default_policy = \"deny\""));
+    assert!(stdout.contains("deny_cidrs = [\"198.51.100.0/24\"]"));
+    assert!(stdout.contains("command = ["));
+    assert!(stdout.contains("\"curl\""));
+    assert!(stdout.contains("\"https://example.com\""));
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+
+    let _ = fs::remove_file(&profile_path);
+    let _ = fs::remove_dir_all(&profile_dir);
     Ok(())
 }
 
@@ -1437,6 +1605,16 @@ fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {
         .unwrap_or_default()
         .as_nanos();
     std::env::temp_dir().join(format!("{prefix}-{nanos}.jsonl"))
+}
+
+fn unique_temp_profile_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+    let _ = fs::create_dir_all(&path);
+    path
 }
 
 fn relay_bidirectional(mut inbound: TcpStream, outbound: &mut TcpStream) -> Result<()> {

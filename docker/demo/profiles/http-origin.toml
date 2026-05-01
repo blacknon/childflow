@@ -1,0 +1,12 @@
+extends = "./base.toml"
+capture = "./captures/http-origin.pcapng"
+flow_log = "./logs/http-origin.jsonl"
+command = [
+  "curl",
+  "--connect-timeout",
+  "5",
+  "--max-time",
+  "15",
+  "-fsS",
+  "http://origin-http.demo:8080/",
+]

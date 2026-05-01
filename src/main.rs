@@ -29,6 +29,8 @@ mod network;
 #[cfg(target_os = "linux")]
 mod preflight;
 #[cfg(target_os = "linux")]
+mod profile;
+#[cfg(target_os = "linux")]
 mod proxy;
 #[cfg(target_os = "linux")]
 mod sandbox;
@@ -41,8 +43,6 @@ mod util;
 
 #[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
-use clap::Parser;
 #[cfg(target_os = "linux")]
 use nix::sys::wait::{waitpid, WaitStatus};
 #[cfg(target_os = "linux")]
@@ -69,6 +69,8 @@ use hosts::HostsPlan;
 #[cfg(target_os = "linux")]
 use network::NetworkBackend;
 #[cfg(target_os = "linux")]
+use profile::Profile;
+#[cfg(target_os = "linux")]
 use proxy::{ProxyPlan, TproxyHandle};
 
 #[cfg(target_os = "linux")]
@@ -86,7 +88,12 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn real_main() -> Result<i32> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_effective()?;
+    if cli.dump_profile {
+        print!("{}", Profile::from_cli(&cli).render_toml()?);
+        return Ok(0);
+    }
+
     if cli.doctor {
         return doctor::run(&cli);
     }

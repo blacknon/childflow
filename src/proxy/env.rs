@@ -68,6 +68,7 @@ mod tests {
 
     fn base_cli() -> Cli {
         Cli {
+            dump_profile: false,
             output: None,
             output_view: OutputView::Child,
             root: false,

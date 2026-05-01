@@ -18,10 +18,10 @@ Sleep 4s
 Enter
 Sleep 1s
 
-Type "# 2nd step: Confirm connect success, and captured packet."
+Type "# 2nd step: Confirm connect success with a reusable profile."
 Enter
 Sleep 500ms
-Type "childflow -p http://proxy-http:3128 -U demo -P demo -c /tmp/proxy-demo.pcapng -- curl --connect-timeout 5 --max-time 15 -fsS http://origin-http.demo:8080/"
+Type "childflow --profile /workspaces/childflow/docker/demo/profiles/http-origin.toml"
 Enter
 Sleep 3s
 Enter
@@ -30,12 +30,12 @@ Sleep 1s
 Type "# 3rd step: Check captured packet."
 Enter
 Sleep 500ms
-Type "ls -lh /tmp/proxy-demo.pcapng"
+Type "ls -lh /workspaces/childflow/docker/demo/profiles/captures/http-origin.pcapng"
 Enter
 Sleep 1500ms
 Enter
 Sleep 1s
 
-Type "tcpdump -nn -r /tmp/proxy-demo.pcapng | head"
+Type "tcpdump -nn -r /workspaces/childflow/docker/demo/profiles/captures/http-origin.pcapng | head"
 Enter
 Sleep 3s

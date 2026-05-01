@@ -7,6 +7,7 @@ cd "$repo_root"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 export PATH="$CARGO_TARGET_DIR/debug:$CARGO_TARGET_DIR/release:$PATH"
+mkdir -p "$repo_root/docker/demo/profiles/captures" "$repo_root/docker/demo/profiles/logs"
 
 run_childflow() {
   sudo env "PATH=$PATH" childflow "$@"
@@ -25,6 +26,8 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 http_proxy_output="$tmpdir/http-proxy.txt"
 https_proxy_output="$tmpdir/https-proxy.txt"
+profile_http_output="$tmpdir/profile-http.txt"
+profile_dump_output="$tmpdir/profile-dump.toml"
 
 if curl --connect-timeout 3 --max-time 5 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
   echo "direct HTTP access unexpectedly succeeded" >&2
@@ -69,6 +72,27 @@ run_childflow \
 
 grep -q "origin-http-ok" "$http_proxy_output"
 
+echo "[demo] verifying profile-driven HTTP proxy flow"
+run_childflow \
+  --profile "$repo_root/docker/demo/profiles/http-origin.toml" \
+  >"$profile_http_output"
+
+grep -q "origin-http-ok" "$profile_http_output"
+test -s "$repo_root/docker/demo/profiles/captures/http-origin.pcapng"
+test -s "$repo_root/docker/demo/profiles/logs/http-origin.jsonl"
+
+echo "[demo] verifying merged profile dump"
+run_childflow \
+  --profile "$repo_root/docker/demo/profiles/http-origin.toml" \
+  --deny-cidr 198.51.100.0/24 \
+  --dump-profile \
+  >"$profile_dump_output"
+
+grep -q 'proxy = "http://proxy-http:3128"' "$profile_dump_output"
+grep -q 'default_policy = "deny"' "$profile_dump_output"
+grep -q 'deny_cidrs = \[' "$profile_dump_output"
+grep -q '198.51.100.0/24' "$profile_dump_output"
+
 echo "[demo] verifying authenticated HTTPS proxy flow"
 run_childflow \
   -c "$tmpdir/https-proxy.pcapng" \
@@ -86,4 +110,5 @@ test -s "$tmpdir/https-proxy.pcapng"
 
 printf 'demo ok\n'
 printf 'http proxy response: %s\n' "$(tr -d '\n' < "$http_proxy_output")"
+printf 'profile http response: %s\n' "$(tr -d '\n' < "$profile_http_output")"
 printf 'https proxy response: %s\n' "$(tr -d '\n' < "$https_proxy_output")"

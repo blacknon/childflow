@@ -144,6 +144,7 @@ mod tests {
 
     fn make_cli() -> Cli {
         Cli {
+            dump_profile: false,
             output: None,
             output_view: OutputView::Child,
             root: false,

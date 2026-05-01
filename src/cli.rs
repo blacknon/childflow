@@ -9,8 +9,10 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use ipnetwork::IpNetwork;
+use serde::{Deserialize, Serialize};
 
 use crate::network::NetworkBackend;
+use crate::profile::Profile;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -19,106 +21,140 @@ use crate::network::NetworkBackend;
     about = "Run one command tree inside a controlled network sandbox",
     trailing_var_arg = true
 )]
-pub struct Cli {
+struct RawCli {
+    /// Load effective defaults from a TOML profile file. Explicit CLI flags override the profile.
+    #[arg(long = "profile")]
+    profile: Option<PathBuf>,
+
+    /// Print the effective profile as TOML and exit.
+    #[arg(long = "dump-profile")]
+    dump_profile: bool,
+
     /// Write only the target command tree's traffic as pcapng.
     #[arg(short = 'c', long = "capture")]
-    pub output: Option<PathBuf>,
+    output: Option<PathBuf>,
 
     /// Select which capture point or view `--capture` should write. `child` is the current stable view.
-    #[arg(short = 'C', long = "capture-point", value_enum, default_value_t = OutputView::Child)]
-    pub output_view: OutputView,
+    #[arg(short = 'C', long = "capture-point", value_enum)]
+    output_view: Option<OutputView>,
 
     /// Use the rootful backend. Without this flag, childflow uses the default rootless backend.
     #[arg(long = "root")]
-    pub root: bool,
+    root: bool,
 
     /// Diagnose whether the current host is ready for the selected backend.
     #[arg(long = "doctor")]
-    pub doctor: bool,
+    doctor: bool,
 
     /// Select the networking backend. This is kept as a hidden compatibility escape hatch; use `--root` for the public CLI.
-    #[arg(
-        long = "network-backend",
-        value_enum,
-        default_value_t = NetworkBackend::RootlessInternal,
-        hide = true
-    )]
-    pub network_backend: NetworkBackend,
+    #[arg(long = "network-backend", value_enum, hide = true)]
+    network_backend: Option<NetworkBackend>,
 
     /// Force DNS traffic for the child tree to this IPv4 or IPv6 resolver.
     #[arg(short = 'd', long = "dns")]
-    pub dns: Option<IpAddr>,
+    dns: Option<IpAddr>,
 
     /// Bind-mount an `/etc/hosts`-format file over the child's `/etc/hosts` so those entries are consulted first during name resolution.
     #[arg(long = "hosts-file")]
-    pub hosts_file: Option<PathBuf>,
+    hosts_file: Option<PathBuf>,
 
     /// Configure an upstream proxy URI, for example http://127.0.0.1:8080, https://proxy.example.com:443, or socks5://host.docker.internal:10080. `--root` uses transparent interception, while the default rootless backend relays outbound TCP through the selected proxy from the parent-side engine.
     #[arg(short = 'p', long = "proxy")]
-    pub proxy: Option<ProxySpec>,
+    proxy: Option<ProxySpec>,
 
     /// Username for upstream proxy authentication.
     #[arg(short = 'U', long = "proxy-user")]
-    pub proxy_user: Option<String>,
+    proxy_user: Option<String>,
 
     /// Password for upstream proxy authentication.
     #[arg(short = 'P', long = "proxy-password")]
-    pub proxy_password: Option<String>,
+    proxy_password: Option<String>,
 
     /// Ignore certificate trust errors for https:// upstream proxies while still validating the hostname.
     #[arg(long = "proxy-insecure")]
-    pub proxy_insecure: bool,
+    proxy_insecure: bool,
 
     /// Print a post-run summary to stderr.
     #[arg(long = "summary")]
-    pub summary: bool,
+    summary: bool,
 
     /// Write structured flow events as JSON Lines. Currently supported only by the default rootless backend.
     #[arg(long = "flow-log")]
-    pub flow_log: Option<PathBuf>,
+    flow_log: Option<PathBuf>,
 
     /// Block all outbound networking for the child tree, including DNS forwarding.
     #[arg(long = "offline")]
-    pub offline: bool,
+    offline: bool,
 
     /// Block child-tree traffic to private, loopback, link-local, and ULA-style destinations.
     #[arg(long = "block-private")]
-    pub block_private: bool,
+    block_private: bool,
 
     /// Block common cloud metadata endpoints such as 169.254.169.254.
     #[arg(long = "block-metadata")]
-    pub block_metadata: bool,
+    block_metadata: bool,
 
     /// Choose whether unmatched outbound destinations are allowed or denied.
-    #[arg(long = "default-policy", value_enum, default_value_t = DefaultPolicy::Allow)]
-    pub default_policy: DefaultPolicy,
+    #[arg(long = "default-policy", value_enum)]
+    default_policy: Option<DefaultPolicy>,
 
     /// Allow outbound destinations that fall within this IPv4 or IPv6 CIDR.
     #[arg(long = "allow-cidr")]
-    pub allow_cidrs: Vec<IpNetwork>,
+    allow_cidrs: Vec<IpNetwork>,
 
     /// Deny outbound destinations that fall within this IPv4 or IPv6 CIDR.
     #[arg(long = "deny-cidr")]
-    pub deny_cidrs: Vec<IpNetwork>,
+    deny_cidrs: Vec<IpNetwork>,
 
     /// Require outbound traffic to use the configured upstream proxy path.
     #[arg(long = "proxy-only")]
-    pub proxy_only: bool,
+    proxy_only: bool,
 
     /// Exit non-zero if childflow blocks traffic that the child process did not treat as fatal. Currently supported only by the default rootless backend.
     #[arg(long = "fail-on-leak")]
-    pub fail_on_leak: bool,
+    fail_on_leak: bool,
 
     /// Force the host-side egress interface for the child's direct traffic.
     #[arg(short = 'i', long = "iface")]
-    pub iface: Option<String>,
+    iface: Option<String>,
 
     /// Command to execute.
-    #[arg(required_unless_present = "doctor")]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Cli {
+    pub dump_profile: bool,
+    pub output: Option<PathBuf>,
+    pub output_view: OutputView,
+    pub root: bool,
+    pub doctor: bool,
+    pub network_backend: NetworkBackend,
+    pub dns: Option<IpAddr>,
+    pub hosts_file: Option<PathBuf>,
+    pub proxy: Option<ProxySpec>,
+    pub proxy_user: Option<String>,
+    pub proxy_password: Option<String>,
+    pub proxy_insecure: bool,
+    pub summary: bool,
+    pub flow_log: Option<PathBuf>,
+    pub offline: bool,
+    pub block_private: bool,
+    pub block_metadata: bool,
+    pub default_policy: DefaultPolicy,
+    pub allow_cidrs: Vec<IpNetwork>,
+    pub deny_cidrs: Vec<IpNetwork>,
+    pub proxy_only: bool,
+    pub fail_on_leak: bool,
+    pub iface: Option<String>,
     pub command: Vec<String>,
 }
 
 impl Cli {
+    pub fn parse_effective() -> Result<Self> {
+        Self::from_raw(RawCli::parse())
+    }
+
     pub fn selected_backend(&self) -> NetworkBackend {
         if self.root {
             NetworkBackend::Rootful
@@ -185,6 +221,138 @@ impl Cli {
 
         Ok(())
     }
+
+    fn from_raw(raw: RawCli) -> Result<Self> {
+        let profile = raw.profile.as_deref().map(Profile::load).transpose()?;
+        Ok(Self::merge(raw, profile.as_ref()))
+    }
+
+    fn merge(raw: RawCli, profile: Option<&Profile>) -> Self {
+        let mut cli = Self {
+            dump_profile: raw.dump_profile,
+            output: profile.and_then(|value| value.capture.clone()),
+            output_view: profile
+                .and_then(|value| value.capture_point)
+                .unwrap_or(OutputView::Child),
+            root: false,
+            doctor: raw.doctor,
+            network_backend: profile
+                .and_then(|value| value.backend)
+                .unwrap_or(NetworkBackend::RootlessInternal),
+            dns: profile.and_then(|value| value.dns),
+            hosts_file: profile.and_then(|value| value.hosts_file.clone()),
+            proxy: profile.and_then(|value| value.proxy.clone()),
+            proxy_user: profile.and_then(|value| value.proxy_user.clone()),
+            proxy_password: profile.and_then(|value| value.proxy_password.clone()),
+            proxy_insecure: profile
+                .and_then(|value| value.proxy_insecure)
+                .unwrap_or(false),
+            summary: profile.and_then(|value| value.summary).unwrap_or(false),
+            flow_log: profile.and_then(|value| value.flow_log.clone()),
+            offline: profile.and_then(|value| value.offline).unwrap_or(false),
+            block_private: profile
+                .and_then(|value| value.block_private)
+                .unwrap_or(false),
+            block_metadata: profile
+                .and_then(|value| value.block_metadata)
+                .unwrap_or(false),
+            default_policy: profile
+                .and_then(|value| value.default_policy)
+                .unwrap_or(DefaultPolicy::Allow),
+            allow_cidrs: profile
+                .and_then(|value| value.allow_cidrs.clone())
+                .unwrap_or_default(),
+            deny_cidrs: profile
+                .and_then(|value| value.deny_cidrs.clone())
+                .unwrap_or_default(),
+            proxy_only: profile.and_then(|value| value.proxy_only).unwrap_or(false),
+            fail_on_leak: profile
+                .and_then(|value| value.fail_on_leak)
+                .unwrap_or(false),
+            iface: profile.and_then(|value| value.iface.clone()),
+            command: profile
+                .and_then(|value| value.command.clone())
+                .unwrap_or_default(),
+        };
+
+        if let Some(value) = raw.output {
+            cli.output = Some(value);
+        }
+        if let Some(value) = raw.output_view {
+            cli.output_view = value;
+        }
+        if raw.root {
+            cli.root = true;
+        }
+        if let Some(value) = raw.network_backend {
+            cli.network_backend = value;
+        }
+        if let Some(value) = raw.dns {
+            cli.dns = Some(value);
+        }
+        if let Some(value) = raw.hosts_file {
+            cli.hosts_file = Some(value);
+        }
+        if let Some(value) = raw.proxy {
+            cli.proxy = Some(value);
+        }
+        if let Some(value) = raw.proxy_user {
+            cli.proxy_user = Some(value);
+        }
+        if let Some(value) = raw.proxy_password {
+            cli.proxy_password = Some(value);
+        }
+        if raw.proxy_insecure {
+            cli.proxy_insecure = true;
+        }
+        if raw.summary {
+            cli.summary = true;
+        }
+        if let Some(value) = raw.flow_log {
+            cli.flow_log = Some(value);
+        }
+        if raw.offline {
+            cli.offline = true;
+        }
+        if raw.block_private {
+            cli.block_private = true;
+        }
+        if raw.block_metadata {
+            cli.block_metadata = true;
+        }
+        if let Some(value) = raw.default_policy {
+            cli.default_policy = value;
+        }
+        if !raw.allow_cidrs.is_empty() {
+            cli.allow_cidrs = raw.allow_cidrs;
+        }
+        if !raw.deny_cidrs.is_empty() {
+            cli.deny_cidrs = raw.deny_cidrs;
+        }
+        if raw.proxy_only {
+            cli.proxy_only = true;
+        }
+        if raw.fail_on_leak {
+            cli.fail_on_leak = true;
+        }
+        if let Some(value) = raw.iface {
+            cli.iface = Some(value);
+        }
+        if !raw.command.is_empty() {
+            cli.command = raw.command;
+        }
+
+        cli
+    }
+
+    #[cfg(test)]
+    fn parse_from<I, T>(itr: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        Self::from_raw(RawCli::parse_from(itr)).unwrap()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,6 +360,22 @@ pub struct ProxySpec {
     pub scheme: ProxyScheme,
     pub host: String,
     pub port: u16,
+}
+
+impl std::fmt::Display for ProxySpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let scheme = match self.scheme {
+            ProxyScheme::Http => "http",
+            ProxyScheme::Https => "https",
+            ProxyScheme::Socks5 => "socks5",
+        };
+        write!(f, "{scheme}://{host}:{}", self.port)
+    }
 }
 
 impl FromStr for ProxySpec {
@@ -265,14 +449,16 @@ pub enum ProxyType {
     Socks5,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProxyScheme {
     Http,
     Https,
     Socks5,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum OutputView {
     Child,
     Egress,
@@ -280,7 +466,8 @@ pub enum OutputView {
     Both,
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum DefaultPolicy {
     #[default]
     Allow,
@@ -289,10 +476,14 @@ pub enum DefaultPolicy {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     fn make_cli() -> Cli {
         Cli {
+            dump_profile: false,
             output: None,
             output_view: OutputView::Child,
             root: false,
@@ -590,6 +781,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_dump_profile_flag() {
+        let cli = Cli::parse_from(["childflow", "--dump-profile"]);
+
+        assert!(cli.dump_profile);
+        assert!(cli.command.is_empty());
+    }
+
+    #[test]
     fn parse_accepts_cidr_policy_flags() {
         let cli = Cli::parse_from([
             "childflow",
@@ -611,6 +810,82 @@ mod tests {
     }
 
     #[test]
+    fn parse_profile_supplies_command_and_relative_paths() {
+        let temp_dir = unique_temp_profile_dir("cli-profile-relative");
+        let profile_path = temp_dir.join("sandbox.toml");
+
+        fs::write(
+            &profile_path,
+            r#"
+capture = "captures/run.pcapng"
+capture_point = "both"
+hosts_file = "fixtures/hosts.override"
+flow_log = "logs/flow.jsonl"
+command = ["curl", "https://example.com"]
+"#,
+        )
+        .unwrap();
+
+        let cli = Cli::parse_from(["childflow", "--profile", profile_path.to_str().unwrap()]);
+
+        assert_eq!(
+            cli.output,
+            Some(temp_dir.join("captures").join("run.pcapng"))
+        );
+        assert_eq!(cli.output_view, OutputView::Both);
+        assert_eq!(
+            cli.hosts_file,
+            Some(temp_dir.join("fixtures").join("hosts.override"))
+        );
+        assert_eq!(cli.flow_log, Some(temp_dir.join("logs").join("flow.jsonl")));
+        assert_eq!(cli.command, vec!["curl", "https://example.com"]);
+
+        let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn parse_cli_overrides_profile_values() {
+        let temp_dir = unique_temp_profile_dir("cli-profile-override");
+        let profile_path = temp_dir.join("sandbox.toml");
+
+        fs::write(
+            &profile_path,
+            r#"
+summary = true
+default_policy = "deny"
+allow_cidrs = ["203.0.113.10/32"]
+command = ["curl", "https://example.com"]
+"#,
+        )
+        .unwrap();
+
+        let cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--default-policy",
+            "allow",
+            "--deny-cidr",
+            "198.51.100.0/24",
+            "--",
+            "ping",
+            "-c",
+            "1",
+            "1.1.1.1",
+        ]);
+
+        assert!(cli.summary);
+        assert_eq!(cli.default_policy, DefaultPolicy::Allow);
+        assert_eq!(cli.allow_cidrs.len(), 1);
+        assert_eq!(cli.deny_cidrs.len(), 1);
+        assert_eq!(cli.command, vec!["ping", "-c", "1", "1.1.1.1"]);
+
+        let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn doctor_flag_allows_empty_command() {
         let cli = Cli {
             doctor: true,
@@ -620,5 +895,15 @@ mod tests {
 
         cli.validate().unwrap();
         assert_eq!(cli.selected_backend(), NetworkBackend::RootlessInternal);
+    }
+
+    fn unique_temp_profile_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 }

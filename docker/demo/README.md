@@ -9,6 +9,7 @@ The demo brings up:
 - `proxy-http`: HTTP proxy with Basic auth
 - `proxy-https`: HTTPS-wrapped proxy with Basic auth and a self-signed certificate
 - `childflow-demo`: privileged runner container that builds `childflow`, runs `cargo test`, and exercises both proxy flows
+- reusable TOML demo profiles under `docker/demo/profiles`
 
 ## Run the demo
 
@@ -23,6 +24,8 @@ The script verifies:
 - HTTP proxy requests fail without credentials
 - HTTPS proxy requests fail without `--proxy-insecure`
 - HTTP proxy authentication works
+- profile-driven HTTP proxy execution works via `extends`
+- `--dump-profile` prints the merged effective TOML
 - HTTPS upstream proxy works with `--proxy-insecure` while keeping hostname verification
 - `childflow` still writes non-empty `pcapng` capture files during the run
 

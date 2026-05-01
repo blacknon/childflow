@@ -99,6 +99,15 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
     )
     .context("failed to make mount propagation private")?;
 
+    // Wait for the parent to finish any host-side namespace preparation before
+    // touching child-only bind mounts. This avoids follow-on ENOENT noise when
+    // the parent aborts early and drops the temporary resolv/hosts files.
+    wait_for_parent_release(
+        &mut release_pipe,
+        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
+        "parent closed bootstrap pipe before namespace setup completed",
+    )?;
+
     if let Some(resolv_conf) = resolv_conf {
         mount(
             Some(resolv_conf),
@@ -130,12 +139,6 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
             )
         })?;
     }
-
-    wait_for_parent_release(
-        &mut release_pipe,
-        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
-        "parent closed bootstrap pipe before namespace setup completed",
-    )?;
 
     let _network_guard = if let Some(bootstrap) = network_bootstrap {
         let guard = apply_child_network_bootstrap(bootstrap)?;
