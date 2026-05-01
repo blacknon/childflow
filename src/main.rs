@@ -217,9 +217,16 @@ fn real_main() -> Result<i32> {
             };
 
             let status = waitpid(child, None).context("waitpid failed")?;
-            let exit_code = wait_status_to_exit_code(status);
+            let mut exit_code = wait_status_to_exit_code(status);
+            let leak_detected = runtime.sandbox_violation_observed();
 
             runtime.shutdown()?;
+            if cli.fail_on_leak && leak_detected && exit_code == 0 {
+                util::warn(
+                    "sandbox policy blocked outbound traffic; returning exit code 1 because `--fail-on-leak` is enabled",
+                );
+                exit_code = 1;
+            }
             if cli.summary {
                 summary::print_run_summary(&cli, exit_code);
             }
@@ -367,6 +374,10 @@ impl ParentRuntime {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+    }
+
+    fn sandbox_violation_observed(&self) -> bool {
+        self.network.sandbox_violation_observed()
     }
 }
 

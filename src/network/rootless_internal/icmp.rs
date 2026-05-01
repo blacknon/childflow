@@ -6,13 +6,16 @@ use std::mem::{size_of, MaybeUninit};
 use std::net::IpAddr;
 use std::os::fd::AsRawFd;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
+use crate::sandbox::SandboxPolicy;
 use crate::util;
 
 use super::addr::AddressPlan;
@@ -74,6 +77,8 @@ enum IcmpRelayOutcome {
 pub(super) fn handle_icmpv4_packet(
     event_tx: &Sender<RemoteEvent>,
     addr_plan: &AddressPlan,
+    sandbox_policy: &SandboxPolicy,
+    leak_detected: &Arc<AtomicBool>,
     icmp: &ParsedIcmpv4Packet,
 ) -> Result<()> {
     let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
@@ -82,6 +87,18 @@ pub(super) fn handle_icmpv4_packet(
     };
 
     let is_gateway_target = dst_ip == addr_plan.gateway_ipv4;
+    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(IpAddr::V4(dst_ip)) {
+        if sandbox_policy.fail_on_leak {
+            leak_detected.store(true, Ordering::Relaxed);
+        }
+        util::debug(format!(
+            "rootless-internal dropped ICMPv4 flow to {} ({})",
+            dst_ip,
+            reason.describe()
+        ));
+        return Ok(());
+    }
+
     if icmp.icmp_type == 8 && icmp.code == 0 && !is_gateway_target {
         spawn_icmpv4_echo_worker(
             event_tx.clone(),
@@ -125,6 +142,8 @@ pub(super) fn handle_icmpv4_packet(
 pub(super) fn handle_icmpv6_packet(
     event_tx: &Sender<RemoteEvent>,
     addr_plan: &AddressPlan,
+    sandbox_policy: &SandboxPolicy,
+    leak_detected: &Arc<AtomicBool>,
     icmp: &ParsedIcmpv6Packet,
 ) -> Result<()> {
     let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
@@ -133,6 +152,18 @@ pub(super) fn handle_icmpv6_packet(
     };
 
     let is_gateway_target = dst_ip == addr_plan.gateway_ipv6;
+    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(IpAddr::V6(dst_ip)) {
+        if sandbox_policy.fail_on_leak {
+            leak_detected.store(true, Ordering::Relaxed);
+        }
+        util::debug(format!(
+            "rootless-internal dropped ICMPv6 flow to {} ({})",
+            dst_ip,
+            reason.describe()
+        ));
+        return Ok(());
+    }
+
     if icmp.icmp_type == 128 && icmp.code == 0 && !is_gateway_target {
         spawn_icmpv6_echo_worker(
             event_tx.clone(),

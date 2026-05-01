@@ -58,6 +58,13 @@ impl NetworkContext {
             Self::RootlessInternal(_) => None,
         }
     }
+
+    pub fn sandbox_violation_observed(&self) -> bool {
+        match self {
+            Self::Rootful(_) => false,
+            Self::RootlessInternal(ctx) => ctx.leak_detected(),
+        }
+    }
 }
 
 pub fn namespace_mode(backend: NetworkBackend) -> NamespaceMode {

@@ -63,7 +63,7 @@ fn render_scheme(scheme: ProxyScheme) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::Cli;
+    use crate::cli::{Cli, DefaultPolicy};
     use crate::network::NetworkBackend;
 
     fn base_cli() -> Cli {
@@ -83,6 +83,11 @@ mod tests {
             offline: false,
             block_private: false,
             block_metadata: false,
+            default_policy: DefaultPolicy::Allow,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
             iface: None,
             command: vec!["curl".into()],
         }
