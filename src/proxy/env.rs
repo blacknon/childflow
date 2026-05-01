@@ -79,6 +79,7 @@ mod tests {
             proxy_user: None,
             proxy_password: None,
             proxy_insecure: false,
+            summary: false,
             offline: false,
             block_private: false,
             block_metadata: false,

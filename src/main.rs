@@ -220,7 +220,9 @@ fn real_main() -> Result<i32> {
             let exit_code = wait_status_to_exit_code(status);
 
             runtime.shutdown()?;
-            summary::print_run_summary(&cli, exit_code);
+            if cli.summary {
+                summary::print_run_summary(&cli, exit_code);
+            }
 
             Ok(exit_code)
         }

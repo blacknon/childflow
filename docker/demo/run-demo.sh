@@ -6,10 +6,10 @@ cd "$repo_root"
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
 mkdir -p "$CARGO_TARGET_DIR"
-bin_path="$CARGO_TARGET_DIR/debug/childflow"
+export PATH="$CARGO_TARGET_DIR/debug:$CARGO_TARGET_DIR/release:$PATH"
 
 run_childflow() {
-  sudo -E "$bin_path" "$@"
+  sudo env "PATH=$PATH" childflow "$@"
 }
 
 ./docker/demo/wait-for-port.sh proxy-http 3128

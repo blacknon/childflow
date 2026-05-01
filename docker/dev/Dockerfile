@@ -65,8 +65,18 @@ COPY --from=ttyd-fetch /usr/local/bin/ttyd /usr/local/bin/ttyd
 
 WORKDIR /workspaces/childflow
 
-ENV PATH=/usr/local/cargo/bin:${PATH}
+ENV CARGO_TARGET_DIR=/tmp/childflow-target
+ENV PATH=${CARGO_TARGET_DIR}/debug:${CARGO_TARGET_DIR}/release:/usr/local/cargo/bin:${PATH}
 ENV CHROME_PATH=/usr/bin/chromium
+
+RUN printf '%s\n' \
+    'export CARGO_TARGET_DIR=/tmp/childflow-target' \
+    'export PATH=/tmp/childflow-target/debug:/tmp/childflow-target/release:/usr/local/cargo/bin:$PATH' \
+    >/etc/profile.d/childflow-path.sh \
+    && chmod 0644 /etc/profile.d/childflow-path.sh \
+    && printf '\nsource /etc/profile.d/childflow-path.sh\n' >> /home/childflow/.bashrc \
+    && printf '\nsource /etc/profile.d/childflow-path.sh\n' >> /home/childflow/.profile \
+    && chown childflow:childflow /home/childflow/.bashrc /home/childflow/.profile
 
 USER childflow
 

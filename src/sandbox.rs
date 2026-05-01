@@ -145,4 +145,32 @@ mod tests {
         assert!(is_private_ip(IpAddr::V6("fe80::1".parse().unwrap())));
         assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
     }
+
+    #[test]
+    fn active_controls_are_reported_in_stable_order() {
+        let policy = SandboxPolicy {
+            offline: true,
+            block_private: true,
+            block_metadata: true,
+        };
+
+        assert_eq!(
+            policy.active_controls(),
+            vec!["offline", "block-private", "block-metadata"]
+        );
+    }
+
+    #[test]
+    fn block_metadata_reason_is_more_specific_than_block_private() {
+        let policy = SandboxPolicy {
+            offline: false,
+            block_private: true,
+            block_metadata: true,
+        };
+
+        assert_eq!(
+            policy.block_reason_for_remote_ip(IpAddr::V4(BLOCK_METADATA_IPV4)),
+            Some(BlockReason::Metadata)
+        );
+    }
 }

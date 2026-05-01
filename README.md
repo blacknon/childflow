@@ -87,6 +87,8 @@ Options:
           Password for upstream proxy authentication
       --proxy-insecure
           Ignore certificate trust errors for https:// upstream proxies while still validating the hostname
+      --summary
+          Print a post-run summary to stderr
       --offline
           Block all outbound networking for the child tree, including DNS forwarding
       --block-private

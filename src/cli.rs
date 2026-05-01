@@ -68,6 +68,10 @@ pub struct Cli {
     #[arg(long = "proxy-insecure")]
     pub proxy_insecure: bool,
 
+    /// Print a post-run summary to stderr.
+    #[arg(long = "summary")]
+    pub summary: bool,
+
     /// Block all outbound networking for the child tree, including DNS forwarding.
     #[arg(long = "offline")]
     pub offline: bool,
@@ -254,6 +258,7 @@ mod tests {
             proxy_user: None,
             proxy_password: None,
             proxy_insecure: false,
+            summary: false,
             offline: false,
             block_private: false,
             block_metadata: false,
@@ -477,6 +482,26 @@ mod tests {
         };
 
         cli.validate().unwrap();
+    }
+
+    #[test]
+    fn parse_accepts_baseline_sandbox_flags() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--offline",
+            "--summary",
+            "--block-private",
+            "--block-metadata",
+            "--",
+            "curl",
+            "https://example.com",
+        ]);
+
+        assert!(cli.summary);
+        assert!(cli.offline);
+        assert!(cli.block_private);
+        assert!(cli.block_metadata);
+        assert_eq!(cli.command, vec!["curl", "https://example.com"]);
     }
 
     #[test]
