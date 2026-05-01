@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
+use ipnetwork::IpNetwork;
 
 use crate::network::NetworkBackend;
 
@@ -84,6 +85,26 @@ pub struct Cli {
     #[arg(long = "block-metadata")]
     pub block_metadata: bool,
 
+    /// Choose whether unmatched outbound destinations are allowed or denied.
+    #[arg(long = "default-policy", value_enum, default_value_t = DefaultPolicy::Allow)]
+    pub default_policy: DefaultPolicy,
+
+    /// Allow outbound destinations that fall within this IPv4 or IPv6 CIDR.
+    #[arg(long = "allow-cidr")]
+    pub allow_cidrs: Vec<IpNetwork>,
+
+    /// Deny outbound destinations that fall within this IPv4 or IPv6 CIDR.
+    #[arg(long = "deny-cidr")]
+    pub deny_cidrs: Vec<IpNetwork>,
+
+    /// Require outbound traffic to use the configured upstream proxy path.
+    #[arg(long = "proxy-only")]
+    pub proxy_only: bool,
+
+    /// Exit non-zero if childflow blocks traffic that the child process did not treat as fatal. Currently supported only by the default rootless backend.
+    #[arg(long = "fail-on-leak")]
+    pub fail_on_leak: bool,
+
     /// Force the host-side egress interface for the child's direct traffic.
     #[arg(short = 'i', long = "iface")]
     pub iface: Option<String>,
@@ -135,6 +156,10 @@ impl Cli {
             bail!("proxy authentication and TLS options require `--proxy`");
         }
 
+        if self.proxy_only && self.proxy.is_none() {
+            bail!("`--proxy-only` requires `--proxy`");
+        }
+
         if self.proxy_insecure
             && !matches!(
                 self.proxy.as_ref().map(|proxy| proxy.scheme),
@@ -142,6 +167,12 @@ impl Cli {
             )
         {
             bail!("`--proxy-insecure` is only valid with an `https://` upstream proxy");
+        }
+
+        if self.fail_on_leak && matches!(self.selected_backend(), NetworkBackend::Rootful) {
+            bail!(
+                "`--fail-on-leak` is currently supported only by the `rootless-internal` backend"
+            );
         }
 
         Ok(())
@@ -241,6 +272,13 @@ pub enum OutputView {
     Both,
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum DefaultPolicy {
+    #[default]
+    Allow,
+    Deny,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +300,11 @@ mod tests {
             offline: false,
             block_private: false,
             block_metadata: false,
+            default_policy: DefaultPolicy::Allow,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
             iface: None,
             command: vec!["curl".into()],
         }
@@ -310,6 +353,28 @@ mod tests {
             network_backend: NetworkBackend::Rootful,
             proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
             proxy_insecure: true,
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_proxy_only_without_proxy() {
+        let cli = Cli {
+            proxy_only: true,
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_fail_on_leak_for_rootful_backend() {
+        let cli = Cli {
+            root: true,
+            proxy: Some("http://127.0.0.1:8080".parse().unwrap()),
+            fail_on_leak: true,
             ..make_cli()
         };
 
@@ -502,6 +567,27 @@ mod tests {
         assert!(cli.block_private);
         assert!(cli.block_metadata);
         assert_eq!(cli.command, vec!["curl", "https://example.com"]);
+    }
+
+    #[test]
+    fn parse_accepts_cidr_policy_flags() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--default-policy",
+            "deny",
+            "--allow-cidr",
+            "192.0.2.0/24",
+            "--allow-cidr",
+            "2001:db8::/32",
+            "--deny-cidr",
+            "198.51.100.0/24",
+            "--",
+            "curl",
+        ]);
+
+        assert_eq!(cli.default_policy, DefaultPolicy::Deny);
+        assert_eq!(cli.allow_cidrs.len(), 2);
+        assert_eq!(cli.deny_cidrs.len(), 1);
     }
 
     #[test]

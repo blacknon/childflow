@@ -34,7 +34,7 @@ fn backend_name(cli: &Cli) -> &'static str {
     }
 }
 
-fn format_controls(controls: &[&str]) -> String {
+fn format_controls(controls: &[String]) -> String {
     if controls.is_empty() {
         return "none".to_string();
     }
@@ -62,7 +62,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::cli::ProxySpec;
+    use crate::cli::{DefaultPolicy, ProxySpec};
     use crate::network::NetworkBackend;
 
     fn make_cli() -> Cli {
@@ -82,6 +82,11 @@ mod tests {
             offline: false,
             block_private: false,
             block_metadata: false,
+            default_policy: DefaultPolicy::Allow,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
             iface: None,
             command: vec!["curl".into(), "https://example.com".into()],
         }

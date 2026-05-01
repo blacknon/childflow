@@ -43,6 +43,7 @@ pub struct EngineConfig {
 
 pub struct EngineHandle {
     stop: Arc<AtomicBool>,
+    leak_detected: Arc<AtomicBool>,
     join: Option<JoinHandle<Result<()>>>,
 }
 
@@ -52,10 +53,21 @@ impl EngineHandle {
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
-        let join = thread::spawn(move || run_engine(tap, addr_plan, config, stop_for_thread));
+        let leak_detected = Arc::new(AtomicBool::new(false));
+        let leak_detected_for_thread = Arc::clone(&leak_detected);
+        let join = thread::spawn(move || {
+            run_engine(
+                tap,
+                addr_plan,
+                config,
+                stop_for_thread,
+                leak_detected_for_thread,
+            )
+        });
 
         Ok(Self {
             stop,
+            leak_detected,
             join: Some(join),
         })
     }
@@ -76,6 +88,10 @@ impl EngineHandle {
 
     pub fn shutdown(mut self) -> Result<()> {
         self.stop_and_join()
+    }
+
+    pub fn leak_detected(&self) -> bool {
+        self.leak_detected.load(Ordering::Relaxed)
     }
 }
 
@@ -123,6 +139,7 @@ struct TcpPacketContext<'a> {
     sandbox_policy: SandboxPolicy,
     proxy_upstream: Option<&'a ProxyUpstreamConfig>,
     capture: &'a mut Option<CaptureWriters>,
+    leak_detected: &'a Arc<AtomicBool>,
 }
 
 struct UdpPacketContext<'a> {
@@ -133,6 +150,7 @@ struct UdpPacketContext<'a> {
     sandbox_policy: SandboxPolicy,
     capture: &'a mut Option<CaptureWriters>,
     event_tx: &'a Sender<RemoteEvent>,
+    leak_detected: &'a Arc<AtomicBool>,
 }
 
 fn run_engine(
@@ -140,6 +158,7 @@ fn run_engine(
     addr_plan: AddressPlan,
     mut config: EngineConfig,
     stop: Arc<AtomicBool>,
+    leak_detected: Arc<AtomicBool>,
 ) -> Result<()> {
     let (event_tx, event_rx) = mpsc::channel();
     let mut child_mac = None;
@@ -173,9 +192,10 @@ fn run_engine(
                                 addr_plan: &addr_plan,
                                 event_tx: &event_tx,
                                 connections: &mut connections,
-                                sandbox_policy: config.sandbox_policy,
+                                sandbox_policy: config.sandbox_policy.clone(),
                                 proxy_upstream: config.proxy_upstream.as_ref(),
                                 capture: &mut config.capture,
+                                leak_detected: &leak_detected,
                             },
                             &tcp,
                         )?;
@@ -188,20 +208,33 @@ fn run_engine(
                                 addr_plan: &addr_plan,
                                 dns_upstream: config.dns_upstream,
                                 allow_ipv6_outbound: config.allow_ipv6_outbound,
-                                sandbox_policy: config.sandbox_policy,
+                                sandbox_policy: config.sandbox_policy.clone(),
                                 capture: &mut config.capture,
                                 event_tx: &event_tx,
+                                leak_detected: &leak_detected,
                             },
                             &udp,
                         )?;
                     }
                     Ok(ParsedPacket::Icmpv4(icmp)) => {
                         child_mac.get_or_insert(icmp.meta.src_mac);
-                        handle_icmpv4_packet(&event_tx, &addr_plan, &icmp)?;
+                        handle_icmpv4_packet(
+                            &event_tx,
+                            &addr_plan,
+                            &config.sandbox_policy,
+                            &leak_detected,
+                            &icmp,
+                        )?;
                     }
                     Ok(ParsedPacket::Icmpv6(icmp)) => {
                         child_mac.get_or_insert(icmp.meta.src_mac);
-                        handle_icmpv6_packet(&event_tx, &addr_plan, &icmp)?;
+                        handle_icmpv6_packet(
+                            &event_tx,
+                            &addr_plan,
+                            &config.sandbox_policy,
+                            &leak_detected,
+                            &icmp,
+                        )?;
                     }
                     Ok(ParsedPacket::Unsupported) => {}
                     Err(err) => util::debug(format!(
@@ -228,6 +261,7 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
         sandbox_policy,
         proxy_upstream,
         capture,
+        leak_detected,
     } = ctx;
     let key = FlowKey {
         child_ip: tcp.meta.src_ip,
@@ -242,7 +276,10 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
     }
 
     if tcp.syn && !tcp.ack {
-        if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(key.remote_ip) {
+        if let Some(reason) =
+            sandbox_policy.block_reason_for_tcp_remote_ip(key.remote_ip, proxy_upstream.is_some())
+        {
+            note_leak_if_requested(leak_detected, &sandbox_policy, &reason);
             deny_tcp_connect(tap, addr_plan, capture, tcp, reason)?;
             return Ok(());
         }
@@ -426,11 +463,34 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         sandbox_policy,
         capture,
         event_tx,
+        leak_detected,
     } = ctx;
     if udp.dst_port == 53
         && (udp.meta.dst_ip == IpAddr::V4(addr_plan.gateway_ipv4)
             || udp.meta.dst_ip == IpAddr::V6(addr_plan.gateway_ipv6))
     {
+        if sandbox_policy.proxy_only {
+            note_leak_if_requested(leak_detected, &sandbox_policy, &BlockReason::ProxyOnly);
+            let response = synthesize_empty_dns_response(&udp.payload)?;
+            let frame = packet::build_udp_frame(
+                addr_plan.gateway_mac,
+                udp.meta.src_mac,
+                udp.meta.dst_ip,
+                udp.meta.src_ip,
+                53,
+                udp.src_port,
+                &response,
+            )?;
+            tap.write_all(&frame)
+                .context("failed to write synthetic proxy-only DNS response to tap")?;
+            capture_frame(
+                capture,
+                &frame,
+                "failed to capture a synthetic rootless proxy-only DNS response frame",
+            );
+            return Ok(());
+        }
+
         if !allow_ipv6_outbound && dns_query_type(&udp.payload) == Some(DNS_TYPE_AAAA) {
             let response = synthesize_empty_dns_response(&udp.payload)?;
             let frame = packet::build_udp_frame(
@@ -501,6 +561,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
     }
 
     if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(udp.meta.dst_ip) {
+        note_leak_if_requested(leak_detected, &sandbox_policy, &reason);
         util::debug(format!(
             "rootless-internal dropped UDP flow to {}:{} ({})",
             udp.meta.dst_ip,
@@ -525,6 +586,16 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
     );
 
     Ok(())
+}
+
+fn note_leak_if_requested(
+    leak_detected: &Arc<AtomicBool>,
+    sandbox_policy: &SandboxPolicy,
+    _reason: &BlockReason,
+) {
+    if sandbox_policy.fail_on_leak {
+        leak_detected.store(true, Ordering::Relaxed);
+    }
 }
 
 fn deny_tcp_connect(

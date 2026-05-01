@@ -1,6 +1,6 @@
 [package]
 name = "childflow"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 description = "A per-command-tree network sandbox for Linux"
@@ -10,6 +10,7 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 etherparse = "0.15"
+ipnetwork = "0.20"
 nix = { version = "0.31.2", features = [
     "mount",
     "process",

@@ -79,6 +79,10 @@ impl NetworkContext {
     pub fn shutdown(self) -> Result<()> {
         self.engine.shutdown()
     }
+
+    pub fn leak_detected(&self) -> bool {
+        self.engine.leak_detected()
+    }
 }
 
 pub struct RootlessSetupParams<'a> {

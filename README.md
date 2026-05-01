@@ -6,19 +6,20 @@ childflow
 </p>
 
 childflow is a per-command-tree network sandbox for Linux.
-Run one command and its child processes in an isolated network context, control DNS / hosts / proxy behavior, block sensitive destinations, and capture only that tree's traffic.
+Run one command and its child processes in an isolated network context, control DNS / hosts / proxy behavior, apply outbound policy, and capture only that tree's traffic.
 
 ## About
 
-`childflow` runs one command tree in an isolated network context and applies DNS, hosts, proxy, sandbox, and capture controls only to that tree.
+`childflow` runs one command tree in an isolated network context and applies DNS, hosts, proxy, sandbox, policy, and capture controls only to that tree.
 
 This is useful for tools that do not honor proxy environment variables consistently. `childflow` forces the proxy at the command tree's network path instead of relying on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD`-style interception.
 
 It has two Linux backends: `rootless-internal` for the default day-to-day path, and `rootful` via `--root` when you need host-integrated behavior such as `--iface` or transparent interception.
 
 - affects only the target command tree, not the whole host session
-- can force DNS, `/etc/hosts`, proxying, baseline sandbox controls, and packet capture per command tree
+- can force DNS, `/etc/hosts`, proxying, sandbox policy, and packet capture per command tree
 - can force proxying without depending on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD` tricks
+- can apply allow / deny CIDR policy and default-deny rules to outbound traffic
 - defaults to `rootless-internal`
 - uses `--root` only for features like `--iface` and transparent interception
 
@@ -57,7 +58,7 @@ If you are evaluating from macOS or another non-Linux environment, use the Docke
 
 ## Usage
 
-```shell
+```text
 $ childflow --help
 Run one command tree inside a controlled network sandbox
 
@@ -95,6 +96,16 @@ Options:
           Block child-tree traffic to private, loopback, link-local, and ULA-style destinations
       --block-metadata
           Block common cloud metadata endpoints such as 169.254.169.254
+      --default-policy <DEFAULT_POLICY>
+          Choose whether unmatched outbound destinations are allowed or denied [default: allow] [possible values: allow, deny]
+      --allow-cidr <ALLOW_CIDRS>
+          Allow outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --deny-cidr <DENY_CIDRS>
+          Deny outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --proxy-only
+          Require outbound traffic to use the configured upstream proxy path
+      --fail-on-leak
+          Exit non-zero if childflow blocks traffic that the child process did not treat as fatal. Currently supported only by the default rootless backend
   -i, --iface <IFACE>
           Force the host-side egress interface for the child's direct traffic
   -h, --help
@@ -131,6 +142,32 @@ childflow --block-metadata -- ./my-client
 
 ```bash
 childflow --block-private -- curl https://example.com
+```
+
+```bash
+childflow \
+  --default-policy deny \
+  --allow-cidr 203.0.113.10/32 \
+  -- curl http://203.0.113.10/
+```
+
+```bash
+childflow --deny-cidr 10.0.0.0/8 -- ./scanner
+```
+
+```bash
+childflow \
+  --proxy-only \
+  -p http://127.0.0.1:8080 \
+  -- curl https://example.com
+```
+
+```bash
+childflow \
+  --proxy-only \
+  --fail-on-leak \
+  -p http://127.0.0.1:8080 \
+  -- ./client
 ```
 
 ```bash
@@ -175,6 +212,8 @@ childflow -- traceroute -I -n -q 1 -w 2 8.8.8.8
 | Outbound TCP               | Yes                                                               | Yes                                                                    |
 | UDP relay                  | Yes                                                               | Yes                                                                    |
 | Proxy support              | Yes, via parent-side relay engine                                 | Yes, via transparent interception path                                 |
+| Policy controls            | Yes                                                               | Yes                                                                    |
+| `--fail-on-leak`           | Yes                                                               | Not yet                                                                |
 | Transparent proxy / TPROXY | No                                                                | Yes                                                                    |
 | `--iface`                  | No                                                                | Yes                                                                    |
 | Packet capture             | Optional, with `child`, `egress`, `wire-egress`, and `both` views | Optional, with `child`, `egress`, `wire-egress`, and `both` views      |
@@ -187,6 +226,32 @@ Use `--root` when you specifically need host-integrated behavior that the rootle
 - transparent proxying
 - interface-forced direct egress with `--iface`
 - broader raw-ICMP behavior than the current rootless relay engine implements
+
+### Policy Controls
+
+`childflow` can treat the command tree as a small outbound policy domain.
+
+- `--offline`
+  deny all outbound traffic and disable DNS forwarding
+- `--block-private`
+  deny private, loopback, link-local, and ULA-style destinations
+- `--block-metadata`
+  deny common cloud metadata endpoints
+- `--default-policy deny`
+  deny destinations unless they match an explicit allow rule
+- `--allow-cidr`
+  allow IPv4 or IPv6 CIDRs
+- `--deny-cidr`
+  deny IPv4 or IPv6 CIDRs
+- `--proxy-only`
+  require outbound traffic to use the configured proxy path
+- `--fail-on-leak`
+  return non-zero when childflow blocks traffic but the child process still exits `0`
+
+Current notes:
+
+- `--proxy-only` is primarily a TCP-focused control; in the rootless backend, direct DNS / UDP / ICMP traffic is also blocked rather than relayed
+- `--fail-on-leak` is currently supported only by `rootless-internal`
 
 ### Capture Modes
 

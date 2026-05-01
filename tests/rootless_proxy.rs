@@ -102,6 +102,53 @@ fn rootless_internal_routes_local_http_through_relay_proxy() -> Result<()> {
 }
 
 #[test]
+fn rootless_internal_proxy_only_allows_local_http_through_relay_proxy() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-proxy-only-ok")?;
+    let (proxy_addr, proxy_requests) = spawn_http_connect_proxy()?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--proxy-only",
+        "-p",
+        &format!("http://{host_ip}:{}", proxy_addr.port()),
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal proxy-only relay proxy smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "childflow failed:\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-proxy-only-ok"
+    );
+
+    let proxy_request_line = proxy_requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("proxy did not receive a CONNECT request from the proxy-only childflow run")?;
+    assert_eq!(
+        proxy_request_line,
+        format!("CONNECT {host_ip}:{} HTTP/1.1", server_addr.port())
+    );
+
+    let request_line = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .context("local HTTP server did not receive a request from the proxy-only proxied run")?;
+    assert_eq!(request_line, "GET /hello HTTP/1.1");
+
+    Ok(())
+}
+
+#[test]
 fn rootless_internal_proxy_and_dns_override_write_capture_for_local_http() -> Result<()> {
     let (server_addr, requests) = spawn_local_http_server("childflow-proxy-dns-ok")?;
     let (proxy_addr, proxy_requests) = spawn_http_connect_proxy()?;
@@ -216,6 +263,226 @@ fn rootless_internal_block_private_blocks_local_http() -> Result<()> {
             .recv_timeout(std::time::Duration::from_millis(500))
             .is_err(),
         "block-private sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_default_deny_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-default-deny-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--default-policy",
+        "deny",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal default-deny smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected default-deny childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "default-deny sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_default_deny_allows_explicit_cidr() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-allow-cidr-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let host_cidr = format!("{host_ip}/32");
+
+    let output = run_childflow_command(&[
+        "--default-policy",
+        "deny",
+        "--allow-cidr",
+        &host_cidr,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal allow-cidr smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "expected allow-cidr childflow run to succeed, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-allow-cidr-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("allow-cidr local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_deny_cidr_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-deny-cidr-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let host_cidr = format!("{host_ip}/32");
+
+    let output = run_childflow_command(&[
+        "--deny-cidr",
+        &host_cidr,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal deny-cidr smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected deny-cidr childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "deny-cidr sandbox unexpectedly reached the local HTTP server"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_proxy_only_blocks_udp_leak() -> Result<()> {
+    let (_server_addr, requests) = spawn_local_udp_server()?;
+    let (proxy_addr, _proxy_requests) = spawn_http_connect_proxy()?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--proxy-only",
+        "-p",
+        &format!("http://{host_ip}:{}", proxy_addr.port()),
+        "--",
+        "python3",
+        "-c",
+        "import socket,sys; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'childflow-proxy-only', (sys.argv[1], int(sys.argv[2]))); s.close()",
+        &host_ip.to_string(),
+        &_server_addr.port().to_string(),
+    ])
+    .context("failed to run childflow rootless-internal proxy-only UDP leak test")?;
+
+    assert!(
+        output.status.success(),
+        "expected proxy-only UDP leak probe to exit cleanly, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "proxy-only sandbox unexpectedly delivered a UDP packet directly"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_fail_on_leak_returns_nonzero_for_blocked_udp() -> Result<()> {
+    let (server_addr, requests) = spawn_local_udp_server()?;
+    let (proxy_addr, _proxy_requests) = spawn_http_connect_proxy()?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--proxy-only",
+        "--fail-on-leak",
+        "-p",
+        &format!("http://{host_ip}:{}", proxy_addr.port()),
+        "--",
+        "python3",
+        "-c",
+        "import socket,sys; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'childflow-fail-on-leak', (sys.argv[1], int(sys.argv[2]))); s.close()",
+        &host_ip.to_string(),
+        &server_addr.port().to_string(),
+    ])
+    .context("failed to run childflow rootless-internal fail-on-leak UDP test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected fail-on-leak UDP probe to return non-zero, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--fail-on-leak"),
+        "expected fail-on-leak warning in stderr, got:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "fail-on-leak sandbox unexpectedly delivered a UDP packet directly"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootful_deny_cidr_blocks_local_http() -> Result<()> {
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-rootful-deny-cidr-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let host_cidr = format!("{host_ip}/32");
+
+    let output = run_childflow_command(&[
+        "--root",
+        "--deny-cidr",
+        &host_cidr,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootful deny-cidr smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected rootful deny-cidr childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "rootful deny-cidr sandbox unexpectedly reached the local HTTP server"
     );
 
     Ok(())
@@ -819,6 +1086,34 @@ fn spawn_bound_http_server(
     });
 
     Ok((addr, request_rx))
+}
+
+fn spawn_local_udp_server() -> Result<(SocketAddr, Receiver<Vec<u8>>)> {
+    let listener =
+        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).context("failed to bind local UDP server")?;
+    let addr = listener
+        .local_addr()
+        .context("failed to query local UDP server address")?;
+    let (payload_tx, payload_rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result: Result<()> = (|| {
+            let mut buf = [0_u8; 2048];
+            let (n, _) = listener
+                .recv_from(&mut buf)
+                .context("failed to receive local UDP payload")?;
+            payload_tx
+                .send(buf[..n].to_vec())
+                .context("failed to publish local UDP payload to test thread")?;
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            let _ = payload_tx.send(format!("server-error: {err:#}").into_bytes());
+        }
+    });
+
+    Ok((addr, payload_rx))
 }
 
 struct LoopbackAliasGuard {
