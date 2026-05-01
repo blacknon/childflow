@@ -17,6 +17,36 @@ pub struct FlowLogger {
     writer: BufWriter<File>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DnsAnswerMode {
+    Relayed,
+    SyntheticEmpty,
+}
+
+impl DnsAnswerMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Relayed => "relayed",
+            Self::SyntheticEmpty => "synthetic_empty",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectResultStatus {
+    Ok,
+    Error,
+}
+
+impl ConnectResultStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+        }
+    }
+}
+
 pub struct PolicyViolationEvent<'a> {
     pub protocol: &'static str,
     pub remote: &'a str,
@@ -52,7 +82,7 @@ impl FlowLogger {
         &mut self,
         server: SocketAddr,
         qtype: Option<&'static str>,
-        mode: &'static str,
+        mode: DnsAnswerMode,
         bytes: usize,
     ) -> Result<()> {
         self.write_event(json!({
@@ -62,7 +92,7 @@ impl FlowLogger {
             "server_ip": server.ip().to_string(),
             "server_port": server.port(),
             "qtype": qtype.unwrap_or("unknown"),
-            "mode": mode,
+            "mode": mode.as_str(),
             "bytes": bytes,
         }))
     }
@@ -82,7 +112,7 @@ impl FlowLogger {
         &mut self,
         remote_addr: SocketAddr,
         via_proxy: bool,
-        status: &'static str,
+        status: ConnectResultStatus,
         error: Option<&str>,
     ) -> Result<()> {
         self.write_event(json!({
@@ -92,7 +122,7 @@ impl FlowLogger {
             "remote_ip": remote_addr.ip().to_string(),
             "remote_port": remote_addr.port(),
             "via_proxy": via_proxy,
-            "status": status,
+            "status": status.as_str(),
             "error": error,
         }))
     }
@@ -152,14 +182,22 @@ mod tests {
 
     use anyhow::{Context, Result};
 
-    use super::{FlowLogger, PolicyViolationEvent, FLOW_LOG_SCHEMA_VERSION};
+    use super::{
+        ConnectResultStatus, DnsAnswerMode, FlowLogger, PolicyViolationEvent,
+        FLOW_LOG_SCHEMA_VERSION,
+    };
 
     #[test]
     fn flow_logger_writes_connect_and_end_events_as_json_lines() -> Result<()> {
         let path = unique_temp_flow_log_path("flow-log-connect");
         let mut logger = FlowLogger::open(&path)?;
         logger.log_connect_attempt("127.0.0.1:8080".parse()?, false)?;
-        logger.log_connect_result("127.0.0.1:8080".parse()?, false, "ok", None)?;
+        logger.log_connect_result(
+            "127.0.0.1:8080".parse()?,
+            false,
+            ConnectResultStatus::Ok,
+            None,
+        )?;
         logger.log_flow_end("tcp", "127.0.0.1:8080".parse()?)?;
         drop(logger);
 
@@ -219,7 +257,12 @@ mod tests {
         let path = unique_temp_flow_log_path("flow-log-dns");
         let mut logger = FlowLogger::open(&path)?;
         logger.log_dns_query("1.1.1.1:53".parse()?, Some("A"))?;
-        logger.log_dns_answer("1.1.1.1:53".parse()?, Some("A"), "relayed", 128)?;
+        logger.log_dns_answer(
+            "1.1.1.1:53".parse()?,
+            Some("A"),
+            DnsAnswerMode::Relayed,
+            128,
+        )?;
         drop(logger);
 
         let contents = fs::read_to_string(&path)
@@ -231,6 +274,33 @@ mod tests {
         assert!(contents.contains("\"event\":\"dns_answer\""));
         assert!(contents.contains("\"mode\":\"relayed\""));
         assert!(contents.contains("\"bytes\":128"));
+
+        let _ = fs::remove_file(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn flow_logger_uses_stable_status_and_mode_values() -> Result<()> {
+        let path = unique_temp_flow_log_path("flow-log-values");
+        let mut logger = FlowLogger::open(&path)?;
+        logger.log_connect_result(
+            "127.0.0.1:8080".parse()?,
+            true,
+            ConnectResultStatus::Error,
+            Some("boom"),
+        )?;
+        logger.log_dns_answer(
+            "1.1.1.1:53".parse()?,
+            Some("AAAA"),
+            DnsAnswerMode::SyntheticEmpty,
+            0,
+        )?;
+        drop(logger);
+
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        assert!(contents.contains("\"status\":\"error\""));
+        assert!(contents.contains("\"mode\":\"synthetic_empty\""));
 
         let _ = fs::remove_file(&path);
         Ok(())

@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
 use crate::capture::CaptureWriters;
-use crate::flow_log::{FlowLogger, PolicyViolationEvent};
+use crate::flow_log::{ConnectResultStatus, DnsAnswerMode, FlowLogger, PolicyViolationEvent};
 use crate::proxy::rootless_relay::ProxyUpstreamConfig;
 use crate::sandbox::{BlockReason, SandboxPolicy};
 use crate::util;
@@ -333,7 +333,13 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
             key.clone(),
         ) {
             Ok(command_tx) => {
-                log_connect_result(flow_log, remote_addr, proxy_upstream.is_some(), "ok", None)?;
+                log_connect_result(
+                    flow_log,
+                    remote_addr,
+                    proxy_upstream.is_some(),
+                    ConnectResultStatus::Ok,
+                    None,
+                )?;
                 command_tx
             }
             Err(err) => {
@@ -341,7 +347,7 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
                     flow_log,
                     remote_addr,
                     proxy_upstream.is_some(),
-                    "error",
+                    ConnectResultStatus::Error,
                     Some(&format!("{err:#}")),
                 )?;
                 util::warn(format!(
@@ -557,7 +563,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 flow_log,
                 SocketAddr::new(udp.meta.dst_ip, 53),
                 dns_qtype,
-                "synthetic_empty",
+                DnsAnswerMode::SyntheticEmpty,
                 response.len(),
             )?;
             return Ok(());
@@ -586,7 +592,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 flow_log,
                 SocketAddr::new(udp.meta.dst_ip, 53),
                 dns_qtype,
-                "synthetic_empty",
+                DnsAnswerMode::SyntheticEmpty,
                 response.len(),
             )?;
             return Ok(());
@@ -615,7 +621,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 flow_log,
                 SocketAddr::new(udp.meta.dst_ip, 53),
                 dns_qtype,
-                "synthetic_empty",
+                DnsAnswerMode::SyntheticEmpty,
                 response.len(),
             )?;
             return Ok(());
@@ -647,7 +653,13 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             &frame,
             "failed to capture a rootless DNS UDP response frame",
         );
-        log_dns_answer(flow_log, server, dns_qtype, "relayed", response.len())?;
+        log_dns_answer(
+            flow_log,
+            server,
+            dns_qtype,
+            DnsAnswerMode::Relayed,
+            response.len(),
+        )?;
         return Ok(());
     }
 
@@ -740,7 +752,7 @@ fn log_connect_result(
     flow_log: &mut Option<FlowLogger>,
     remote_addr: SocketAddr,
     via_proxy: bool,
-    status: &'static str,
+    status: ConnectResultStatus,
     error: Option<&str>,
 ) -> Result<()> {
     if let Some(logger) = flow_log.as_mut() {
@@ -764,7 +776,7 @@ fn log_dns_answer(
     flow_log: &mut Option<FlowLogger>,
     server: SocketAddr,
     qtype: Option<&'static str>,
-    mode: &'static str,
+    mode: DnsAnswerMode,
     bytes: usize,
 ) -> Result<()> {
     if let Some(logger) = flow_log.as_mut() {

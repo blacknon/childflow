@@ -286,7 +286,9 @@ Current schema notes:
 
 - every event includes `schema_version: 1`
 - `connect_attempt`, `connect_result`, and `flow_end` include stable `remote_ip` / `remote_port` fields
+- `connect_result.status` is currently one of `ok` or `error`
 - `dns_query` and `dns_answer` include stable `server_ip` / `server_port` fields
+- `dns_answer.mode` is currently one of `relayed` or `synthetic_empty`
 - `policy_violation` includes structured fields such as `action`, `reason_code`, `control`, and `matched_cidr` when applicable
 
 Current notes:
