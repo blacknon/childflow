@@ -833,7 +833,7 @@ impl LoopbackAliasGuard {
             .context("failed to add loopback alias for metadata test")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.contains("File exists") {
+            if !stderr.contains("File exists") && !stderr.contains("Address already assigned") {
                 bail!("failed to add loopback alias {ip}: {}", stderr.trim());
             }
             return Ok(Self {
