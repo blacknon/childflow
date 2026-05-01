@@ -16,7 +16,23 @@ cargo build
 
 mkdir -p "$repo_root/img"
 
-echo "[gif] rendering proxy demo gif"
-vhs "$repo_root/docker/demo/tapes/proxy-demo.tape"
+render_tape() {
+  local tape_path="$1"
+  local rendered_path="$2"
 
-echo "[gif] rendered: $repo_root/img/childflow-proxy-demo.gif"
+  echo "[gif] rendering $(basename "$tape_path")"
+  vhs "$tape_path"
+  if [[ -f "$rendered_path" ]]; then
+    echo "[gif] rendered: $rendered_path"
+  fi
+}
+
+render_tape "$repo_root/docker/demo/tapes/proxy-demo.tape" \
+  "$repo_root/img/childflow.gif"
+cp "$repo_root/img/childflow.gif" "$repo_root/img/childflow-proxy-demo.gif"
+echo "[gif] copied: $repo_root/img/childflow-proxy-demo.gif"
+
+render_tape "$repo_root/docker/demo/tapes/profile-demo.tape" \
+  "$repo_root/img/childflow-profile-demo.gif"
+render_tape "$repo_root/docker/demo/tapes/flow-log-demo.tape" \
+  "$repo_root/img/childflow-flow-log-demo.gif"

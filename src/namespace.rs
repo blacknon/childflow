@@ -62,6 +62,7 @@ pub struct RootlessChildBootstrap {
 pub struct ChildExecParams<'a> {
     pub mode: NamespaceMode,
     pub release_pipe: File,
+    pub namespace_ready_pipe: Option<File>,
     pub ready_pipe: Option<File>,
     pub tap_transfer: Option<UnixStream>,
     pub resolv_conf: Option<&'a Path>,
@@ -75,6 +76,7 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
     let ChildExecParams {
         mode,
         mut release_pipe,
+        mut namespace_ready_pipe,
         mut ready_pipe,
         tap_transfer,
         resolv_conf,
@@ -90,6 +92,23 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
 
     unshare(mode.unshare_flags()).map_err(|err| render_unshare_error(mode, err))?;
 
+    if let Some(namespace_ready_pipe) = namespace_ready_pipe.as_mut() {
+        use std::io::Write;
+
+        namespace_ready_pipe
+            .write_all(&[1])
+            .context("failed to notify the parent that child namespace unshare completed")?;
+    }
+
+    // Wait for the parent to finish any host-side namespace preparation before
+    // touching child-only mounts or network bootstrap. This also ensures the
+    // rootless parent has installed uid/gid maps after CLONE_NEWUSER completed.
+    wait_for_parent_release(
+        &mut release_pipe,
+        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
+        "parent closed bootstrap pipe before namespace setup completed",
+    )?;
+
     mount(
         None::<&str>,
         "/",
@@ -98,15 +117,6 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
         None::<&str>,
     )
     .context("failed to make mount propagation private")?;
-
-    // Wait for the parent to finish any host-side namespace preparation before
-    // touching child-only bind mounts. This avoids follow-on ENOENT noise when
-    // the parent aborts early and drops the temporary resolv/hosts files.
-    wait_for_parent_release(
-        &mut release_pipe,
-        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
-        "parent closed bootstrap pipe before namespace setup completed",
-    )?;
 
     if let Some(resolv_conf) = resolv_conf {
         mount(
@@ -201,6 +211,9 @@ fn wait_for_parent_release(
         .read(&mut ready)
         .with_context(|| read_context.to_string())?;
     if n == 0 {
+        bail!(eof_message.to_string());
+    }
+    if ready[0] == 0 {
         bail!(eof_message.to_string());
     }
     Ok(())

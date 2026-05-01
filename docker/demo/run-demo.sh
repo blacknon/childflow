@@ -10,7 +10,7 @@ export PATH="$CARGO_TARGET_DIR/debug:$CARGO_TARGET_DIR/release:$PATH"
 mkdir -p "$repo_root/docker/demo/profiles/captures" "$repo_root/docker/demo/profiles/logs"
 
 run_childflow() {
-  sudo env "PATH=$PATH" childflow "$@"
+  childflow "$@"
 }
 
 ./docker/demo/wait-for-port.sh proxy-http 3128

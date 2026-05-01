@@ -13,11 +13,14 @@ The current design goal is reproducibility:
 
 When the same setting appears in both places:
 
-1. explicit CLI flags win
-2. profile values fill in the remaining defaults
-3. built-in defaults are used when neither provides a value
+1. parent profile values load first when `extends` is present
+2. child profile values override inherited values
+3. explicit CLI flags win over the merged profile
+4. built-in defaults are used when neither provides a value
 
 For list-valued settings such as `allow_cidrs` and `deny_cidrs`, explicit CLI flags replace the profile list rather than appending to it.
+
+For `command`, an explicit CLI command after `--` replaces the profile `command`.
 
 `--dump-profile` prints the effective merged configuration as TOML and exits without running the command.
 
@@ -81,6 +84,8 @@ command = ["curl", "https://203.0.113.10/healthz"]
 - `extends` currently supports a single parent profile
 - parent profile paths are resolved relative to the child profile file
 - inheritance cycles are rejected
+- explicit CLI list flags replace inherited/profile lists rather than appending
+- an explicit CLI command after `--` replaces the profile `command`
 - `--root` is intentionally CLI-only; use `backend = "rootful"` inside profiles instead
 - `--fail-on-leak` and `--flow-log` keep their current backend limitations even when configured via profile
 - `--dump-profile` emits the effective values after profile loading, CLI override application, and relative path resolution

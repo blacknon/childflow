@@ -2,7 +2,7 @@ childflow
 ===
 
 <p align="center">
-<img src="./img/childflow.gif" width="720" />
+<img src="./img/childflow-proxy-demo.gif" width="720" />
 </p>
 
 childflow is a per-command-tree network sandbox for Linux.
@@ -374,7 +374,10 @@ Current notes:
 
 - profile files currently use TOML
 - profiles can inherit from a shared base with `extends = "./base.toml"`
+- merge order is: parent profile, child profile, then explicit CLI flags
 - CLI flags override profile values when both are present
+- for list-valued settings such as `allow_cidrs` and `deny_cidrs`, explicit CLI flags replace the profile list instead of appending to it
+- an explicit CLI command after `--` replaces the profile `command`
 - `--dump-profile` prints the merged effective TOML and exits without running the command
 - relative paths inside a profile are resolved relative to the profile file itself
 - profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `default_policy`, `allow_cidrs`, and `deny_cidrs`

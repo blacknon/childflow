@@ -41,4 +41,8 @@ From the repo root:
 mise run demo:gif
 ```
 
-That runs [docker/demo/render-gif.sh](render-gif.sh), which builds `childflow` inside the demo runner and renders [docker/demo/tapes/proxy-demo.tape](tapes/proxy-demo.tape) to `img/childflow-proxy-demo.gif`.
+That runs [docker/demo/render-gif.sh](render-gif.sh), which builds `childflow` inside the demo runner and renders:
+
+- [docker/demo/tapes/proxy-demo.tape](tapes/proxy-demo.tape) to `img/childflow.gif` and `img/childflow-proxy-demo.gif`
+- [docker/demo/tapes/profile-demo.tape](tapes/profile-demo.tape) to `img/childflow-profile-demo.gif`
+- [docker/demo/tapes/flow-log-demo.tape](tapes/flow-log-demo.tape) to `img/childflow-flow-log-demo.gif`
