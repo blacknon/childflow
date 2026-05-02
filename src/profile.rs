@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::{Cli, DefaultPolicy, OutputView, ProxySpec};
+use crate::cli::{Cli, DefaultPolicy, OutputView, ProxySpec, SummaryFormat};
 use crate::network::NetworkBackend;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -43,6 +43,8 @@ pub struct Profile {
     pub proxy_insecure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_format: Option<SummaryFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flow_log: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,6 +88,7 @@ impl Profile {
             proxy_password: cli.proxy_password.clone(),
             proxy_insecure: cli.proxy_insecure.then_some(true),
             summary: cli.summary.then_some(true),
+            summary_format: cli.summary.then_some(cli.summary_format),
             flow_log: cli.flow_log.clone(),
             offline: cli.offline.then_some(true),
             block_private: cli.block_private.then_some(true),
@@ -132,6 +135,7 @@ impl Profile {
             proxy_password: child.proxy_password.or(self.proxy_password),
             proxy_insecure: child.proxy_insecure.or(self.proxy_insecure),
             summary: child.summary.or(self.summary),
+            summary_format: child.summary_format.or(self.summary_format),
             flow_log: child.flow_log.or(self.flow_log),
             offline: child.offline.or(self.offline),
             block_private: child.block_private.or(self.block_private),
@@ -317,6 +321,7 @@ flow_log = "./logs/flow.jsonl"
             &base_profile_path,
             r#"
 summary = true
+summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
 command = ["curl", "https://example.com"]
@@ -337,6 +342,7 @@ command = ["ping", "-c", "1", "1.1.1.1"]
 
         assert_eq!(profile.extends, None);
         assert_eq!(profile.summary, Some(true));
+        assert_eq!(profile.summary_format, Some(SummaryFormat::Json));
         assert_eq!(profile.default_policy, Some(DefaultPolicy::Deny));
         assert_eq!(
             profile.allow_cidrs,
@@ -418,6 +424,7 @@ command = ["ping", "-c", "1", "1.1.1.1"]
         assert!(rendered.contains("capture_point = \"both\""));
         assert!(rendered.contains("backend = \"rootless-internal\""));
         assert!(rendered.contains("proxy = \"https://proxy.example.com:443\""));
+        assert!(rendered.contains("summary_format = \"text\""));
         assert!(rendered.contains("default_policy = \"deny\""));
         assert!(rendered.contains("command = ["));
         assert!(rendered.contains("\"curl\""));

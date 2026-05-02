@@ -8,8 +8,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{Map, Value};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::cli::{Cli, ReportFormat};
 use crate::observability::report as observability_report;
@@ -68,7 +68,11 @@ impl FlowLogReport {
 
         for (line_no, line) in reader.lines().enumerate() {
             let line = line.with_context(|| {
-                format!("failed to read line {} from {}", line_no + 1, path.display())
+                format!(
+                    "failed to read line {} from {}",
+                    line_no + 1,
+                    path.display()
+                )
             })?;
             let event: FlowLogLine = serde_json::from_str(&line).with_context(|| {
                 format!(
@@ -136,7 +140,8 @@ impl FlowLogReport {
         if self.runtime_failure_reason_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (reason, count) in top_count_entries(&self.runtime_failure_reason_counts, usize::MAX)
+            for (reason, count) in
+                top_count_entries(&self.runtime_failure_reason_counts, usize::MAX)
             {
                 rendered.push_str(&format!("  {reason}: {count}\n"));
             }
@@ -146,7 +151,8 @@ impl FlowLogReport {
         if self.runtime_failure_phase_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (phase, count) in top_count_entries(&self.runtime_failure_phase_counts, usize::MAX) {
+            for (phase, count) in top_count_entries(&self.runtime_failure_phase_counts, usize::MAX)
+            {
                 rendered.push_str(&format!("  {phase}: {count}\n"));
             }
         }
@@ -225,7 +231,8 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
-            for (reason, count) in top_count_entries(&self.runtime_failure_reason_counts, usize::MAX)
+            for (reason, count) in
+                top_count_entries(&self.runtime_failure_reason_counts, usize::MAX)
             {
                 rendered.push_str(&format!("| {reason} | {count} |\n"));
             }
@@ -236,7 +243,8 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Phase | Count |\n| --- | ---: |\n");
-            for (phase, count) in top_count_entries(&self.runtime_failure_phase_counts, usize::MAX) {
+            for (phase, count) in top_count_entries(&self.runtime_failure_phase_counts, usize::MAX)
+            {
                 rendered.push_str(&format!("| {phase} | {count} |\n"));
             }
         }
@@ -328,7 +336,10 @@ impl FlowLogReport {
             "runtime_failure" => {
                 self.runtime_failure += 1;
                 if let Some(reason) = event.reason_code {
-                    *self.runtime_failure_reason_counts.entry(reason).or_default() += 1;
+                    *self
+                        .runtime_failure_reason_counts
+                        .entry(reason)
+                        .or_default() += 1;
                 }
                 if let Some(phase) = event.phase {
                     *self.runtime_failure_phase_counts.entry(phase).or_default() += 1;
@@ -604,7 +615,10 @@ impl FlowLogReport {
     }
 }
 
-fn top_count_entries<'a>(counts: &'a BTreeMap<String, usize>, limit: usize) -> Vec<(&'a str, usize)> {
+fn top_count_entries<'a>(
+    counts: &'a BTreeMap<String, usize>,
+    limit: usize,
+) -> Vec<(&'a str, usize)> {
     let mut entries = counts
         .iter()
         .map(|(name, count)| (name.as_str(), *count))
@@ -717,10 +731,7 @@ mod tests {
             runtime_failure: 0,
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
-            protocol_counts: BTreeMap::from([
-                ("tcp".into(), 2),
-                ("udp".into(), 2),
-            ]),
+            protocol_counts: BTreeMap::from([("tcp".into(), 2), ("udp".into(), 2)]),
             policy_reason_counts: BTreeMap::new(),
             connect_error_counts: BTreeMap::new(),
             runtime_failure_reason_counts: BTreeMap::new(),
@@ -798,9 +809,7 @@ mod tests {
         assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
         assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
         assert!(rendered.contains("- most common runtime failure: `tap_create_blocked` (1)"));
-        assert!(rendered.contains(
-            "- most common runtime failure phase: `child_bootstrap` (1)"
-        ));
+        assert!(rendered.contains("- most common runtime failure phase: `child_bootstrap` (1)"));
         assert!(rendered.contains("| total | 3 |"));
         assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));
@@ -849,7 +858,10 @@ mod tests {
         assert_eq!(json["schema_versions"], serde_json::json!([1]));
         assert_eq!(json["event_counts"]["total"], 3);
         assert_eq!(json["protocols"]["tcp"], 3);
-        assert_eq!(json["sorted_protocols"][0], serde_json::json!({"key":"tcp","count":3}));
+        assert_eq!(
+            json["sorted_protocols"][0],
+            serde_json::json!({"key":"tcp","count":3})
+        );
         assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
         assert_eq!(json["policy_violations"]["proxy_only"], 1);
         assert_eq!(
@@ -1033,11 +1045,15 @@ mod tests {
         let report = FlowLogReport::from_path(&path)?;
         assert_eq!(report.runtime_failure, 2);
         assert_eq!(
-            report.runtime_failure_reason_counts.get("tap_create_blocked"),
+            report
+                .runtime_failure_reason_counts
+                .get("tap_create_blocked"),
             Some(&1)
         );
         assert_eq!(
-            report.runtime_failure_reason_counts.get("runtime_shutdown_failed"),
+            report
+                .runtime_failure_reason_counts
+                .get("runtime_shutdown_failed"),
             Some(&1)
         );
         assert_eq!(

@@ -64,7 +64,9 @@ fn classify_text(text: &str) -> Option<RuntimeFailureCode> {
         return Some(RuntimeFailureCode::PacketCaptureBlocked);
     }
     if text.contains("failed to configure the child user namespace")
-        || text.contains("could not map the current non-root user into the `rootless-internal` child namespace")
+        || text.contains(
+            "could not map the current non-root user into the `rootless-internal` child namespace",
+        )
     {
         return Some(RuntimeFailureCode::UserNamespaceMappingFailed);
     }

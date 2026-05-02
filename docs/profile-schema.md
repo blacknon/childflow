@@ -49,6 +49,7 @@ The following profile keys are resolved relative to the directory containing the
 | `proxy_password` | string | Upstream proxy password |
 | `proxy_insecure` | bool | Equivalent to `--proxy-insecure` |
 | `summary` | bool | Equivalent to `--summary` |
+| `summary_format` | string | One of `text`, `json`; equivalent to `--summary-format` |
 | `flow_log` | string | Path written by `--flow-log` |
 | `offline` | bool | Equivalent to `--offline` |
 | `block_private` | bool | Equivalent to `--block-private` |
@@ -68,6 +69,8 @@ extends = "./base.toml"
 capture = "./captures/run.pcapng"
 capture_point = "both"
 flow_log = "./logs/run.jsonl"
+summary = true
+summary_format = "json"
 dns = "1.1.1.1"
 backend = "rootless-internal"
 block_private = true

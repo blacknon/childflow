@@ -209,8 +209,7 @@ mod tests {
 
     use super::{
         append_runtime_failure, ConnectResultStatus, DnsAnswerMode, FlowLogger,
-        PolicyViolationEvent, RuntimeFailureEvent,
-        FLOW_LOG_SCHEMA_VERSION,
+        PolicyViolationEvent, RuntimeFailureEvent, FLOW_LOG_SCHEMA_VERSION,
     };
 
     #[test]

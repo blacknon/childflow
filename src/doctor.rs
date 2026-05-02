@@ -225,7 +225,11 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
         );
     }
 
-    let namespace_handles = ["/proc/self/ns/user", "/proc/self/ns/net", "/proc/self/ns/mnt"];
+    let namespace_handles = [
+        "/proc/self/ns/user",
+        "/proc/self/ns/net",
+        "/proc/self/ns/mnt",
+    ];
     let missing_handles = missing_paths(&namespace_handles);
     if missing_handles.is_empty() {
         report.push(
@@ -632,8 +636,14 @@ mod tests {
 
     #[test]
     fn render_capability_status_uses_stable_labels() {
-        assert_eq!(render_capability_status(&CapabilityStatus::Available), "AVAILABLE");
-        assert_eq!(render_capability_status(&CapabilityStatus::Limited), "LIMITED");
+        assert_eq!(
+            render_capability_status(&CapabilityStatus::Available),
+            "AVAILABLE"
+        );
+        assert_eq!(
+            render_capability_status(&CapabilityStatus::Limited),
+            "LIMITED"
+        );
         assert_eq!(
             render_capability_status(&CapabilityStatus::Unavailable),
             "UNAVAILABLE"

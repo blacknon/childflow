@@ -278,7 +278,9 @@ impl Cli {
                 .and_then(|value| value.proxy_insecure)
                 .unwrap_or(false),
             summary: profile.and_then(|value| value.summary).unwrap_or(false),
-            summary_format: SummaryFormat::Text,
+            summary_format: profile
+                .and_then(|value| value.summary_format)
+                .unwrap_or(SummaryFormat::Text),
             flow_log: profile.and_then(|value| value.flow_log.clone()),
             offline: profile.and_then(|value| value.offline).unwrap_or(false),
             block_private: profile
@@ -529,7 +531,8 @@ pub enum DoctorFormat {
     Json,
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum SummaryFormat {
     #[default]
     Text,
@@ -940,6 +943,8 @@ capture = "captures/run.pcapng"
 capture_point = "both"
 hosts_file = "fixtures/hosts.override"
 flow_log = "logs/flow.jsonl"
+summary = true
+summary_format = "json"
 command = ["curl", "https://example.com"]
 "#,
         )
@@ -957,6 +962,8 @@ command = ["curl", "https://example.com"]
             Some(temp_dir.join("fixtures").join("hosts.override"))
         );
         assert_eq!(cli.flow_log, Some(temp_dir.join("logs").join("flow.jsonl")));
+        assert!(cli.summary);
+        assert_eq!(cli.summary_format, SummaryFormat::Json);
         assert_eq!(cli.command, vec!["curl", "https://example.com"]);
 
         let _ = fs::remove_file(&profile_path);
@@ -972,6 +979,7 @@ command = ["curl", "https://example.com"]
             &profile_path,
             r#"
 summary = true
+summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
 command = ["curl", "https://example.com"]
@@ -985,6 +993,8 @@ command = ["curl", "https://example.com"]
             profile_path.to_str().unwrap(),
             "--default-policy",
             "allow",
+            "--summary-format",
+            "text",
             "--deny-cidr",
             "198.51.100.0/24",
             "--",
@@ -995,6 +1005,7 @@ command = ["curl", "https://example.com"]
         ]);
 
         assert!(cli.summary);
+        assert_eq!(cli.summary_format, SummaryFormat::Text);
         assert_eq!(cli.default_policy, DefaultPolicy::Allow);
         assert_eq!(cli.allow_cidrs.len(), 1);
         assert_eq!(cli.deny_cidrs.len(), 1);

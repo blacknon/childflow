@@ -440,6 +440,8 @@ childflow --profile ./profiles/default-deny.toml
 extends = "./base.toml"
 capture = "./captures/run.pcapng"
 flow_log = "./logs/run.jsonl"
+summary = true
+summary_format = "json"
 dns = "1.1.1.1"
 backend = "rootless-internal"
 block_private = true
@@ -468,7 +470,7 @@ Current notes:
 - an explicit CLI command after `--` replaces the profile `command`
 - `--dump-profile` prints the merged effective TOML and exits without running the command
 - relative paths inside a profile are resolved relative to the profile file itself
-- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
+- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `summary_format`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
 - `--root` remains a CLI-only convenience flag; use `backend = "rootful"` in profiles when you want the rootful backend
 - the fuller key-by-key schema is documented in [docs/profile-schema.md](docs/profile-schema.md)
 

@@ -257,17 +257,15 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                 runtime_failure: report.runtime_failure,
                 unknown_event: report.unknown_event,
             }),
-            top_target: report
-                .top_connection_targets(1)
-                .into_iter()
-                .next()
-                .map(|(target, stats)| SummaryTopTarget {
+            top_target: report.top_connection_targets(1).into_iter().next().map(
+                |(target, stats)| SummaryTopTarget {
                     target: target.to_string(),
                     connect_attempts: stats.connect_attempts,
                     connect_ok: stats.connect_ok,
                     connect_error: stats.connect_error,
                     flow_end: stats.flow_end,
-                }),
+                },
+            ),
             policy_violations: count_entries_to_json(report.policy_violation_entries(3)),
             connect_errors: count_entries_to_json(report.connect_error_entries(3)),
             runtime_failures: count_entries_to_json(report.runtime_failure_entries(3)),
@@ -490,9 +488,7 @@ mod tests {
         assert!(rendered.contains("flow-log policy violations: deny_cidr=1"));
         assert!(rendered.contains("flow-log connect errors: connection refused=1"));
         assert!(rendered.contains("flow-log runtime failures: tap_create_blocked=1"));
-        assert!(rendered.contains(
-            "flow-log runtime failure phases: child_bootstrap=1"
-        ));
+        assert!(rendered.contains("flow-log runtime failure phases: child_bootstrap=1"));
 
         let _ = fs::remove_file(flow_log_path);
     }
