@@ -35,6 +35,8 @@ mod proxy;
 #[cfg(target_os = "linux")]
 mod report;
 #[cfg(target_os = "linux")]
+mod runtime_failure;
+#[cfg(target_os = "linux")]
 mod sandbox;
 #[cfg(target_os = "linux")]
 mod summary;
@@ -81,6 +83,9 @@ fn main() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("childflow: {err:#}");
+            if let Some(code) = runtime_failure::classify_error(&err) {
+                eprintln!("childflow: reason_code: {}", code.as_str());
+            }
             1
         }
     };
@@ -158,6 +163,9 @@ fn real_main() -> Result<i32> {
                 command: &cli.command,
             }) {
                 eprintln!("childflow: child bootstrap failed: {err:#}");
+                if let Some(code) = runtime_failure::classify_error(&err) {
+                    eprintln!("childflow: child bootstrap reason_code: {}", code.as_str());
+                }
                 process::exit(127);
             }
 
