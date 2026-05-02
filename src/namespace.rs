@@ -221,10 +221,24 @@ fn make_mount_propagation_private() -> Result<()> {
         MsFlags::MS_REC | MsFlags::MS_PRIVATE,
         None::<&str>,
     ) {
+        if can_skip_mount_private(err) {
+            crate::util::warn(
+                "AppArmor denied forcing mount propagation to private inside the rootless user namespace, but the root mount already avoids outward propagation. Continuing without the extra remount step.",
+            );
+            return Ok(());
+        }
         return Err(build_mount_private_error(err));
     }
 
     Ok(())
+}
+
+fn can_skip_mount_private(err: nix::errno::Errno) -> bool {
+    matches!(err, nix::errno::Errno::EACCES | nix::errno::Errno::EPERM)
+        && current_apparmor_profile()
+            .as_deref()
+            .is_some_and(|profile| profile.starts_with("unprivileged_userns"))
+        && root_mount_propagates_outward() == Some(false)
 }
 
 fn build_mount_private_error(err: nix::errno::Errno) -> anyhow::Error {
@@ -583,8 +597,49 @@ fn read_root_mountinfo_line() -> Option<String> {
         })
 }
 
+fn current_apparmor_profile() -> Option<String> {
+    read_trimmed_file("/proc/self/attr/current")
+}
+
+fn root_mount_propagates_outward() -> Option<bool> {
+    let line = read_root_mountinfo_line()?;
+    Some(parse_mountinfo_propagates_outward(&line))
+}
+
+fn parse_mountinfo_propagates_outward(line: &str) -> bool {
+    let Some((left, _)) = line.split_once(" - ") else {
+        return true;
+    };
+    left.split_whitespace()
+        .skip(6)
+        .any(|field| field.starts_with("shared:"))
+}
+
 fn format_optional_value(value: Option<String>) -> String {
     value.unwrap_or_else(|| "<unavailable>".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mountinfo_propagates_outward;
+
+    #[test]
+    fn parse_mountinfo_marks_private_root_as_not_propagating_outward() {
+        let line = "611 610 0:57 / / rw,relatime - overlay overlay rw";
+        assert!(!parse_mountinfo_propagates_outward(line));
+    }
+
+    #[test]
+    fn parse_mountinfo_marks_slave_root_as_not_propagating_outward() {
+        let line = "842 829 0:325 / / rw,relatime master:128 - overlay overlay rw";
+        assert!(!parse_mountinfo_propagates_outward(line));
+    }
+
+    #[test]
+    fn parse_mountinfo_marks_shared_root_as_propagating_outward() {
+        let line = "61 0 8:2 / / rw,relatime shared:1 - ext4 /dev/sda1 rw";
+        assert!(parse_mountinfo_propagates_outward(line));
+    }
 }
 
 fn command_in_path(program: &str) -> bool {
