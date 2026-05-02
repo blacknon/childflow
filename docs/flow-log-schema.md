@@ -145,6 +145,11 @@ Example:
 {"schema_version":1,"ts_ms":1760000000006,"event":"runtime_failure","phase":"child_bootstrap","reason_code":"tap_create_blocked","detail":"failed to create tap device `tap0` inside the rootless-internal child namespace using TUNSETIFF"}
 ```
 
+Current notes:
+
+- `childflow --summary` surfaces compact `runtime_failure` reason and phase aggregates after a run when `--flow-log` is enabled.
+- `childflow --report <flow.jsonl>` uses `reason_code` and `phase` to build post-run failure summaries for saved artifacts.
+
 ## Compatibility Notes
 
 - Additive fields within the same `schema_version` should be considered possible.

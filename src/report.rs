@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::{Cli, ReportFormat};
 
@@ -21,12 +21,13 @@ pub fn run(cli: &Cli) -> Result<i32> {
     let rendered = match cli.report_format {
         ReportFormat::Text => report.render_text(path),
         ReportFormat::Markdown => report.render_markdown(path),
+        ReportFormat::Json => report.render_json(path)?,
     };
     print!("{rendered}");
     Ok(0)
 }
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize)]
 pub struct FlowLogReport {
     pub total: usize,
     pub dns_query: usize,
@@ -48,7 +49,7 @@ pub struct FlowLogReport {
     pub direct_connect_attempts: usize,
 }
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize)]
 pub struct ConnectionTargetStats {
     pub connect_attempts: usize,
     pub connect_ok: usize,
@@ -251,6 +252,11 @@ impl FlowLogReport {
         }
 
         rendered
+    }
+
+    pub fn render_json(&self, path: &Path) -> Result<String> {
+        serde_json::to_string_pretty(&JsonFlowLogReport::from_report(path, self))
+            .context("failed to render flow log report as JSON")
     }
 
     pub fn render_event_counts_compact(&self) -> String {
@@ -462,11 +468,95 @@ struct FlowLogLine {
     phase: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct JsonFlowLogReport<'a> {
+    flow_log: String,
+    schema_versions: Vec<u32>,
+    event_counts: JsonEventCounts,
+    protocols: &'a BTreeMap<String, usize>,
+    proxy_usage: JsonProxyUsage,
+    policy_violations: &'a BTreeMap<String, usize>,
+    connect_errors: &'a BTreeMap<String, usize>,
+    runtime_failures: &'a BTreeMap<String, usize>,
+    runtime_failure_phases: &'a BTreeMap<String, usize>,
+    top_connection_targets: Vec<JsonConnectionTarget<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonEventCounts {
+    total: usize,
+    dns_query: usize,
+    dns_answer: usize,
+    connect_attempt: usize,
+    connect_result: usize,
+    policy_violation: usize,
+    flow_end: usize,
+    runtime_failure: usize,
+    unknown_event: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonProxyUsage {
+    proxied_connect_attempts: usize,
+    direct_connect_attempts: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonConnectionTarget<'a> {
+    target: &'a str,
+    connect_attempts: usize,
+    connect_ok: usize,
+    connect_error: usize,
+    flow_end: usize,
+}
+
+impl<'a> JsonFlowLogReport<'a> {
+    fn from_report(path: &Path, report: &'a FlowLogReport) -> Self {
+        Self {
+            flow_log: path.display().to_string(),
+            schema_versions: report.schema_versions.iter().copied().collect(),
+            event_counts: JsonEventCounts {
+                total: report.total,
+                dns_query: report.dns_query,
+                dns_answer: report.dns_answer,
+                connect_attempt: report.connect_attempt,
+                connect_result: report.connect_result,
+                policy_violation: report.policy_violation,
+                flow_end: report.flow_end,
+                runtime_failure: report.runtime_failure,
+                unknown_event: report.unknown_event,
+            },
+            protocols: &report.protocol_counts,
+            proxy_usage: JsonProxyUsage {
+                proxied_connect_attempts: report.proxied_connect_attempts,
+                direct_connect_attempts: report.direct_connect_attempts,
+            },
+            policy_violations: &report.policy_reason_counts,
+            connect_errors: &report.connect_error_counts,
+            runtime_failures: &report.runtime_failure_reason_counts,
+            runtime_failure_phases: &report.runtime_failure_phase_counts,
+            top_connection_targets: report
+                .top_connection_targets(10)
+                .into_iter()
+                .map(|(target, stats)| JsonConnectionTarget {
+                    target,
+                    connect_attempts: stats.connect_attempts,
+                    connect_ok: stats.connect_ok,
+                    connect_error: stats.connect_error,
+                    flow_end: stats.flow_end,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use serde_json::Value;
 
     use super::*;
 
@@ -596,6 +686,55 @@ mod tests {
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
         assert!(rendered.contains("| child_bootstrap | 1 |"));
         assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 |"));
+        Ok(())
+    }
+
+    #[test]
+    fn flow_log_report_renders_json_output() -> Result<()> {
+        let report = FlowLogReport {
+            total: 3,
+            dns_query: 0,
+            dns_answer: 0,
+            connect_attempt: 1,
+            connect_result: 1,
+            policy_violation: 1,
+            flow_end: 0,
+            runtime_failure: 1,
+            unknown_event: 0,
+            schema_versions: BTreeSet::from([1]),
+            protocol_counts: BTreeMap::from([("tcp".into(), 3)]),
+            policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
+            connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
+            runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
+            runtime_failure_phase_counts: BTreeMap::from([("child_bootstrap".into(), 1)]),
+            connection_targets: BTreeMap::from([(
+                "93.184.216.34:443".into(),
+                ConnectionTargetStats {
+                    connect_attempts: 1,
+                    connect_ok: 1,
+                    connect_error: 0,
+                    flow_end: 0,
+                },
+            )]),
+            proxied_connect_attempts: 1,
+            direct_connect_attempts: 0,
+        };
+
+        let rendered = report.render_json(Path::new("/tmp/flow.jsonl"))?;
+        let json: Value = serde_json::from_str(&rendered)?;
+        assert_eq!(json["flow_log"], "/tmp/flow.jsonl");
+        assert_eq!(json["schema_versions"], serde_json::json!([1]));
+        assert_eq!(json["event_counts"]["total"], 3);
+        assert_eq!(json["protocols"]["tcp"], 3);
+        assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
+        assert_eq!(json["policy_violations"]["proxy_only"], 1);
+        assert_eq!(json["connect_errors"]["connection refused"], 2);
+        assert_eq!(json["runtime_failures"]["tap_create_blocked"], 1);
+        assert_eq!(json["runtime_failure_phases"]["child_bootstrap"], 1);
+        assert_eq!(
+            json["top_connection_targets"][0]["target"],
+            "93.184.216.34:443"
+        );
         Ok(())
     }
 

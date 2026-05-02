@@ -510,6 +510,7 @@ pub enum ReportFormat {
     #[default]
     Text,
     Markdown,
+    Json,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -857,6 +858,20 @@ mod tests {
 
         assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
         assert_eq!(cli.report_format, ReportFormat::Markdown);
+    }
+
+    #[test]
+    fn parse_accepts_report_json_format_flag() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+            "--report-format",
+            "json",
+        ]);
+
+        assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert_eq!(cli.report_format, ReportFormat::Json);
     }
 
     #[test]
