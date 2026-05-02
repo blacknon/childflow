@@ -363,6 +363,19 @@ impl FlowLogReport {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    pub fn render_runtime_failures_compact(&self, limit: usize) -> String {
+        if self.runtime_failure_reason_counts.is_empty() {
+            return "none".to_string();
+        }
+
+        self.runtime_failure_reason_counts
+            .iter()
+            .take(limit)
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -614,6 +627,10 @@ mod tests {
                 ("connection refused".into(), 2),
                 ("timed out".into(), 1),
             ]),
+            runtime_failure_reason_counts: BTreeMap::from([
+                ("tap_create_blocked".into(), 1),
+                ("runtime_shutdown_failed".into(), 1),
+            ]),
             connection_targets: BTreeMap::from([(
                 "a.example:443".into(),
                 ConnectionTargetStats {
@@ -633,6 +650,10 @@ mod tests {
         assert_eq!(
             report.render_connect_errors_compact(2),
             "connection refused=2, timed out=1"
+        );
+        assert_eq!(
+            report.render_runtime_failures_compact(2),
+            "runtime_shutdown_failed=1, tap_create_blocked=1"
         );
     }
 
