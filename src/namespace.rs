@@ -110,14 +110,7 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
         "parent closed bootstrap pipe before namespace setup completed",
     )?;
 
-    mount(
-        None::<&str>,
-        "/",
-        None::<&str>,
-        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
-        None::<&str>,
-    )
-    .context("failed to make mount propagation private")?;
+    make_mount_propagation_private()?;
 
     if let Some(resolv_conf) = resolv_conf {
         mount(
@@ -218,6 +211,79 @@ fn wait_for_parent_release(
         bail!(eof_message.to_string());
     }
     Ok(())
+}
+
+fn make_mount_propagation_private() -> Result<()> {
+    if let Err(err) = mount(
+        None::<&str>,
+        "/",
+        None::<&str>,
+        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+        None::<&str>,
+    ) {
+        return Err(build_mount_private_error(err));
+    }
+
+    Ok(())
+}
+
+fn build_mount_private_error(err: nix::errno::Errno) -> anyhow::Error {
+    let mut message = format!("failed to make mount propagation private: {err}\n");
+    let euid = unsafe { nix::libc::geteuid() };
+    let egid = unsafe { nix::libc::getegid() };
+
+    let _ = writeln!(message, "diagnostics:");
+    let _ = writeln!(message, "- effective uid/gid: {euid}/{egid}");
+    let _ = writeln!(
+        message,
+        "- /proc/self/uid_map: {}",
+        format_optional_value(read_trimmed_file("/proc/self/uid_map"))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/self/gid_map: {}",
+        format_optional_value(read_trimmed_file("/proc/self/gid_map"))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/self/setgroups: {}",
+        format_optional_value(read_trimmed_file("/proc/self/setgroups"))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/self/attr/current: {}",
+        format_optional_value(read_trimmed_file("/proc/self/attr/current"))
+    );
+    let _ = writeln!(
+        message,
+        "- root mountinfo entry: {}",
+        format_optional_value(read_root_mountinfo_line())
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/sys/kernel/apparmor_restrict_unprivileged_userns: {}",
+        format_optional_value(read_trimmed_file(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+        ))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined: {}",
+        format_optional_value(read_trimmed_file(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined",
+        ))
+    );
+
+    if read_trimmed_file("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref()
+        == Some("1")
+    {
+        let _ = writeln!(
+            message,
+            "this host has AppArmor's unprivileged user-namespace restriction enabled. On Ubuntu 24.04+, user namespace creation may succeed while CAP_SYS_ADMIN operations inside the transitioned AppArmor profile are still denied."
+        );
+    }
+
+    anyhow!(message)
 }
 
 pub fn configure_user_namespace(child_pid: Pid) -> Result<()> {
@@ -497,6 +563,28 @@ fn render_unshare_error(mode: NamespaceMode, err: nix::errno::Errno) -> anyhow::
             "unshare for the `rootless-internal` backend failed before user namespace mapping completed: {err}. Check whether unprivileged user namespaces are enabled on this host and whether the runtime permits CLONE_NEWUSER / CLONE_NEWNET / CLONE_NEWNS for non-root users."
         ),
     }
+}
+
+fn read_trimmed_file(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().replace('\n', " | "))
+        .filter(|value| !value.is_empty())
+}
+
+fn read_root_mountinfo_line() -> Option<String> {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|line| line.contains(" / / "))
+                .map(str::to_string)
+        })
+}
+
+fn format_optional_value(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "<unavailable>".to_string())
 }
 
 fn command_in_path(program: &str) -> bool {
