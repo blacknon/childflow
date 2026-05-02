@@ -292,7 +292,7 @@ impl FlowLogReport {
             .join(", ")
     }
 
-    fn top_connection_targets(&self, limit: usize) -> Vec<(&str, &ConnectionTargetStats)> {
+    pub fn top_connection_targets(&self, limit: usize) -> Vec<(&str, &ConnectionTargetStats)> {
         let mut entries = self
             .connection_targets
             .iter()
@@ -308,6 +308,30 @@ impl FlowLogReport {
         });
         entries.truncate(limit);
         entries
+    }
+
+    pub fn render_top_target_compact(&self) -> String {
+        let Some((target, stats)) = self.top_connection_targets(1).into_iter().next() else {
+            return "none".to_string();
+        };
+
+        format!(
+            "{target} (attempts={}, ok={}, error={}, flow_end={})",
+            stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+        )
+    }
+
+    pub fn render_connect_errors_compact(&self, limit: usize) -> String {
+        if self.connect_error_counts.is_empty() {
+            return "none".to_string();
+        }
+
+        self.connect_error_counts
+            .iter()
+            .take(limit)
+            .map(|(error, count)| format!("{error}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -542,6 +566,35 @@ mod tests {
         assert_eq!(top[0].0, "a.example:443");
         assert_eq!(top[1].0, "c.example:443");
         assert_eq!(top[2].0, "b.example:443");
+    }
+
+    #[test]
+    fn flow_log_report_renders_compact_target_and_errors() {
+        let report = FlowLogReport {
+            connect_error_counts: BTreeMap::from([
+                ("connection refused".into(), 2),
+                ("timed out".into(), 1),
+            ]),
+            connection_targets: BTreeMap::from([(
+                "a.example:443".into(),
+                ConnectionTargetStats {
+                    connect_attempts: 3,
+                    connect_ok: 1,
+                    connect_error: 2,
+                    flow_end: 1,
+                },
+            )]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            report.render_top_target_compact(),
+            "a.example:443 (attempts=3, ok=1, error=2, flow_end=1)"
+        );
+        assert_eq!(
+            report.render_connect_errors_compact(2),
+            "connection refused=2, timed out=1"
+        );
     }
 
     fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {

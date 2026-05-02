@@ -21,12 +21,14 @@ fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
         .unwrap_or_else(|| "<none>".to_string());
 
     format!(
-        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\nflow-log events: {}\nexit: {exit_code}\n",
+        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\nflow-log events: {}\nflow-log top target: {}\nflow-log connect errors: {}\nexit: {exit_code}\n",
         backend_name(cli),
         format_controls(&sandbox_policy.active_controls()),
         format_capture(cli),
         format_flow_log(cli),
-        format_flow_log_events(cli)
+        format_flow_log_events(cli),
+        format_flow_log_top_target(cli),
+        format_flow_log_connect_errors(cli)
     )
 }
 
@@ -74,6 +76,28 @@ fn format_flow_log_events(cli: &Cli) -> String {
 
     match FlowLogReport::from_path(path) {
         Ok(report) => report.render_event_counts_compact(),
+        Err(_) => "unavailable".to_string(),
+    }
+}
+
+fn format_flow_log_top_target(cli: &Cli) -> String {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return "disabled".to_string();
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_top_target_compact(),
+        Err(_) => "unavailable".to_string(),
+    }
+}
+
+fn format_flow_log_connect_errors(cli: &Cli) -> String {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return "disabled".to_string();
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_connect_errors_compact(3),
         Err(_) => "unavailable".to_string(),
     }
 }
@@ -132,6 +156,8 @@ mod tests {
         assert!(rendered.contains("capture: disabled"));
         assert!(rendered.contains("flow-log: disabled"));
         assert!(rendered.contains("flow-log events: disabled"));
+        assert!(rendered.contains("flow-log top target: disabled"));
+        assert!(rendered.contains("flow-log connect errors: disabled"));
         assert!(rendered.contains("exit: 7"));
     }
 
@@ -152,6 +178,8 @@ mod tests {
         ));
         assert!(rendered.contains("flow-log: /tmp/flow.jsonl"));
         assert!(rendered.contains("flow-log events: unavailable"));
+        assert!(rendered.contains("flow-log top target: unavailable"));
+        assert!(rendered.contains("flow-log connect errors: unavailable"));
         assert!(rendered.contains("command: curl https://example.com"));
     }
 
@@ -163,9 +191,9 @@ mod tests {
             &flow_log_path,
             concat!(
                 "{\"event\":\"connect_attempt\",\"ts_ms\":1}\n",
-                "{\"event\":\"connect_result\",\"ts_ms\":2}\n",
+                "{\"event\":\"connect_result\",\"status\":\"error\",\"error\":\"connection refused\",\"remote_addr\":\"93.184.216.34:443\",\"ts_ms\":2}\n",
                 "{\"event\":\"policy_violation\",\"ts_ms\":3}\n",
-                "{\"event\":\"flow_end\",\"ts_ms\":4}\n"
+                "{\"event\":\"flow_end\",\"remote_addr\":\"93.184.216.34:443\",\"ts_ms\":4}\n"
             ),
         )
         .unwrap();
@@ -178,6 +206,10 @@ mod tests {
         assert!(rendered.contains("connect_result=1"));
         assert!(rendered.contains("policy_violation=1"));
         assert!(rendered.contains("flow_end=1"));
+        assert!(rendered.contains(
+            "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1)"
+        ));
+        assert!(rendered.contains("flow-log connect errors: connection refused=1"));
 
         let _ = fs::remove_file(flow_log_path);
     }
