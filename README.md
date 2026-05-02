@@ -543,6 +543,7 @@ Current notes:
 - `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
 - `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, commonly matched blocked domains, common connect errors, runtime failure reason codes, and runtime failure phases after the run
 - top connection targets in `--summary` / `--report` also include correlated `dns_names` when `childflow` observed DNS answers for the target IP
+- DNS-oriented report views also surface correlated `matched_domains`, so it is easier to connect a queried name, its resolved IPs, the observed target socket, and the domain rule that blocked it
 - the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)
 - `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
 - `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
@@ -565,10 +566,12 @@ After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a t
 - protocol counts
 - proxy usage
 - policy violation reason counts
+- matched blocked domain counts
 - connect error counts
 - runtime failure reason counts
 - runtime failure phase counts
 - top connection targets
+- DNS target / policy correlations
 
 ### Capture Modes
 

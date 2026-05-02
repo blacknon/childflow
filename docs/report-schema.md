@@ -21,6 +21,8 @@ This document describes the current JSON shape of that report.
 | `protocols` | object | Map of protocol name to count |
 | `sorted_protocols` | array | Ranked protocol counts |
 | `top_dns_names` | array | Ranked DNS names with query / answer counts |
+| `dns_target_correlations` | array | Ranked DNS-name to target-IP correlations derived from observed `answer_ips` |
+| `dns_policy_correlations` | array | Ranked DNS-name correlations that also summarize matched blocked domains per resolved answer IP set |
 | `proxy_usage` | object | Counts for proxied vs direct connect attempts |
 | `policy_violations` | object | Map of `reason_code` to count |
 | `sorted_policy_violations` | array | Ranked policy violation counts |
@@ -151,6 +153,7 @@ Each `targets` element currently includes:
 | `connect_ok` | integer | Number of successful `connect_result` events |
 | `connect_error` | integer | Number of error `connect_result` events |
 | `flow_end` | integer | Number of `flow_end` events |
+| `matched_domains` | array | Ranked blocked domains correlated to this target IP from `policy_violation.matched_domain` |
 
 The outer array follows the same ordering as `top_dns_names`. Each nested
 `targets` array is sorted by descending `connect_attempts`, then descending
@@ -166,12 +169,60 @@ Example:
     "answers": 1,
     "answer_ips": ["93.184.216.34"],
     "targets": [
+        {
+          "target": "93.184.216.34:443",
+          "connect_attempts": 2,
+          "connect_ok": 1,
+          "connect_error": 1,
+          "flow_end": 1,
+          "matched_domains": [
+            { "key": "blocked.test", "count": 1 }
+          ]
+        }
+      ]
+    }
+  ]
+```
+
+## `dns_policy_correlations`
+
+Each element currently includes:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `qname` | string | Normalized DNS question name |
+| `queries` | integer | Number of `dns_query` events that carried this name |
+| `answers` | integer | Number of `dns_answer` events that carried this name |
+| `answer_ips` | array of strings | Distinct A / AAAA answer IPs observed for this name |
+| `matched_domains` | array | Ranked blocked domains correlated to those answer IPs from `policy_violation.matched_domain` |
+| `targets` | array | Ranked remote targets whose IP matched one of the observed `answer_ips` |
+
+The outer array follows the same ordering as `top_dns_names`. Each
+`matched_domains` array uses the common ranked-entry shape and is sorted by
+descending `count`, then ascending `key`.
+
+Example:
+
+```json
+"dns_policy_correlations": [
+  {
+    "qname": "example.com",
+    "queries": 2,
+    "answers": 1,
+    "answer_ips": ["93.184.216.34"],
+    "matched_domains": [
+      { "key": "blocked.test", "count": 1 }
+    ],
+    "targets": [
       {
         "target": "93.184.216.34:443",
         "connect_attempts": 2,
         "connect_ok": 1,
         "connect_error": 1,
-        "flow_end": 1
+        "flow_end": 1,
+        "matched_domains": [
+          { "key": "blocked.test", "count": 1 }
+        ]
       }
     ]
   }
@@ -190,6 +241,7 @@ Each element currently includes:
 | `connect_error` | integer | Number of error `connect_result` events |
 | `flow_end` | integer | Number of `flow_end` events |
 | `dns_names` | array of strings | Correlated DNS names whose observed `answer_ips` included this target IP |
+| `matched_domains` | array | Ranked blocked domains correlated to this target IP from `policy_violation.matched_domain` |
 
 The array is currently sorted by descending `connect_attempts`, then descending
 `connect_error`, then descending `connect_ok`, then ascending `target`.
@@ -204,7 +256,10 @@ Example:
     "connect_ok": 1,
     "connect_error": 1,
     "flow_end": 1,
-    "dns_names": ["example.com"]
+    "dns_names": ["example.com"],
+    "matched_domains": [
+      { "key": "blocked.test", "count": 1 }
+    ]
   }
 ]
 ```
@@ -254,7 +309,33 @@ Example:
           "connect_attempts": 0,
           "connect_ok": 0,
           "connect_error": 1,
-          "flow_end": 1
+          "flow_end": 1,
+          "matched_domains": [
+            { "key": "blocked.test", "count": 1 }
+          ]
+        }
+      ]
+    }
+  ],
+  "dns_policy_correlations": [
+    {
+      "qname": "example.com",
+      "queries": 1,
+      "answers": 1,
+      "answer_ips": ["93.184.216.34"],
+      "matched_domains": [
+        { "key": "blocked.test", "count": 1 }
+      ],
+      "targets": [
+        {
+          "target": "93.184.216.34:443",
+          "connect_attempts": 0,
+          "connect_ok": 0,
+          "connect_error": 1,
+          "flow_end": 1,
+          "matched_domains": [
+            { "key": "blocked.test", "count": 1 }
+          ]
         }
       ]
     }
@@ -300,7 +381,10 @@ Example:
       "connect_ok": 0,
       "connect_error": 1,
       "flow_end": 0,
-      "dns_names": ["example.com"]
+      "dns_names": ["example.com"],
+      "matched_domains": [
+        { "key": "blocked.test", "count": 1 }
+      ]
     }
   ]
 }

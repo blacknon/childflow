@@ -47,6 +47,7 @@ pub struct FlowLogReport {
     pub dns_name_counts: BTreeMap<String, DnsNameStats>,
     pub policy_reason_counts: BTreeMap<String, usize>,
     pub policy_matched_domain_counts: BTreeMap<String, usize>,
+    policy_matched_domains_by_ip: BTreeMap<String, BTreeMap<String, usize>>,
     pub connect_error_counts: BTreeMap<String, usize>,
     pub runtime_failure_reason_counts: BTreeMap<String, usize>,
     pub runtime_failure_phase_counts: BTreeMap<String, usize>,
@@ -80,12 +81,29 @@ pub struct DnsTargetCorrelation {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct DnsPolicyCorrelation {
+    pub qname: String,
+    pub queries: usize,
+    pub answers: usize,
+    pub answer_ips: Vec<String>,
+    pub matched_domains: Vec<RankedStringCount>,
+    pub targets: Vec<DnsCorrelatedTarget>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct DnsCorrelatedTarget {
     pub target: String,
     pub connect_attempts: usize,
     pub connect_ok: usize,
     pub connect_error: usize,
     pub flow_end: usize,
+    pub matched_domains: Vec<RankedStringCount>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct RankedStringCount {
+    pub key: String,
+    pub count: usize,
 }
 
 impl FlowLogReport {
@@ -174,6 +192,26 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("dns-policy-correlations:\n");
+        let dns_policy_correlations = self.top_dns_policy_correlations(10, 3);
+        if dns_policy_correlations.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for correlation in dns_policy_correlations {
+                rendered.push_str(&format!(
+                    "  {}: answer_ips={}, matched_domains={}, targets={}\n",
+                    correlation.qname,
+                    if correlation.answer_ips.is_empty() {
+                        "none".to_string()
+                    } else {
+                        correlation.answer_ips.join(", ")
+                    },
+                    render_ranked_string_counts(&correlation.matched_domains),
+                    self.render_dns_target_list(&correlation.targets)
+                ));
+            }
+        }
+
         rendered.push_str("proxy-usage:\n");
         rendered.push_str(&format!(
             "  proxied_connect_attempts: {}\n  direct_connect_attempts: {}\n",
@@ -235,12 +273,13 @@ impl FlowLogReport {
         } else {
             for (target, stats) in self.top_connection_targets(10) {
                 rendered.push_str(&format!(
-                    "  {target}: attempts={}, ok={}, error={}, flow_end={}, dns_names={}\n",
+                    "  {target}: attempts={}, ok={}, error={}, flow_end={}, dns_names={}, matched_domains={}\n",
                     stats.connect_attempts,
                     stats.connect_ok,
                     stats.connect_error,
                     stats.flow_end,
-                    self.render_dns_names_for_target(target)
+                    self.render_dns_names_for_target(target),
+                    self.render_matched_domains_for_target(target, 3)
                 ));
             }
         }
@@ -313,6 +352,29 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("\n## DNS policy correlations\n\n");
+        let dns_policy_correlations = self.top_dns_policy_correlations(10, 3);
+        if dns_policy_correlations.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str(
+                "| DNS name | Answer IPs | Matched domains | Correlated targets |\n| --- | --- | --- | --- |\n",
+            );
+            for correlation in dns_policy_correlations {
+                rendered.push_str(&format!(
+                    "| `{}` | {} | {} | {} |\n",
+                    correlation.qname,
+                    if correlation.answer_ips.is_empty() {
+                        "none".to_string()
+                    } else {
+                        correlation.answer_ips.join(", ")
+                    },
+                    render_ranked_string_counts(&correlation.matched_domains),
+                    self.render_dns_target_list(&correlation.targets)
+                ));
+            }
+        }
+
         rendered.push_str("\n## Proxy usage\n\n");
         rendered.push_str("| Metric | Count |\n| --- | ---: |\n");
         rendered.push_str(&format!(
@@ -379,16 +441,17 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str(
-                "| Target | Attempts | OK | Error | Flow end | DNS names |\n| --- | ---: | ---: | ---: | ---: | --- |\n",
+                "| Target | Attempts | OK | Error | Flow end | DNS names | Matched domains |\n| --- | ---: | ---: | ---: | ---: | --- | --- |\n",
             );
             for (target, stats) in self.top_connection_targets(10) {
                 rendered.push_str(&format!(
-                    "| `{target}` | {} | {} | {} | {} | {} |\n",
+                    "| `{target}` | {} | {} | {} | {} | {} | {} |\n",
                     stats.connect_attempts,
                     stats.connect_ok,
                     stats.connect_error,
                     stats.flow_end,
-                    self.render_dns_names_for_target(target)
+                    self.render_dns_names_for_target(target),
+                    self.render_matched_domains_for_target(target, 3)
                 ));
             }
         }
@@ -478,7 +541,18 @@ impl FlowLogReport {
                     *self.policy_reason_counts.entry(reason).or_default() += 1;
                 }
                 if let Some(domain) = event.matched_domain {
-                    *self.policy_matched_domain_counts.entry(domain).or_default() += 1;
+                    *self
+                        .policy_matched_domain_counts
+                        .entry(domain.clone())
+                        .or_default() += 1;
+                    if let Some(remote_ip) = event.remote_ip {
+                        *self
+                            .policy_matched_domains_by_ip
+                            .entry(remote_ip)
+                            .or_default()
+                            .entry(domain)
+                            .or_default() += 1;
+                    }
                 }
             }
             "runtime_failure" => {
@@ -587,6 +661,20 @@ impl FlowLogReport {
             .collect()
     }
 
+    pub fn matched_domain_entries_for_target(
+        &self,
+        target: &str,
+        limit: usize,
+    ) -> Vec<(&str, usize)> {
+        let Some(ip) = target_ip_string(target) else {
+            return Vec::new();
+        };
+        self.policy_matched_domains_by_ip
+            .get(&ip)
+            .map(|counts| top_count_entries(counts, limit))
+            .unwrap_or_default()
+    }
+
     pub fn correlated_targets_for_dns_name(
         &self,
         qname: &str,
@@ -606,6 +694,14 @@ impl FlowLogReport {
                     connect_ok: target_stats.connect_ok,
                     connect_error: target_stats.connect_error,
                     flow_end: target_stats.flow_end,
+                    matched_domains: self
+                        .matched_domain_entries_for_target(target, usize::MAX)
+                        .into_iter()
+                        .map(|(key, count)| RankedStringCount {
+                            key: key.to_string(),
+                            count,
+                        })
+                        .collect(),
                 })
             })
             .collect::<Vec<_>>();
@@ -638,6 +734,31 @@ impl FlowLogReport {
             .collect()
     }
 
+    pub fn top_dns_policy_correlations(
+        &self,
+        dns_limit: usize,
+        target_limit: usize,
+    ) -> Vec<DnsPolicyCorrelation> {
+        self.top_dns_names(dns_limit)
+            .into_iter()
+            .filter_map(|(qname, stats)| {
+                let targets = self.correlated_targets_for_dns_name(qname, target_limit);
+                let matched_domains = self.matched_domain_entries_for_dns_name(qname, usize::MAX);
+                if targets.is_empty() && matched_domains.is_empty() {
+                    return None;
+                }
+                Some(DnsPolicyCorrelation {
+                    qname: qname.to_string(),
+                    queries: stats.queries,
+                    answers: stats.answers,
+                    answer_ips: stats.answer_ips.iter().cloned().collect(),
+                    matched_domains,
+                    targets,
+                })
+            })
+            .collect()
+    }
+
     fn render_dns_names_for_target(&self, target: &str) -> String {
         let dns_names = self.dns_names_for_target(target);
         if dns_names.is_empty() {
@@ -653,12 +774,13 @@ impl FlowLogReport {
         };
 
         format!(
-            "{target} (attempts={}, ok={}, error={}, flow_end={}, dns_names={})",
+            "{target} (attempts={}, ok={}, error={}, flow_end={}, dns_names={}, matched_domains={})",
             stats.connect_attempts,
             stats.connect_ok,
             stats.connect_error,
             stats.flow_end,
-            self.render_dns_names_for_target(target)
+            self.render_dns_names_for_target(target),
+            self.render_matched_domains_for_target(target, 3)
         )
     }
 
@@ -678,14 +800,53 @@ impl FlowLogReport {
     }
 
     fn render_dns_correlated_target(&self, target: &DnsCorrelatedTarget) -> String {
+        let matched_domains = render_ranked_string_counts(&target.matched_domains);
         format!(
-            "{} (attempts={}, ok={}, error={}, flow_end={})",
+            "{} (attempts={}, ok={}, error={}, flow_end={}, matched_domains={})",
             target.target,
             target.connect_attempts,
             target.connect_ok,
             target.connect_error,
-            target.flow_end
+            target.flow_end,
+            matched_domains
         )
+    }
+
+    fn render_matched_domains_for_target(&self, target: &str, limit: usize) -> String {
+        let counts = self
+            .matched_domain_entries_for_target(target, limit)
+            .into_iter()
+            .map(|(key, count)| RankedStringCount {
+                key: key.to_string(),
+                count,
+            })
+            .collect::<Vec<_>>();
+        render_ranked_string_counts(&counts)
+    }
+
+    pub fn matched_domain_entries_for_dns_name(
+        &self,
+        qname: &str,
+        limit: usize,
+    ) -> Vec<RankedStringCount> {
+        let Some(stats) = self.dns_name_counts.get(qname) else {
+            return Vec::new();
+        };
+        let mut counts = BTreeMap::new();
+        for ip in &stats.answer_ips {
+            if let Some(per_ip) = self.policy_matched_domains_by_ip.get(ip) {
+                for (domain, count) in per_ip {
+                    *counts.entry(domain.clone()).or_insert(0) += count;
+                }
+            }
+        }
+        top_count_entries(&counts, limit)
+            .into_iter()
+            .map(|(key, count)| RankedStringCount {
+                key: key.to_string(),
+                count,
+            })
+            .collect()
     }
 
     pub fn render_policy_violations_compact(&self, limit: usize) -> String {
@@ -828,6 +989,11 @@ impl FlowLogReport {
                 .expect("dns_target_correlations should serialize"),
         );
         root.insert(
+            observability_report::DNS_POLICY_CORRELATIONS.to_string(),
+            serde_json::to_value(self.top_dns_policy_correlations(10, 3))
+                .expect("dns_policy_correlations should serialize"),
+        );
+        root.insert(
             observability_report::PROXY_USAGE.to_string(),
             serde_json::json!({
                 "proxied_connect_attempts": self.proxied_connect_attempts,
@@ -896,6 +1062,11 @@ impl FlowLogReport {
                         connect_error: stats.connect_error,
                         flow_end: stats.flow_end,
                         dns_names: self.dns_names_for_target(target),
+                        matched_domains: self
+                            .matched_domain_entries_for_target(target, usize::MAX)
+                            .into_iter()
+                            .map(|(key, count)| JsonCountEntry { key, count })
+                            .collect(),
                     })
                     .collect::<Vec<_>>(),
             )
@@ -915,12 +1086,13 @@ impl FlowLogReport {
 
         if let Some((target, stats)) = self.top_connection_targets(1).into_iter().next() {
             lines.push(format!(
-                "- top connection target: `{target}` (attempts={}, ok={}, error={}, flow_end={}, dns_names={})",
+                "- top connection target: `{target}` (attempts={}, ok={}, error={}, flow_end={}, dns_names={}, matched_domains={})",
                 stats.connect_attempts,
                 stats.connect_ok,
                 stats.connect_error,
                 stats.flow_end,
-                self.render_dns_names_for_target(target)
+                self.render_dns_names_for_target(target),
+                self.render_matched_domains_for_target(target, 3)
             ));
         } else {
             lines.push("- top connection target: none".to_string());
@@ -950,6 +1122,22 @@ impl FlowLogReport {
             ));
         } else {
             lines.push("- top DNS target correlation: none".to_string());
+        }
+
+        if let Some(correlation) = self.top_dns_policy_correlations(1, 1).into_iter().next() {
+            lines.push(format!(
+                "- top DNS policy correlation: `{}` (answer_ips={}, matched_domains={}, targets={})",
+                correlation.qname,
+                if correlation.answer_ips.is_empty() {
+                    "none".to_string()
+                } else {
+                    correlation.answer_ips.join(", ")
+                },
+                render_ranked_string_counts(&correlation.matched_domains),
+                self.render_dns_target_list(&correlation.targets)
+            ));
+        } else {
+            lines.push("- top DNS policy correlation: none".to_string());
         }
 
         lines.push(self.render_markdown_count_highlight(
@@ -1024,6 +1212,8 @@ struct FlowLogLine {
     #[serde(default)]
     remote: Option<String>,
     #[serde(default)]
+    remote_ip: Option<String>,
+    #[serde(default)]
     via_proxy: Option<bool>,
     #[serde(default)]
     status: Option<String>,
@@ -1045,6 +1235,7 @@ struct JsonConnectionTarget<'a> {
     connect_error: usize,
     flow_end: usize,
     dns_names: Vec<String>,
+    matched_domains: Vec<JsonCountEntry<'a>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1066,6 +1257,18 @@ fn json_count_entries<'a>(counts: &'a BTreeMap<String, usize>) -> Vec<JsonCountE
         .into_iter()
         .map(|(key, count)| JsonCountEntry { key, count })
         .collect()
+}
+
+fn render_ranked_string_counts(entries: &[RankedStringCount]) -> String {
+    if entries.is_empty() {
+        "none".to_string()
+    } else {
+        entries
+            .iter()
+            .map(|entry| format!("{}={}", entry.key, entry.count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 #[cfg(test)]
@@ -1133,6 +1336,7 @@ mod tests {
             )]),
             policy_reason_counts: BTreeMap::new(),
             policy_matched_domain_counts: BTreeMap::new(),
+            policy_matched_domains_by_ip: BTreeMap::new(),
             connect_error_counts: BTreeMap::new(),
             runtime_failure_reason_counts: BTreeMap::new(),
             runtime_failure_phase_counts: BTreeMap::new(),
@@ -1163,7 +1367,10 @@ mod tests {
         assert!(rendered.contains("example.com: queries=1, answers=1, answer_ips=93.184.216.34"));
         assert!(rendered.contains("dns-target-correlations:"));
         assert!(rendered.contains(
-            "example.com: answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0)"
+            "example.com: answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=none)"
+        ));
+        assert!(rendered.contains(
+            "dns-policy-correlations:\n  example.com: answer_ips=93.184.216.34, matched_domains=none, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=none)"
         ));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
@@ -1200,6 +1407,10 @@ mod tests {
             )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
             policy_matched_domain_counts: BTreeMap::from([("blocked.test".into(), 1)]),
+            policy_matched_domains_by_ip: BTreeMap::from([(
+                "93.184.216.34".into(),
+                BTreeMap::from([("blocked.test".into(), 1)]),
+            )]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
             runtime_failure_phase_counts: BTreeMap::from([("child_bootstrap".into(), 1)]),
@@ -1220,13 +1431,16 @@ mod tests {
         assert!(rendered.contains("# childflow report"));
         assert!(rendered.contains("## Highlights"));
         assert!(rendered.contains(
-            "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0, dns_names=example.com)"
+            "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0, dns_names=example.com, matched_domains=blocked.test=1)"
         ));
         assert!(rendered.contains(
-            "- top DNS name: `example.com` (queries=2, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0))"
+            "- top DNS name: `example.com` (queries=2, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=blocked.test=1))"
         ));
         assert!(rendered.contains(
-            "- top DNS target correlation: `example.com` -> 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0)"
+            "- top DNS target correlation: `example.com` -> 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=blocked.test=1)"
+        ));
+        assert!(rendered.contains(
+            "- top DNS policy correlation: `example.com` (answer_ips=93.184.216.34, matched_domains=blocked.test=1, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=blocked.test=1))"
         ));
         assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
         assert!(rendered.contains("- most common matched domain: `blocked.test` (1)"));
@@ -1238,14 +1452,18 @@ mod tests {
         assert!(rendered.contains("| tcp | 3 |"));
         assert!(rendered.contains("| `example.com` | 2 | 1 | 93.184.216.34 |"));
         assert!(rendered.contains(
-            "| `example.com` | 93.184.216.34 | 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0) |"
+            "| `example.com` | 93.184.216.34 | 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=blocked.test=1) |"
+        ));
+        assert!(rendered.contains(
+            "| `example.com` | 93.184.216.34 | blocked.test=1 | 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=blocked.test=1) |"
         ));
         assert!(rendered.contains("| proxy_only | 1 |"));
         assert!(rendered.contains("| `blocked.test` | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
         assert!(rendered.contains("| child_bootstrap | 1 |"));
-        assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 | example.com |"));
+        assert!(rendered
+            .contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 | example.com | blocked.test=1 |"));
         Ok(())
     }
 
@@ -1273,6 +1491,10 @@ mod tests {
             )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
             policy_matched_domain_counts: BTreeMap::from([("blocked.test".into(), 1)]),
+            policy_matched_domains_by_ip: BTreeMap::from([(
+                "93.184.216.34".into(),
+                BTreeMap::from([("blocked.test".into(), 1)]),
+            )]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
             runtime_failure_phase_counts: BTreeMap::from([("child_bootstrap".into(), 1)]),
@@ -1308,8 +1530,16 @@ mod tests {
             "93.184.216.34:443"
         );
         assert_eq!(
+            json["dns_policy_correlations"][0]["matched_domains"][0],
+            serde_json::json!({"key":"blocked.test","count":1})
+        );
+        assert_eq!(
             json["top_connection_targets"][0]["dns_names"],
             serde_json::json!(["example.com"])
+        );
+        assert_eq!(
+            json["top_connection_targets"][0]["matched_domains"][0],
+            serde_json::json!({"key":"blocked.test","count":1})
         );
         assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
         assert_eq!(json["policy_violations"]["proxy_only"], 1);
@@ -1429,7 +1659,7 @@ mod tests {
         );
         assert_eq!(
             report.render_top_dns_name_compact(),
-            "example.com (queries=2, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=1, error=0, flow_end=1))"
+            "example.com (queries=2, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=1, error=0, flow_end=1, matched_domains=none))"
         );
         assert_eq!(
             report.dns_names_for_target("93.184.216.34:443"),
@@ -1443,6 +1673,7 @@ mod tests {
                 connect_ok: 1,
                 connect_error: 0,
                 flow_end: 1,
+                matched_domains: Vec::new(),
             }]
         );
 
@@ -1510,6 +1741,10 @@ mod tests {
                 ("blocked.test".into(), 2),
                 ("example.com".into(), 1),
             ]),
+            policy_matched_domains_by_ip: BTreeMap::from([(
+                "93.184.216.34".into(),
+                BTreeMap::from([("blocked.test".into(), 2), ("example.com".into(), 1)]),
+            )]),
             connect_error_counts: BTreeMap::from([
                 ("connection refused".into(), 2),
                 ("timed out".into(), 1),
@@ -1536,11 +1771,22 @@ mod tests {
 
         assert_eq!(
             report.render_top_target_compact(),
-            "93.184.216.34:443 (attempts=3, ok=1, error=2, flow_end=1, dns_names=example.com)"
+            "93.184.216.34:443 (attempts=3, ok=1, error=2, flow_end=1, dns_names=example.com, matched_domains=blocked.test=2, example.com=1)"
         );
         assert_eq!(
             report.render_top_dns_name_compact(),
-            "example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=3, ok=1, error=2, flow_end=1))"
+            "example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=3, ok=1, error=2, flow_end=1, matched_domains=blocked.test=2, example.com=1))"
+        );
+        assert_eq!(
+            report
+                .matched_domain_entries_for_dns_name("example.com", 3)
+                .into_iter()
+                .map(|entry| (entry.key, entry.count))
+                .collect::<Vec<_>>(),
+            vec![
+                ("blocked.test".to_string(), 2),
+                ("example.com".to_string(), 1),
+            ]
         );
         assert_eq!(
             report.render_policy_violations_compact(2),

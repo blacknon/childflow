@@ -124,6 +124,7 @@ Example:
 | `connect_error` | integer | Number of error `connect_result` events |
 | `flow_end` | integer | Number of `flow_end` events |
 | `dns_names` | array of strings | Correlated DNS names whose observed `answer_ips` included this target IP |
+| `matched_domains` | array | Ranked blocked domains correlated to this target IP from `policy_violation.matched_domain` |
 
 Example:
 
@@ -134,7 +135,10 @@ Example:
   "connect_ok": 0,
   "connect_error": 1,
   "flow_end": 1,
-  "dns_names": ["example.com"]
+  "dns_names": ["example.com"],
+  "matched_domains": [
+    { "key": "blocked.test", "count": 1 }
+  ]
 }
 ```
 
@@ -157,6 +161,7 @@ Each `targets` element currently includes:
 | `connect_ok` | integer | Number of successful `connect_result` events |
 | `connect_error` | integer | Number of error `connect_result` events |
 | `flow_end` | integer | Number of `flow_end` events |
+| `matched_domains` | array | Ranked blocked domains correlated to this target IP from `policy_violation.matched_domain` |
 
 Example:
 
@@ -219,7 +224,10 @@ Example:
           "connect_attempts": 0,
           "connect_ok": 0,
           "connect_error": 1,
-          "flow_end": 1
+          "flow_end": 1,
+          "matched_domains": [
+            { "key": "blocked.test", "count": 1 }
+          ]
         }
       ]
     },
@@ -229,7 +237,10 @@ Example:
       "connect_ok": 0,
       "connect_error": 1,
       "flow_end": 1,
-      "dns_names": ["example.com"]
+      "dns_names": ["example.com"],
+      "matched_domains": [
+        { "key": "blocked.test", "count": 1 }
+      ]
     },
     "policy_violations": [
       { "key": "deny_cidr", "count": 1 }

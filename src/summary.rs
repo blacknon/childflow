@@ -304,6 +304,9 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                     connect_error: stats.connect_error,
                     flow_end: stats.flow_end,
                     dns_names: report.dns_names_for_target(target),
+                    matched_domains: count_entries_to_json(
+                        report.matched_domain_entries_for_target(target, 3),
+                    ),
                 },
             ),
             policy_violations: count_entries_to_json(report.policy_violation_entries(3)),
@@ -401,6 +404,7 @@ struct SummaryTopTarget {
     connect_error: usize,
     flow_end: usize,
     dns_names: Vec<String>,
+    matched_domains: Vec<SummaryCountEntry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -548,10 +552,10 @@ mod tests {
         assert!(rendered.contains("flow_end=1"));
         assert!(rendered.contains("runtime_failure=1"));
         assert!(rendered.contains(
-            "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1))"
+            "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, matched_domains=none))"
         ));
         assert!(rendered.contains(
-            "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, dns_names=example.com)"
+            "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, dns_names=example.com, matched_domains=none)"
         ));
         assert!(rendered.contains("flow-log policy violations: deny_cidr=1"));
         assert!(rendered.contains("flow-log policy matched domains: blocked.test=1"));
