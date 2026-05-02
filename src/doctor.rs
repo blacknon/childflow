@@ -8,8 +8,9 @@ use std::fs::OpenOptions;
 use std::path::Path;
 
 use anyhow::Result;
+use serde::Serialize;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, DoctorFormat};
 use crate::network::NetworkBackend;
 use crate::preflight::{self, CheckStatus};
 
@@ -24,33 +25,48 @@ pub fn run(cli: &Cli) -> Result<i32> {
         "ready"
     };
 
-    println!("childflow doctor");
-    println!("backend: {}", report.backend_name());
-    println!(
-        "user: uid {} / euid {}",
-        unsafe { nix::libc::getuid() },
-        unsafe { nix::libc::geteuid() }
-    );
-    println!("status: {status_line}");
-    println!();
+    match cli.doctor_format {
+        DoctorFormat::Text => {
+            println!("childflow doctor");
+            println!("backend: {}", report.backend_name());
+            println!(
+                "user: uid {} / euid {}",
+                unsafe { nix::libc::getuid() },
+                unsafe { nix::libc::geteuid() }
+            );
+            println!("status: {status_line}");
+            println!();
 
-    println!("capabilities");
-    for capability in capability_report.checks() {
-        println!(
-            "[{}] {}",
-            render_capability_status(&capability.status),
-            capability.label
-        );
-        println!("  {}", capability.detail);
-    }
-    println!();
+            println!("capabilities");
+            for capability in capability_report.checks() {
+                println!(
+                    "[{}] {}",
+                    render_capability_status(&capability.status),
+                    capability.label
+                );
+                println!("  {}", capability.detail);
+            }
+            println!();
 
-    println!("preflight");
-    for check in report.checks() {
-        println!("[{}] {}", render_status(&check.status), check.label);
-        println!("  {}", check.detail);
-        if let Some(hint) = &check.hint {
-            println!("  hint: {hint}");
+            println!("preflight");
+            for check in report.checks() {
+                println!("[{}] {}", render_status(&check.status), check.label);
+                println!("  {}", check.detail);
+                if let Some(hint) = &check.hint {
+                    println!("  hint: {hint}");
+                }
+            }
+        }
+        DoctorFormat::Json => {
+            let json = DoctorJsonReport::from_reports(
+                report.backend_name().to_string(),
+                status_line.to_string(),
+                unsafe { nix::libc::getuid() },
+                unsafe { nix::libc::geteuid() },
+                &capability_report,
+                report.checks(),
+            );
+            println!("{}", serde_json::to_string_pretty(&json)?);
         }
     }
 
@@ -74,6 +90,7 @@ enum CapabilityStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CapabilityCheck {
+    key: &'static str,
     label: String,
     status: CapabilityStatus,
     detail: String,
@@ -87,11 +104,13 @@ struct CapabilityReport {
 impl CapabilityReport {
     fn push(
         &mut self,
+        key: &'static str,
         label: impl Into<String>,
         status: CapabilityStatus,
         detail: impl Into<String>,
     ) {
         self.checks.push(CapabilityCheck {
+            key,
             label: label.into(),
             status,
             detail: detail.into(),
@@ -116,12 +135,14 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     let euid = unsafe { nix::libc::geteuid() };
     if euid == 0 {
         report.push(
+            "root_privileges",
             "root privileges",
             CapabilityStatus::Available,
             "running as root for the selected backend",
         );
     } else {
         report.push(
+            "root_privileges",
             "root privileges",
             CapabilityStatus::Unavailable,
             "the `rootful` backend needs root on Linux",
@@ -131,12 +152,14 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     let missing_commands = missing_commands(&["ip", "iptables", "ip6tables"]);
     if missing_commands.is_empty() {
         report.push(
+            "external_commands",
             "external commands",
             CapabilityStatus::Available,
             "found `ip`, `iptables`, and `ip6tables` in PATH",
         );
     } else {
         report.push(
+            "external_commands",
             "external commands",
             CapabilityStatus::Unavailable,
             format!("missing required commands: {}", missing_commands.join(", ")),
@@ -149,12 +172,14 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     ]);
     if unwritable_sysctls.is_empty() {
         report.push(
+            "forwarding_sysctls",
             "forwarding sysctls",
             CapabilityStatus::Available,
             "required IPv4 and IPv6 forwarding sysctls are writable",
         );
     } else {
         report.push(
+            "forwarding_sysctls",
             "forwarding sysctls",
             CapabilityStatus::Unavailable,
             format!(
@@ -165,7 +190,12 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     }
 
     let (packet_status, packet_detail) = inspect_af_packet_capability();
-    report.push("AF_PACKET capture", packet_status, packet_detail);
+    report.push(
+        "af_packet_capture",
+        "AF_PACKET capture",
+        packet_status,
+        packet_detail,
+    );
 
     report
 }
@@ -177,12 +207,14 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     let missing_required_commands = missing_commands(&["ip"]);
     if missing_required_commands.is_empty() {
         report.push(
+            "external_commands",
             "external commands",
             CapabilityStatus::Available,
             "found `ip` in PATH",
         );
     } else {
         report.push(
+            "external_commands",
             "external commands",
             CapabilityStatus::Unavailable,
             format!(
@@ -196,12 +228,14 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     let missing_handles = missing_paths(&namespace_handles);
     if missing_handles.is_empty() {
         report.push(
+            "namespace_handles",
             "namespace handles",
             CapabilityStatus::Available,
             "found `/proc/self/ns/{user,net,mnt}` for rootless setup",
         );
     } else {
         report.push(
+            "namespace_handles",
             "namespace handles",
             CapabilityStatus::Unavailable,
             format!("missing namespace handles: {}", missing_handles.join(", ")),
@@ -210,16 +244,19 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
 
     match read_proc_u64("/proc/sys/user/max_user_namespaces") {
         Some(0) => report.push(
+            "user_namespace_quota",
             "user namespace quota",
             CapabilityStatus::Unavailable,
             "`/proc/sys/user/max_user_namespaces` is `0`",
         ),
         Some(value) => report.push(
+            "user_namespace_quota",
             "user namespace quota",
             CapabilityStatus::Available,
             format!("`/proc/sys/user/max_user_namespaces` is set to {value}"),
         ),
         None => report.push(
+            "user_namespace_quota",
             "user namespace quota",
             CapabilityStatus::Limited,
             "`/proc/sys/user/max_user_namespaces` is unavailable in this environment",
@@ -228,6 +265,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
 
     if euid == 0 {
         report.push(
+            "unprivileged_user_namespaces",
             "unprivileged user namespaces",
             CapabilityStatus::Available,
             "running as root, so the non-root clone gate does not apply",
@@ -235,16 +273,19 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     } else {
         match read_proc_u64("/proc/sys/kernel/unprivileged_userns_clone") {
             Some(0) => report.push(
+                "unprivileged_user_namespaces",
                 "unprivileged user namespaces",
                 CapabilityStatus::Unavailable,
                 "`/proc/sys/kernel/unprivileged_userns_clone` is disabled",
             ),
             Some(_) => report.push(
+                "unprivileged_user_namespaces",
                 "unprivileged user namespaces",
                 CapabilityStatus::Available,
                 "unprivileged user namespace cloning is enabled",
             ),
             None => report.push(
+                "unprivileged_user_namespaces",
                 "unprivileged user namespaces",
                 CapabilityStatus::Limited,
                 "`/proc/sys/kernel/unprivileged_userns_clone` is unavailable in this environment",
@@ -253,6 +294,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     }
 
     report.push(
+        "apparmor_userns_policy",
         "AppArmor userns policy",
         inspect_apparmor_userns_capability(euid),
         render_apparmor_userns_detail(euid),
@@ -260,11 +302,13 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
 
     if euid == 0 {
         report.push(
+            "uidmap_helpers",
             "uidmap helpers",
             CapabilityStatus::Available,
             "running as root, so `newuidmap` / `newgidmap` fallback is not required",
         );
         report.push(
+            "subuid_subgid_entries",
             "subuid/subgid entries",
             CapabilityStatus::Available,
             "running as root, so subordinate id mappings are not required",
@@ -273,12 +317,14 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
         let missing_uidmap_helpers = missing_commands(&["newuidmap", "newgidmap"]);
         if missing_uidmap_helpers.is_empty() {
             report.push(
+                "uidmap_helpers",
                 "uidmap helpers",
                 CapabilityStatus::Available,
                 "found `newuidmap` and `newgidmap` for helper-based id mapping",
             );
         } else {
             report.push(
+                "uidmap_helpers",
                 "uidmap helpers",
                 CapabilityStatus::Limited,
                 format!(
@@ -293,6 +339,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
         let subgid_present = subid_entry_exists("/etc/subgid", &username);
         if subuid_present && subgid_present {
             report.push(
+                "subuid_subgid_entries",
                 "subuid/subgid entries",
                 CapabilityStatus::Available,
                 format!("found subordinate id mappings for `{username}`"),
@@ -306,6 +353,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
                 missing_locations.push("`/etc/subgid`");
             }
             report.push(
+                "subuid_subgid_entries",
                 "subuid/subgid entries",
                 CapabilityStatus::Limited,
                 format!(
@@ -317,10 +365,15 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     }
 
     let (tun_status, tun_detail) = inspect_tun_capability();
-    report.push("TUN/TAP device", tun_status, tun_detail);
+    report.push("tun_tap_device", "TUN/TAP device", tun_status, tun_detail);
 
     let (packet_status, packet_detail) = inspect_af_packet_capability();
-    report.push("AF_PACKET capture", packet_status, packet_detail);
+    report.push(
+        "af_packet_capture",
+        "AF_PACKET capture",
+        packet_status,
+        packet_detail,
+    );
 
     report
 }
@@ -476,6 +529,97 @@ fn render_capability_status(status: &CapabilityStatus) -> &'static str {
     }
 }
 
+#[derive(Serialize)]
+struct DoctorJsonReport {
+    backend: String,
+    uid: u32,
+    euid: u32,
+    status: String,
+    capabilities: Vec<DoctorJsonCapability>,
+    preflight: Vec<DoctorJsonPreflightCheck>,
+}
+
+impl DoctorJsonReport {
+    fn from_reports(
+        backend: String,
+        status: String,
+        uid: u32,
+        euid: u32,
+        capability_report: &CapabilityReport,
+        preflight_checks: &[preflight::PreflightCheck],
+    ) -> Self {
+        Self {
+            backend,
+            uid,
+            euid,
+            status,
+            capabilities: capability_report
+                .checks()
+                .iter()
+                .map(DoctorJsonCapability::from_check)
+                .collect(),
+            preflight: preflight_checks
+                .iter()
+                .map(DoctorJsonPreflightCheck::from_check)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DoctorJsonCapability {
+    key: String,
+    label: String,
+    status: String,
+    detail: String,
+}
+
+impl DoctorJsonCapability {
+    fn from_check(check: &CapabilityCheck) -> Self {
+        Self {
+            key: check.key.to_string(),
+            label: check.label.clone(),
+            status: render_capability_status_json(&check.status).to_string(),
+            detail: check.detail.clone(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DoctorJsonPreflightCheck {
+    label: String,
+    status: String,
+    detail: String,
+    hint: Option<String>,
+}
+
+impl DoctorJsonPreflightCheck {
+    fn from_check(check: &preflight::PreflightCheck) -> Self {
+        Self {
+            label: check.label.clone(),
+            status: render_status_json(&check.status).to_string(),
+            detail: check.detail.clone(),
+            hint: check.hint.clone(),
+        }
+    }
+}
+
+fn render_status_json(status: &CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Ok => "ok",
+        CheckStatus::Warning => "warning",
+        CheckStatus::Fatal => "fatal",
+    }
+}
+
+fn render_capability_status_json(status: &CapabilityStatus) -> &'static str {
+    match status {
+        CapabilityStatus::Available => "available",
+        CapabilityStatus::Limited => "limited",
+        CapabilityStatus::Unavailable => "unavailable",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +638,37 @@ mod tests {
     fn apparmor_userns_restriction_reports_limited_for_non_root() {
         let detail = render_apparmor_userns_detail(1000);
         assert!(!detail.is_empty());
+    }
+
+    #[test]
+    fn doctor_json_report_uses_stable_status_strings() {
+        let mut capabilities = CapabilityReport::default();
+        capabilities.push(
+            "tun_tap_device",
+            "TUN/TAP device",
+            CapabilityStatus::Limited,
+            "not available in test",
+        );
+        let preflight = vec![preflight::PreflightCheck {
+            label: "external commands".to_string(),
+            status: CheckStatus::Warning,
+            detail: "missing helper".to_string(),
+            hint: Some("install it".to_string()),
+        }];
+
+        let report = DoctorJsonReport::from_reports(
+            "rootless-internal".to_string(),
+            "ready with warnings".to_string(),
+            1000,
+            1000,
+            &capabilities,
+            &preflight,
+        );
+
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(value["status"], "ready with warnings");
+        assert_eq!(value["capabilities"][0]["key"], "tun_tap_device");
+        assert_eq!(value["capabilities"][0]["status"], "limited");
+        assert_eq!(value["preflight"][0]["status"], "warning");
     }
 }

@@ -388,6 +388,7 @@ command = ["ping", "-c", "1", "1.1.1.1"]
             output_view: OutputView::Both,
             root: false,
             doctor: false,
+            doctor_format: crate::cli::DoctorFormat::Text,
             report: None,
             report_format: crate::cli::ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,

@@ -46,6 +46,10 @@ struct RawCli {
     #[arg(long = "doctor")]
     doctor: bool,
 
+    /// Select the output format for `--doctor`.
+    #[arg(long = "doctor-format", value_enum)]
+    doctor_format: Option<DoctorFormat>,
+
     /// Read a structured flow log and print a text report.
     #[arg(long = "report")]
     report: Option<PathBuf>,
@@ -137,6 +141,7 @@ pub struct Cli {
     pub output_view: OutputView,
     pub root: bool,
     pub doctor: bool,
+    pub doctor_format: DoctorFormat,
     pub report: Option<PathBuf>,
     pub report_format: ReportFormat,
     pub network_backend: NetworkBackend,
@@ -253,6 +258,7 @@ impl Cli {
                 .unwrap_or(OutputView::Child),
             root: false,
             doctor: raw.doctor,
+            doctor_format: DoctorFormat::Text,
             report: raw.report,
             report_format: ReportFormat::Text,
             network_backend: profile
@@ -305,6 +311,9 @@ impl Cli {
         }
         if let Some(value) = raw.network_backend {
             cli.network_backend = value;
+        }
+        if let Some(value) = raw.doctor_format {
+            cli.doctor_format = value;
         }
         if let Some(value) = raw.report_format {
             cli.report_format = value;
@@ -503,6 +512,13 @@ pub enum ReportFormat {
     Markdown,
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum DoctorFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -517,6 +533,7 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            doctor_format: DoctorFormat::Text,
             report: None,
             report_format: ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
@@ -970,6 +987,15 @@ command = ["curl", "https://example.com"]
         };
 
         assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn parse_accepts_doctor_format_flag() {
+        let cli = Cli::parse_from(["childflow", "--doctor", "--doctor-format", "json"]);
+
+        assert!(cli.doctor);
+        assert_eq!(cli.doctor_format, DoctorFormat::Json);
+        assert!(cli.command.is_empty());
     }
 
     fn unique_temp_profile_dir(prefix: &str) -> PathBuf {

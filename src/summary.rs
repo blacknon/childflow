@@ -134,7 +134,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::cli::{DefaultPolicy, ProxySpec};
+    use crate::cli::{DefaultPolicy, DoctorFormat, ProxySpec};
     use crate::network::NetworkBackend;
 
     fn make_cli() -> Cli {
@@ -144,6 +144,7 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            doctor_format: DoctorFormat::Text,
             report: None,
             report_format: crate::cli::ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,

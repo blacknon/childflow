@@ -63,7 +63,7 @@ fn render_scheme(scheme: ProxyScheme) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, DefaultPolicy};
+    use crate::cli::{Cli, DefaultPolicy, DoctorFormat};
     use crate::network::NetworkBackend;
 
     fn base_cli() -> Cli {
@@ -73,6 +73,7 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            doctor_format: DoctorFormat::Text,
             report: None,
             report_format: crate::cli::ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
