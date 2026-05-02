@@ -39,6 +39,7 @@ pub struct FlowLogReport {
     pub schema_versions: BTreeSet<u32>,
     pub protocol_counts: BTreeMap<String, usize>,
     pub policy_reason_counts: BTreeMap<String, usize>,
+    pub connect_error_counts: BTreeMap<String, usize>,
     pub connection_targets: BTreeMap<String, ConnectionTargetStats>,
     pub proxied_connect_attempts: usize,
     pub direct_connect_attempts: usize,
@@ -115,11 +116,20 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("connect-errors:\n");
+        if self.connect_error_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (error, count) in &self.connect_error_counts {
+                rendered.push_str(&format!("  {error}: {count}\n"));
+            }
+        }
+
         rendered.push_str("top-connection-targets:\n");
         if self.connection_targets.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (target, stats) in self.connection_targets.iter().take(10) {
+            for (target, stats) in self.top_connection_targets(10) {
                 rendered.push_str(&format!(
                     "  {target}: attempts={}, ok={}, error={}, flow_end={}\n",
                     stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
@@ -172,12 +182,22 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("\n## Connect errors\n\n");
+        if self.connect_error_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Error | Count |\n| --- | ---: |\n");
+            for (error, count) in &self.connect_error_counts {
+                rendered.push_str(&format!("| {error} | {count} |\n"));
+            }
+        }
+
         rendered.push_str("\n## Top connection targets\n\n");
         if self.connection_targets.is_empty() {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Target | Attempts | OK | Error | Flow end |\n| --- | ---: | ---: | ---: | ---: |\n");
-            for (target, stats) in self.connection_targets.iter().take(10) {
+            for (target, stats) in self.top_connection_targets(10) {
                 rendered.push_str(&format!(
                     "| `{target}` | {} | {} | {} | {} |\n",
                     stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
@@ -234,7 +254,12 @@ impl FlowLogReport {
                     let stats = self.connection_targets.entry(target).or_default();
                     match event.status.as_deref() {
                         Some("ok") => stats.connect_ok += 1,
-                        Some("error") => stats.connect_error += 1,
+                        Some("error") => {
+                            stats.connect_error += 1;
+                            if let Some(error) = event.error {
+                                *self.connect_error_counts.entry(error).or_default() += 1;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -266,6 +291,24 @@ impl FlowLogReport {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    fn top_connection_targets(&self, limit: usize) -> Vec<(&str, &ConnectionTargetStats)> {
+        let mut entries = self
+            .connection_targets
+            .iter()
+            .map(|(target, stats)| (target.as_str(), stats))
+            .collect::<Vec<_>>();
+        entries.sort_by(|(left_target, left_stats), (right_target, right_stats)| {
+            right_stats
+                .connect_attempts
+                .cmp(&left_stats.connect_attempts)
+                .then_with(|| right_stats.connect_error.cmp(&left_stats.connect_error))
+                .then_with(|| right_stats.connect_ok.cmp(&left_stats.connect_ok))
+                .then_with(|| left_target.cmp(right_target))
+        });
+        entries.truncate(limit);
+        entries
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,6 +326,8 @@ struct FlowLogLine {
     via_proxy: Option<bool>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
     #[serde(default)]
     reason_code: Option<String>,
 }
@@ -343,6 +388,7 @@ mod tests {
                 ("udp".into(), 2),
             ]),
             policy_reason_counts: BTreeMap::new(),
+            connect_error_counts: BTreeMap::new(),
             connection_targets: BTreeMap::from([(
                 "93.184.216.34:443".into(),
                 ConnectionTargetStats {
@@ -367,6 +413,7 @@ mod tests {
         assert!(rendered.contains("tcp: 2"));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
+        assert!(rendered.contains("connect-errors:\n  <none>"));
         assert!(rendered.contains("top-connection-targets:"));
         assert!(rendered.contains("93.184.216.34:443: attempts=1, ok=1"));
         Ok(())
@@ -386,6 +433,7 @@ mod tests {
             schema_versions: BTreeSet::from([1]),
             protocol_counts: BTreeMap::from([("tcp".into(), 3)]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
+            connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             connection_targets: BTreeMap::from([(
                 "93.184.216.34:443".into(),
                 ConnectionTargetStats {
@@ -404,6 +452,7 @@ mod tests {
         assert!(rendered.contains("| total | 3 |"));
         assert!(rendered.contains("| tcp | 3 |"));
         assert!(rendered.contains("| proxy_only | 1 |"));
+        assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 |"));
         Ok(())
     }
@@ -418,7 +467,7 @@ mod tests {
                 "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\",\"via_proxy\":true,\"status\":\"ok\"}\n",
                 "{\"schema_version\":1,\"event\":\"flow_end\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\"}\n",
                 "{\"schema_version\":1,\"event\":\"connect_attempt\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false}\n",
-                "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false,\"status\":\"error\"}\n",
+                "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false,\"status\":\"error\",\"error\":\"connection refused\"}\n",
                 "{\"schema_version\":1,\"event\":\"policy_violation\",\"protocol\":\"tcp\",\"remote\":\"10.0.0.1:443\",\"reason_code\":\"deny_cidr\"}\n"
             ),
         )?;
@@ -427,6 +476,10 @@ mod tests {
         assert_eq!(report.proxied_connect_attempts, 1);
         assert_eq!(report.direct_connect_attempts, 1);
         assert_eq!(report.policy_reason_counts.get("deny_cidr"), Some(&1));
+        assert_eq!(
+            report.connect_error_counts.get("connection refused"),
+            Some(&1)
+        );
         assert_eq!(
             report.connection_targets.get("93.184.216.34:443"),
             Some(&ConnectionTargetStats {
@@ -448,6 +501,47 @@ mod tests {
 
         let _ = fs::remove_file(path);
         Ok(())
+    }
+
+    #[test]
+    fn flow_log_report_sorts_top_targets_by_activity() {
+        let report = FlowLogReport {
+            connection_targets: BTreeMap::from([
+                (
+                    "b.example:443".into(),
+                    ConnectionTargetStats {
+                        connect_attempts: 1,
+                        connect_ok: 1,
+                        connect_error: 0,
+                        flow_end: 1,
+                    },
+                ),
+                (
+                    "a.example:443".into(),
+                    ConnectionTargetStats {
+                        connect_attempts: 3,
+                        connect_ok: 2,
+                        connect_error: 1,
+                        flow_end: 2,
+                    },
+                ),
+                (
+                    "c.example:443".into(),
+                    ConnectionTargetStats {
+                        connect_attempts: 2,
+                        connect_ok: 0,
+                        connect_error: 2,
+                        flow_end: 0,
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let top = report.top_connection_targets(3);
+        assert_eq!(top[0].0, "a.example:443");
+        assert_eq!(top[1].0, "c.example:443");
+        assert_eq!(top[2].0, "b.example:443");
     }
 
     fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {
