@@ -25,7 +25,12 @@ It has two Linux backends: `rootless-internal` for the default day-to-day path, 
 
 ## Examples
 
-<table>
+<table width="100%">
+  <colgroup>
+    <col width="33%" />
+    <col width="33%" />
+    <col width="33%" />
+  </colgroup>
   <tr>
     <td valign="top" width="33%">
       <img src="./img/childflow-proxy-demo.gif" alt="childflow proxy and capture example" width="100%" /><br />
