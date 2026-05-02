@@ -26,7 +26,14 @@ on:
 
 jobs:
   demo-test:
-    runs-on: ubuntu-24.04
+    name: Demo Test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-22.04
+          - ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -47,7 +54,14 @@ jobs:
         run: docker compose -f docker/e2e/compose.yml run --build --rm childflow-e2e bash /workspaces/childflow/docker/e2e/run-e2e.sh
 
   rootless-smoke:
-    runs-on: ubuntu-24.04
+    name: Rootless Smoke (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-22.04
+          - ubuntu-24.04
 
     steps:
       - name: Checkout

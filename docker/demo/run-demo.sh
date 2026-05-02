@@ -7,6 +7,7 @@ cd "$repo_root"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 export PATH="$CARGO_TARGET_DIR/debug:$CARGO_TARGET_DIR/release:$PATH"
+bin_path="$CARGO_TARGET_DIR/debug/childflow"
 
 prepare_demo_artifact_dirs() {
   local capture_dir="$repo_root/docker/demo/profiles/captures"
@@ -28,7 +29,7 @@ prepare_demo_artifact_dirs() {
 prepare_demo_artifact_dirs
 
 run_childflow() {
-  childflow "$@"
+  sudo -E "$bin_path" "$@"
 }
 
 resolve_service_ipv4() {
