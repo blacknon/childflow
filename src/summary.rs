@@ -4,6 +4,7 @@
 
 use crate::capture::{derive_output_paths, effective_view_name, requested_view_name};
 use crate::cli::{Cli, OutputView};
+use crate::observability::summary as observability_summary;
 use crate::report::FlowLogReport;
 use crate::sandbox::SandboxPolicy;
 use crate::util::render_command;
@@ -21,16 +22,22 @@ fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
         .unwrap_or_else(|| "<none>".to_string());
 
     format!(
-        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\nflow-log events: {}\nflow-log top target: {}\nflow-log policy violations: {}\nflow-log connect errors: {}\nflow-log runtime failures: {}\nflow-log runtime failure phases: {}\nexit: {exit_code}\n",
+        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\nexit: {exit_code}\n",
         backend_name(cli),
         format_controls(&sandbox_policy.active_controls()),
         format_capture(cli),
         format_flow_log(cli),
+        observability_summary::FLOW_LOG_EVENTS,
         format_flow_log_events(cli),
+        observability_summary::FLOW_LOG_TOP_TARGET,
         format_flow_log_top_target(cli),
+        observability_summary::FLOW_LOG_POLICY_VIOLATIONS,
         format_flow_log_policy_violations(cli),
+        observability_summary::FLOW_LOG_CONNECT_ERRORS,
         format_flow_log_connect_errors(cli),
+        observability_summary::FLOW_LOG_RUNTIME_FAILURES,
         format_flow_log_runtime_failures(cli),
+        observability_summary::FLOW_LOG_RUNTIME_FAILURE_PHASES,
         format_flow_log_runtime_failure_phases(cli)
     )
 }

@@ -8,9 +8,11 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde_json::{Map, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{Cli, ReportFormat};
+use crate::observability::report as observability_report;
 
 pub fn run(cli: &Cli) -> Result<i32> {
     let path = cli
@@ -256,7 +258,7 @@ impl FlowLogReport {
     }
 
     pub fn render_json(&self, path: &Path) -> Result<String> {
-        serde_json::to_string_pretty(&JsonFlowLogReport::from_report(path, self))
+        serde_json::to_string_pretty(&self.json_value(path))
             .context("failed to render flow log report as JSON")
     }
 
@@ -431,6 +433,112 @@ impl FlowLogReport {
             .join(", ")
     }
 
+    fn json_value(&self, path: &Path) -> Value {
+        let mut root = Map::new();
+        root.insert(
+            observability_report::FLOW_LOG.to_string(),
+            Value::String(path.display().to_string()),
+        );
+        root.insert(
+            observability_report::SCHEMA_VERSIONS.to_string(),
+            Value::Array(
+                self.schema_versions
+                    .iter()
+                    .copied()
+                    .map(|value| Value::from(value as u64))
+                    .collect(),
+            ),
+        );
+        root.insert(
+            observability_report::EVENT_COUNTS.to_string(),
+            serde_json::json!({
+                "total": self.total,
+                "dns_query": self.dns_query,
+                "dns_answer": self.dns_answer,
+                "connect_attempt": self.connect_attempt,
+                "connect_result": self.connect_result,
+                "policy_violation": self.policy_violation,
+                "flow_end": self.flow_end,
+                "runtime_failure": self.runtime_failure,
+                "unknown_event": self.unknown_event
+            }),
+        );
+        root.insert(
+            observability_report::PROTOCOLS.to_string(),
+            serde_json::to_value(&self.protocol_counts).expect("protocol_counts should serialize"),
+        );
+        root.insert(
+            observability_report::SORTED_PROTOCOLS.to_string(),
+            serde_json::to_value(json_count_entries(&self.protocol_counts))
+                .expect("sorted_protocols should serialize"),
+        );
+        root.insert(
+            observability_report::PROXY_USAGE.to_string(),
+            serde_json::json!({
+                "proxied_connect_attempts": self.proxied_connect_attempts,
+                "direct_connect_attempts": self.direct_connect_attempts
+            }),
+        );
+        root.insert(
+            observability_report::POLICY_VIOLATIONS.to_string(),
+            serde_json::to_value(&self.policy_reason_counts)
+                .expect("policy_violations should serialize"),
+        );
+        root.insert(
+            observability_report::SORTED_POLICY_VIOLATIONS.to_string(),
+            serde_json::to_value(json_count_entries(&self.policy_reason_counts))
+                .expect("sorted_policy_violations should serialize"),
+        );
+        root.insert(
+            observability_report::CONNECT_ERRORS.to_string(),
+            serde_json::to_value(&self.connect_error_counts)
+                .expect("connect_errors should serialize"),
+        );
+        root.insert(
+            observability_report::SORTED_CONNECT_ERRORS.to_string(),
+            serde_json::to_value(json_count_entries(&self.connect_error_counts))
+                .expect("sorted_connect_errors should serialize"),
+        );
+        root.insert(
+            observability_report::RUNTIME_FAILURES.to_string(),
+            serde_json::to_value(&self.runtime_failure_reason_counts)
+                .expect("runtime_failures should serialize"),
+        );
+        root.insert(
+            observability_report::SORTED_RUNTIME_FAILURES.to_string(),
+            serde_json::to_value(json_count_entries(&self.runtime_failure_reason_counts))
+                .expect("sorted_runtime_failures should serialize"),
+        );
+        root.insert(
+            observability_report::RUNTIME_FAILURE_PHASES.to_string(),
+            serde_json::to_value(&self.runtime_failure_phase_counts)
+                .expect("runtime_failure_phases should serialize"),
+        );
+        root.insert(
+            observability_report::SORTED_RUNTIME_FAILURE_PHASES.to_string(),
+            serde_json::to_value(json_count_entries(&self.runtime_failure_phase_counts))
+                .expect("sorted_runtime_failure_phases should serialize"),
+        );
+        root.insert(
+            observability_report::TOP_CONNECTION_TARGETS.to_string(),
+            serde_json::to_value(
+                self.top_connection_targets(10)
+                    .into_iter()
+                    .map(|(target, stats)| JsonConnectionTarget {
+                        target,
+                        connect_attempts: stats.connect_attempts,
+                        connect_ok: stats.connect_ok,
+                        connect_error: stats.connect_error,
+                        flow_end: stats.flow_end,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("top_connection_targets should serialize"),
+        );
+
+        Value::Object(root)
+    }
+
     fn render_markdown_highlights(&self) -> String {
         let mut lines = Vec::new();
 
@@ -518,44 +626,6 @@ struct FlowLogLine {
 }
 
 #[derive(Debug, Serialize)]
-struct JsonFlowLogReport<'a> {
-    flow_log: String,
-    schema_versions: Vec<u32>,
-    event_counts: JsonEventCounts,
-    protocols: &'a BTreeMap<String, usize>,
-    sorted_protocols: Vec<JsonCountEntry<'a>>,
-    proxy_usage: JsonProxyUsage,
-    policy_violations: &'a BTreeMap<String, usize>,
-    sorted_policy_violations: Vec<JsonCountEntry<'a>>,
-    connect_errors: &'a BTreeMap<String, usize>,
-    sorted_connect_errors: Vec<JsonCountEntry<'a>>,
-    runtime_failures: &'a BTreeMap<String, usize>,
-    sorted_runtime_failures: Vec<JsonCountEntry<'a>>,
-    runtime_failure_phases: &'a BTreeMap<String, usize>,
-    sorted_runtime_failure_phases: Vec<JsonCountEntry<'a>>,
-    top_connection_targets: Vec<JsonConnectionTarget<'a>>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonEventCounts {
-    total: usize,
-    dns_query: usize,
-    dns_answer: usize,
-    connect_attempt: usize,
-    connect_result: usize,
-    policy_violation: usize,
-    flow_end: usize,
-    runtime_failure: usize,
-    unknown_event: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonProxyUsage {
-    proxied_connect_attempts: usize,
-    direct_connect_attempts: usize,
-}
-
-#[derive(Debug, Serialize)]
 struct JsonConnectionTarget<'a> {
     target: &'a str,
     connect_attempts: usize,
@@ -568,51 +638,6 @@ struct JsonConnectionTarget<'a> {
 struct JsonCountEntry<'a> {
     key: &'a str,
     count: usize,
-}
-
-impl<'a> JsonFlowLogReport<'a> {
-    fn from_report(path: &Path, report: &'a FlowLogReport) -> Self {
-        Self {
-            flow_log: path.display().to_string(),
-            schema_versions: report.schema_versions.iter().copied().collect(),
-            event_counts: JsonEventCounts {
-                total: report.total,
-                dns_query: report.dns_query,
-                dns_answer: report.dns_answer,
-                connect_attempt: report.connect_attempt,
-                connect_result: report.connect_result,
-                policy_violation: report.policy_violation,
-                flow_end: report.flow_end,
-                runtime_failure: report.runtime_failure,
-                unknown_event: report.unknown_event,
-            },
-            protocols: &report.protocol_counts,
-            sorted_protocols: json_count_entries(&report.protocol_counts),
-            proxy_usage: JsonProxyUsage {
-                proxied_connect_attempts: report.proxied_connect_attempts,
-                direct_connect_attempts: report.direct_connect_attempts,
-            },
-            policy_violations: &report.policy_reason_counts,
-            sorted_policy_violations: json_count_entries(&report.policy_reason_counts),
-            connect_errors: &report.connect_error_counts,
-            sorted_connect_errors: json_count_entries(&report.connect_error_counts),
-            runtime_failures: &report.runtime_failure_reason_counts,
-            sorted_runtime_failures: json_count_entries(&report.runtime_failure_reason_counts),
-            runtime_failure_phases: &report.runtime_failure_phase_counts,
-            sorted_runtime_failure_phases: json_count_entries(&report.runtime_failure_phase_counts),
-            top_connection_targets: report
-                .top_connection_targets(10)
-                .into_iter()
-                .map(|(target, stats)| JsonConnectionTarget {
-                    target,
-                    connect_attempts: stats.connect_attempts,
-                    connect_ok: stats.connect_ok,
-                    connect_error: stats.connect_error,
-                    flow_end: stats.flow_end,
-                })
-                .collect(),
-        }
-    }
 }
 
 fn json_count_entries<'a>(counts: &'a BTreeMap<String, usize>) -> Vec<JsonCountEntry<'a>> {

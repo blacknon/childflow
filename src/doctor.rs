@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::cli::{Cli, DoctorFormat};
 use crate::network::NetworkBackend;
+use crate::observability::doctor as observability_doctor;
 use crate::preflight::{self, CheckStatus};
 
 pub fn run(cli: &Cli) -> Result<i32> {
@@ -135,14 +136,14 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     let euid = unsafe { nix::libc::geteuid() };
     if euid == 0 {
         report.push(
-            "root_privileges",
+            observability_doctor::ROOT_PRIVILEGES,
             "root privileges",
             CapabilityStatus::Available,
             "running as root for the selected backend",
         );
     } else {
         report.push(
-            "root_privileges",
+            observability_doctor::ROOT_PRIVILEGES,
             "root privileges",
             CapabilityStatus::Unavailable,
             "the `rootful` backend needs root on Linux",
@@ -152,14 +153,14 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     let missing_commands = missing_commands(&["ip", "iptables", "ip6tables"]);
     if missing_commands.is_empty() {
         report.push(
-            "external_commands",
+            observability_doctor::EXTERNAL_COMMANDS,
             "external commands",
             CapabilityStatus::Available,
             "found `ip`, `iptables`, and `ip6tables` in PATH",
         );
     } else {
         report.push(
-            "external_commands",
+            observability_doctor::EXTERNAL_COMMANDS,
             "external commands",
             CapabilityStatus::Unavailable,
             format!("missing required commands: {}", missing_commands.join(", ")),
@@ -172,14 +173,14 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
     ]);
     if unwritable_sysctls.is_empty() {
         report.push(
-            "forwarding_sysctls",
+            observability_doctor::FORWARDING_SYSCTLS,
             "forwarding sysctls",
             CapabilityStatus::Available,
             "required IPv4 and IPv6 forwarding sysctls are writable",
         );
     } else {
         report.push(
-            "forwarding_sysctls",
+            observability_doctor::FORWARDING_SYSCTLS,
             "forwarding sysctls",
             CapabilityStatus::Unavailable,
             format!(
@@ -191,7 +192,7 @@ fn inspect_rootful_capabilities() -> CapabilityReport {
 
     let (packet_status, packet_detail) = inspect_af_packet_capability();
     report.push(
-        "af_packet_capture",
+        observability_doctor::AF_PACKET_CAPTURE,
         "AF_PACKET capture",
         packet_status,
         packet_detail,
@@ -207,14 +208,14 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     let missing_required_commands = missing_commands(&["ip"]);
     if missing_required_commands.is_empty() {
         report.push(
-            "external_commands",
+            observability_doctor::EXTERNAL_COMMANDS,
             "external commands",
             CapabilityStatus::Available,
             "found `ip` in PATH",
         );
     } else {
         report.push(
-            "external_commands",
+            observability_doctor::EXTERNAL_COMMANDS,
             "external commands",
             CapabilityStatus::Unavailable,
             format!(
@@ -228,14 +229,14 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     let missing_handles = missing_paths(&namespace_handles);
     if missing_handles.is_empty() {
         report.push(
-            "namespace_handles",
+            observability_doctor::NAMESPACE_HANDLES,
             "namespace handles",
             CapabilityStatus::Available,
             "found `/proc/self/ns/{user,net,mnt}` for rootless setup",
         );
     } else {
         report.push(
-            "namespace_handles",
+            observability_doctor::NAMESPACE_HANDLES,
             "namespace handles",
             CapabilityStatus::Unavailable,
             format!("missing namespace handles: {}", missing_handles.join(", ")),
@@ -244,19 +245,19 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
 
     match read_proc_u64("/proc/sys/user/max_user_namespaces") {
         Some(0) => report.push(
-            "user_namespace_quota",
+            observability_doctor::USER_NAMESPACE_QUOTA,
             "user namespace quota",
             CapabilityStatus::Unavailable,
             "`/proc/sys/user/max_user_namespaces` is `0`",
         ),
         Some(value) => report.push(
-            "user_namespace_quota",
+            observability_doctor::USER_NAMESPACE_QUOTA,
             "user namespace quota",
             CapabilityStatus::Available,
             format!("`/proc/sys/user/max_user_namespaces` is set to {value}"),
         ),
         None => report.push(
-            "user_namespace_quota",
+            observability_doctor::USER_NAMESPACE_QUOTA,
             "user namespace quota",
             CapabilityStatus::Limited,
             "`/proc/sys/user/max_user_namespaces` is unavailable in this environment",
@@ -265,7 +266,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
 
     if euid == 0 {
         report.push(
-            "unprivileged_user_namespaces",
+            observability_doctor::UNPRIVILEGED_USER_NAMESPACES,
             "unprivileged user namespaces",
             CapabilityStatus::Available,
             "running as root, so the non-root clone gate does not apply",
@@ -273,19 +274,19 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     } else {
         match read_proc_u64("/proc/sys/kernel/unprivileged_userns_clone") {
             Some(0) => report.push(
-                "unprivileged_user_namespaces",
+                observability_doctor::UNPRIVILEGED_USER_NAMESPACES,
                 "unprivileged user namespaces",
                 CapabilityStatus::Unavailable,
                 "`/proc/sys/kernel/unprivileged_userns_clone` is disabled",
             ),
             Some(_) => report.push(
-                "unprivileged_user_namespaces",
+                observability_doctor::UNPRIVILEGED_USER_NAMESPACES,
                 "unprivileged user namespaces",
                 CapabilityStatus::Available,
                 "unprivileged user namespace cloning is enabled",
             ),
             None => report.push(
-                "unprivileged_user_namespaces",
+                observability_doctor::UNPRIVILEGED_USER_NAMESPACES,
                 "unprivileged user namespaces",
                 CapabilityStatus::Limited,
                 "`/proc/sys/kernel/unprivileged_userns_clone` is unavailable in this environment",
@@ -294,7 +295,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     }
 
     report.push(
-        "apparmor_userns_policy",
+        observability_doctor::APPARMOR_USERNS_POLICY,
         "AppArmor userns policy",
         inspect_apparmor_userns_capability(euid),
         render_apparmor_userns_detail(euid),
@@ -302,13 +303,13 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
 
     if euid == 0 {
         report.push(
-            "uidmap_helpers",
+            observability_doctor::UIDMAP_HELPERS,
             "uidmap helpers",
             CapabilityStatus::Available,
             "running as root, so `newuidmap` / `newgidmap` fallback is not required",
         );
         report.push(
-            "subuid_subgid_entries",
+            observability_doctor::SUBUID_SUBGID_ENTRIES,
             "subuid/subgid entries",
             CapabilityStatus::Available,
             "running as root, so subordinate id mappings are not required",
@@ -317,14 +318,14 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
         let missing_uidmap_helpers = missing_commands(&["newuidmap", "newgidmap"]);
         if missing_uidmap_helpers.is_empty() {
             report.push(
-                "uidmap_helpers",
+                observability_doctor::UIDMAP_HELPERS,
                 "uidmap helpers",
                 CapabilityStatus::Available,
                 "found `newuidmap` and `newgidmap` for helper-based id mapping",
             );
         } else {
             report.push(
-                "uidmap_helpers",
+                observability_doctor::UIDMAP_HELPERS,
                 "uidmap helpers",
                 CapabilityStatus::Limited,
                 format!(
@@ -339,7 +340,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
         let subgid_present = subid_entry_exists("/etc/subgid", &username);
         if subuid_present && subgid_present {
             report.push(
-                "subuid_subgid_entries",
+                observability_doctor::SUBUID_SUBGID_ENTRIES,
                 "subuid/subgid entries",
                 CapabilityStatus::Available,
                 format!("found subordinate id mappings for `{username}`"),
@@ -353,7 +354,7 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
                 missing_locations.push("`/etc/subgid`");
             }
             report.push(
-                "subuid_subgid_entries",
+                observability_doctor::SUBUID_SUBGID_ENTRIES,
                 "subuid/subgid entries",
                 CapabilityStatus::Limited,
                 format!(
@@ -365,11 +366,16 @@ fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     }
 
     let (tun_status, tun_detail) = inspect_tun_capability();
-    report.push("tun_tap_device", "TUN/TAP device", tun_status, tun_detail);
+    report.push(
+        observability_doctor::TUN_TAP_DEVICE,
+        "TUN/TAP device",
+        tun_status,
+        tun_detail,
+    );
 
     let (packet_status, packet_detail) = inspect_af_packet_capability();
     report.push(
-        "af_packet_capture",
+        observability_doctor::AF_PACKET_CAPTURE,
         "AF_PACKET capture",
         packet_status,
         packet_detail,

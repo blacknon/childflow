@@ -316,6 +316,20 @@ childflow --report ./flow.jsonl --report-format markdown
 childflow --report ./flow.jsonl --report-format json
 ```
 
+Markdown reports start with a compact highlight block, so CI artifacts and issue
+comments surface the main target and failure modes first:
+
+```md
+## Highlights
+
+- proxy usage: proxied connect attempts=1, direct connect attempts=0
+- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0)
+- most common policy violation: `proxy_only` (1)
+- most common connect error: `connection refused` (2)
+- most common runtime failure: `tap_create_blocked` (1)
+- most common runtime failure phase: `child_bootstrap` (1)
+```
+
 Check what the current host can support before running:
 
 ```bash

@@ -27,6 +27,8 @@ mod namespace;
 #[cfg(target_os = "linux")]
 mod network;
 #[cfg(target_os = "linux")]
+mod observability;
+#[cfg(target_os = "linux")]
 mod preflight;
 #[cfg(target_os = "linux")]
 mod profile;
