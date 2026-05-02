@@ -69,6 +69,24 @@ pub struct DnsNameStats {
     pub answer_ips: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct DnsTargetCorrelation {
+    pub qname: String,
+    pub queries: usize,
+    pub answers: usize,
+    pub answer_ips: Vec<String>,
+    pub targets: Vec<DnsCorrelatedTarget>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct DnsCorrelatedTarget {
+    pub target: String,
+    pub connect_attempts: usize,
+    pub connect_ok: usize,
+    pub connect_error: usize,
+    pub flow_end: usize,
+}
+
 impl FlowLogReport {
     pub fn from_path(path: &Path) -> Result<Self> {
         let file = File::open(path)
@@ -132,6 +150,25 @@ impl FlowLogReport {
                     stats.queries,
                     stats.answers,
                     Self::render_dns_answer_ips(stats)
+                ));
+            }
+        }
+
+        rendered.push_str("dns-target-correlations:\n");
+        let dns_target_correlations = self.top_dns_target_correlations(10, 3);
+        if dns_target_correlations.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for correlation in dns_target_correlations {
+                rendered.push_str(&format!(
+                    "  {}: answer_ips={}, targets={}\n",
+                    correlation.qname,
+                    if correlation.answer_ips.is_empty() {
+                        "none".to_string()
+                    } else {
+                        correlation.answer_ips.join(", ")
+                    },
+                    self.render_dns_target_list(&correlation.targets)
                 ));
             }
         }
@@ -240,6 +277,27 @@ impl FlowLogReport {
                     stats.queries,
                     stats.answers,
                     Self::render_dns_answer_ips(stats)
+                ));
+            }
+        }
+
+        rendered.push_str("\n## DNS target correlations\n\n");
+        let dns_target_correlations = self.top_dns_target_correlations(10, 3);
+        if dns_target_correlations.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered
+                .push_str("| DNS name | Answer IPs | Correlated targets |\n| --- | --- | --- |\n");
+            for correlation in dns_target_correlations {
+                rendered.push_str(&format!(
+                    "| `{}` | {} | {} |\n",
+                    correlation.qname,
+                    if correlation.answer_ips.is_empty() {
+                        "none".to_string()
+                    } else {
+                        correlation.answer_ips.join(", ")
+                    },
+                    self.render_dns_target_list(&correlation.targets)
                 ));
             }
         }
@@ -473,10 +531,11 @@ impl FlowLogReport {
         };
 
         format!(
-            "{qname} (queries={}, answers={}, answer_ips={})",
+            "{qname} (queries={}, answers={}, answer_ips={}, targets={})",
             stats.queries,
             stats.answers,
-            Self::render_dns_answer_ips(stats)
+            Self::render_dns_answer_ips(stats),
+            self.render_top_targets_for_dns_name(qname, 3)
         )
     }
 
@@ -494,15 +553,63 @@ impl FlowLogReport {
     }
 
     pub fn dns_names_for_target(&self, target: &str) -> Vec<String> {
-        let Some(ip) = SocketAddr::from_str(target)
-            .ok()
-            .map(|addr| addr.ip().to_string())
-        else {
+        let Some(ip) = target_ip_string(target) else {
             return Vec::new();
         };
         self.dns_name_counts
             .iter()
             .filter_map(|(qname, stats)| stats.answer_ips.contains(&ip).then_some(qname.clone()))
+            .collect()
+    }
+
+    pub fn correlated_targets_for_dns_name(
+        &self,
+        qname: &str,
+        limit: usize,
+    ) -> Vec<DnsCorrelatedTarget> {
+        let Some(stats) = self.dns_name_counts.get(qname) else {
+            return Vec::new();
+        };
+        let mut targets = self
+            .connection_targets
+            .iter()
+            .filter_map(|(target, target_stats)| {
+                let ip = target_ip_string(target)?;
+                stats.answer_ips.contains(&ip).then(|| DnsCorrelatedTarget {
+                    target: target.clone(),
+                    connect_attempts: target_stats.connect_attempts,
+                    connect_ok: target_stats.connect_ok,
+                    connect_error: target_stats.connect_error,
+                    flow_end: target_stats.flow_end,
+                })
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by(|left, right| {
+            right
+                .connect_attempts
+                .cmp(&left.connect_attempts)
+                .then_with(|| right.connect_error.cmp(&left.connect_error))
+                .then_with(|| right.connect_ok.cmp(&left.connect_ok))
+                .then_with(|| left.target.cmp(&right.target))
+        });
+        targets.truncate(limit);
+        targets
+    }
+
+    pub fn top_dns_target_correlations(
+        &self,
+        dns_limit: usize,
+        target_limit: usize,
+    ) -> Vec<DnsTargetCorrelation> {
+        self.top_dns_names(dns_limit)
+            .into_iter()
+            .map(|(qname, stats)| DnsTargetCorrelation {
+                qname: qname.to_string(),
+                queries: stats.queries,
+                answers: stats.answers,
+                answer_ips: stats.answer_ips.iter().cloned().collect(),
+                targets: self.correlated_targets_for_dns_name(qname, target_limit),
+            })
             .collect()
     }
 
@@ -527,6 +634,32 @@ impl FlowLogReport {
             stats.connect_error,
             stats.flow_end,
             self.render_dns_names_for_target(target)
+        )
+    }
+
+    fn render_top_targets_for_dns_name(&self, qname: &str, limit: usize) -> String {
+        self.render_dns_target_list(&self.correlated_targets_for_dns_name(qname, limit))
+    }
+
+    fn render_dns_target_list(&self, targets: &[DnsCorrelatedTarget]) -> String {
+        if targets.is_empty() {
+            return "none".to_string();
+        }
+        targets
+            .iter()
+            .map(|target| self.render_dns_correlated_target(target))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn render_dns_correlated_target(&self, target: &DnsCorrelatedTarget) -> String {
+        format!(
+            "{} (attempts={}, ok={}, error={}, flow_end={})",
+            target.target,
+            target.connect_attempts,
+            target.connect_ok,
+            target.connect_error,
+            target.flow_end
         )
     }
 
@@ -649,6 +782,11 @@ impl FlowLogReport {
             .expect("top_dns_names should serialize"),
         );
         root.insert(
+            observability_report::DNS_TARGET_CORRELATIONS.to_string(),
+            serde_json::to_value(self.top_dns_target_correlations(10, 3))
+                .expect("dns_target_correlations should serialize"),
+        );
+        root.insert(
             observability_report::PROXY_USAGE.to_string(),
             serde_json::json!({
                 "proxied_connect_attempts": self.proxied_connect_attempts,
@@ -739,13 +877,28 @@ impl FlowLogReport {
 
         if let Some((qname, stats)) = self.top_dns_names(1).into_iter().next() {
             lines.push(format!(
-                "- top DNS name: `{qname}` (queries={}, answers={}, answer_ips={})",
+                "- top DNS name: `{qname}` (queries={}, answers={}, answer_ips={}, targets={})",
                 stats.queries,
                 stats.answers,
-                Self::render_dns_answer_ips(stats)
+                Self::render_dns_answer_ips(stats),
+                self.render_top_targets_for_dns_name(qname, 3)
             ));
         } else {
             lines.push("- top DNS name: none".to_string());
+        }
+
+        if let Some(correlation) = self.top_dns_target_correlations(1, 1).into_iter().next() {
+            let target = correlation
+                .targets
+                .first()
+                .map(|target| self.render_dns_correlated_target(target))
+                .unwrap_or_else(|| "none".to_string());
+            lines.push(format!(
+                "- top DNS target correlation: `{}` -> {}",
+                correlation.qname, target
+            ));
+        } else {
+            lines.push("- top DNS target correlation: none".to_string());
         }
 
         lines.push(self.render_markdown_count_highlight(
@@ -792,6 +945,12 @@ fn top_count_entries(counts: &BTreeMap<String, usize>, limit: usize) -> Vec<(&st
     });
     entries.truncate(limit);
     entries
+}
+
+fn target_ip_string(target: &str) -> Option<String> {
+    SocketAddr::from_str(target)
+        .ok()
+        .map(|addr| addr.ip().to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -944,6 +1103,10 @@ mod tests {
         assert!(rendered.contains("tcp: 2"));
         assert!(rendered.contains("top-dns-names:"));
         assert!(rendered.contains("example.com: queries=1, answers=1, answer_ips=93.184.216.34"));
+        assert!(rendered.contains("dns-target-correlations:"));
+        assert!(rendered.contains(
+            "example.com: answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0)"
+        ));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
         assert!(rendered.contains("connect-errors:\n  <none>"));
@@ -1000,7 +1163,10 @@ mod tests {
             "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0, dns_names=example.com)"
         ));
         assert!(rendered.contains(
-            "- top DNS name: `example.com` (queries=2, answers=1, answer_ips=93.184.216.34)"
+            "- top DNS name: `example.com` (queries=2, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0))"
+        ));
+        assert!(rendered.contains(
+            "- top DNS target correlation: `example.com` -> 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0)"
         ));
         assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
         assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
@@ -1010,6 +1176,9 @@ mod tests {
         assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));
         assert!(rendered.contains("| `example.com` | 2 | 1 | 93.184.216.34 |"));
+        assert!(rendered.contains(
+            "| `example.com` | 93.184.216.34 | 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0) |"
+        ));
         assert!(rendered.contains("| proxy_only | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
@@ -1070,6 +1239,10 @@ mod tests {
         assert_eq!(
             json["top_dns_names"][0],
             serde_json::json!({"qname":"example.com","queries":2,"answers":1,"answer_ips":["93.184.216.34"]})
+        );
+        assert_eq!(
+            json["dns_target_correlations"][0]["targets"][0]["target"],
+            "93.184.216.34:443"
         );
         assert_eq!(
             json["top_connection_targets"][0]["dns_names"],
@@ -1158,6 +1331,8 @@ mod tests {
             concat!(
                 "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n",
                 "{\"schema_version\":1,\"event\":\"dns_answer\",\"protocol\":\"udp\",\"qname\":\"example.com\",\"answer_ips\":[\"93.184.216.34\"]}\n",
+                "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\",\"remote_ip\":\"93.184.216.34\",\"remote_port\":443,\"status\":\"ok\"}\n",
+                "{\"schema_version\":1,\"event\":\"flow_end\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\",\"remote_ip\":\"93.184.216.34\",\"remote_port\":443}\n",
                 "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"api.example.com\"}\n",
                 "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n"
             ),
@@ -1182,11 +1357,21 @@ mod tests {
         );
         assert_eq!(
             report.render_top_dns_name_compact(),
-            "example.com (queries=2, answers=1, answer_ips=93.184.216.34)"
+            "example.com (queries=2, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=1, error=0, flow_end=1))"
         );
         assert_eq!(
             report.dns_names_for_target("93.184.216.34:443"),
             vec!["example.com".to_string()]
+        );
+        assert_eq!(
+            report.correlated_targets_for_dns_name("example.com", 2),
+            vec![DnsCorrelatedTarget {
+                target: "93.184.216.34:443".to_string(),
+                connect_attempts: 0,
+                connect_ok: 1,
+                connect_error: 0,
+                flow_end: 1,
+            }]
         );
 
         let _ = fs::remove_file(path);
@@ -1237,6 +1422,14 @@ mod tests {
     #[test]
     fn flow_log_report_renders_compact_target_and_errors() {
         let report = FlowLogReport {
+            dns_name_counts: BTreeMap::from([(
+                "example.com".into(),
+                DnsNameStats {
+                    queries: 1,
+                    answers: 1,
+                    answer_ips: BTreeSet::from(["93.184.216.34".into()]),
+                },
+            )]),
             policy_reason_counts: BTreeMap::from([
                 ("deny_cidr".into(), 2),
                 ("proxy_only".into(), 1),
@@ -1254,7 +1447,7 @@ mod tests {
                 ("run".into(), 1),
             ]),
             connection_targets: BTreeMap::from([(
-                "a.example:443".into(),
+                "93.184.216.34:443".into(),
                 ConnectionTargetStats {
                     connect_attempts: 3,
                     connect_ok: 1,
@@ -1267,7 +1460,11 @@ mod tests {
 
         assert_eq!(
             report.render_top_target_compact(),
-            "a.example:443 (attempts=3, ok=1, error=2, flow_end=1, dns_names=none)"
+            "93.184.216.34:443 (attempts=3, ok=1, error=2, flow_end=1, dns_names=example.com)"
+        );
+        assert_eq!(
+            report.render_top_dns_name_compact(),
+            "example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=3, ok=1, error=2, flow_end=1))"
         );
         assert_eq!(
             report.render_policy_violations_compact(2),

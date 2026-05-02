@@ -104,8 +104,16 @@ impl SandboxPolicy {
     }
 
     pub fn block_reason_for_dns_name(&self, qname: &str) -> Option<BlockReason> {
-        self.matching_denied_domain_name(qname)
-            .map(|domain| BlockReason::DeniedDomain(domain.to_string()))
+        if let Some(domain) = self.matching_denied_domain_name(qname) {
+            return Some(BlockReason::DeniedDomain(domain.to_string()));
+        }
+        if matches!(self.default_policy, DefaultPolicy::Deny)
+            && !self.allow_domains.is_empty()
+            && !self.matches_allowed_domain_name(qname)
+        {
+            return Some(BlockReason::DefaultDeny);
+        }
+        None
     }
 
     #[allow(dead_code)]
@@ -185,6 +193,12 @@ impl SandboxPolicy {
         self.allow_domains
             .iter()
             .any(|rule| domains.iter().any(|qname| matches_domain_rule(qname, rule)))
+    }
+
+    fn matches_allowed_domain_name(&self, qname: &str) -> bool {
+        self.allow_domains
+            .iter()
+            .any(|rule| matches_domain_rule(qname, rule))
     }
 }
 
@@ -535,6 +549,28 @@ mod tests {
                 Some(&resolved),
             ),
             None
+        );
+        assert_eq!(policy.block_reason_for_dns_name("api.example.com"), None);
+    }
+
+    #[test]
+    fn default_deny_blocks_unmatched_dns_name_when_allow_domains_exist() {
+        let policy = SandboxPolicy {
+            offline: false,
+            block_private: false,
+            block_metadata: false,
+            default_policy: DefaultPolicy::Deny,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            allow_domains: vec!["example.com".into()],
+            deny_domains: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
+        };
+
+        assert_eq!(
+            policy.block_reason_for_dns_name("blocked.test"),
+            Some(BlockReason::DefaultDeny)
         );
     }
 }

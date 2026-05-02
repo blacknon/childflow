@@ -818,7 +818,8 @@ fn rootless_internal_deny_cidr_blocks_local_http() -> Result<()> {
 fn rootless_internal_default_deny_allows_explicit_domain() -> Result<()> {
     let (server_addr, requests) = spawn_local_http_server("childflow-allow-domain-ok")?;
     let host_ip = discover_reachable_host_ipv4()?;
-    let _dns_server = LocalDnsServer::spawn("127.0.0.54", "allowed.test", host_ip)?;
+    let dns_bind_ip = unique_loopback_dns_ip();
+    let _dns_server = LocalDnsServer::spawn(&dns_bind_ip, "allowed.test", host_ip)?;
 
     let output = run_childflow_command(&[
         "--default-policy",
@@ -826,7 +827,7 @@ fn rootless_internal_default_deny_allows_explicit_domain() -> Result<()> {
         "--allow-domain",
         "allowed.test",
         "-d",
-        "127.0.0.54",
+        &dns_bind_ip,
         "--",
         "python3",
         "-c",
@@ -860,6 +861,7 @@ fn rootless_internal_deny_domain_blocks_local_http_via_dns_resolution() -> Resul
     let (server_addr, requests) =
         spawn_local_http_server("childflow-deny-domain-should-not-connect")?;
     let flow_log_path = unique_temp_flow_log_path("rootless-deny-domain");
+    let dns_bind_ip = unique_loopback_dns_ip();
 
     let output = run_childflow_command(&[
         "--flow-log",
@@ -867,7 +869,7 @@ fn rootless_internal_deny_domain_blocks_local_http_via_dns_resolution() -> Resul
         "--deny-domain",
         "blocked.test",
         "-d",
-        "127.0.0.54",
+        &dns_bind_ip,
         "--",
         "python3",
         "-c",
@@ -897,6 +899,58 @@ fn rootless_internal_deny_domain_blocks_local_http_via_dns_resolution() -> Resul
     assert!(flow_log.contains("\"reason_code\":\"deny_domain\""));
     assert!(flow_log.contains("\"control\":\"--deny-domain\""));
     assert!(flow_log.contains("\"matched_domain\":\"blocked.test\""));
+    assert!(flow_log.contains("\"remote\":\"blocked.test\""));
+
+    let _ = std::fs::remove_file(&flow_log_path);
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_default_deny_blocks_unmatched_domain_query() -> Result<()> {
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-default-deny-domain-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let dns_bind_ip = unique_loopback_dns_ip();
+    let _dns_server = LocalDnsServer::spawn(&dns_bind_ip, "blocked.test", host_ip)?;
+    let flow_log_path = unique_temp_flow_log_path("rootless-default-deny-domain");
+
+    let output = run_childflow_command(&[
+        "--flow-log",
+        flow_log_path.to_str().unwrap(),
+        "--default-policy",
+        "deny",
+        "--allow-domain",
+        "allowed.test",
+        "-d",
+        &dns_bind_ip,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://blocked.test:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal default-deny allow-domain DNS test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected unmatched allow-domain childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "default-deny allow-domain sandbox unexpectedly reached the local HTTP server"
+    );
+
+    let flow_log = std::fs::read_to_string(&flow_log_path)
+        .with_context(|| format!("failed to read {}", flow_log_path.display()))?;
+    assert!(flow_log.contains("\"event\":\"policy_violation\""));
+    assert!(flow_log.contains("\"protocol\":\"dns\""));
+    assert!(flow_log.contains("\"reason_code\":\"default_deny\""));
+    assert!(flow_log.contains("\"control\":\"--default-policy\""));
     assert!(flow_log.contains("\"remote\":\"blocked.test\""));
 
     let _ = std::fs::remove_file(&flow_log_path);
@@ -2006,6 +2060,17 @@ fn unique_temp_profile_dir(prefix: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
     let _ = fs::create_dir_all(&path);
     path
+}
+
+fn unique_loopback_dns_ip() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let a = 20 + ((nanos & 0x7f) as u8);
+    let b = 1 + (((nanos >> 8) & 0xfe) as u8);
+    let c = 1 + (((nanos >> 16) & 0xfe) as u8);
+    format!("127.{a}.{b}.{c}")
 }
 
 fn relay_bidirectional(mut inbound: TcpStream, outbound: &mut TcpStream) -> Result<()> {

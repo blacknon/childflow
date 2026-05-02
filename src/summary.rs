@@ -280,6 +280,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                     queries: stats.queries,
                     answers: stats.answers,
                     answer_ips: stats.answer_ips.iter().cloned().collect(),
+                    targets: report.correlated_targets_for_dns_name(qname, 3),
                 }),
             top_target: report.top_connection_targets(1).into_iter().next().map(
                 |(target, stats)| SummaryTopTarget {
@@ -372,6 +373,7 @@ struct SummaryTopDnsName {
     queries: usize,
     answers: usize,
     answer_ips: Vec<String>,
+    targets: Vec<crate::report::DnsCorrelatedTarget>,
 }
 
 #[derive(Debug, Serialize)]
@@ -527,7 +529,7 @@ mod tests {
         assert!(rendered.contains("flow_end=1"));
         assert!(rendered.contains("runtime_failure=1"));
         assert!(rendered.contains(
-            "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34)"
+            "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1))"
         ));
         assert!(rendered.contains(
             "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, dns_names=example.com)"

@@ -108,6 +108,7 @@ Each element currently includes:
 | `queries` | integer | Number of `dns_query` events that carried this name |
 | `answers` | integer | Number of `dns_answer` events that carried this name |
 | `answer_ips` | array of strings | Distinct A / AAAA answer IPs observed for this name |
+| `targets` | string representation in text / markdown only | The JSON shape for target correlation is exposed separately via `dns_target_correlations` |
 
 The array is currently sorted by descending `queries`, then descending `answers`,
 then ascending `qname`.
@@ -121,6 +122,54 @@ Example:
     "queries": 2,
     "answers": 1,
     "answer_ips": ["93.184.216.34"]
+  }
+]
+```
+
+## `dns_target_correlations`
+
+Each element currently includes:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `qname` | string | Normalized DNS question name |
+| `queries` | integer | Number of `dns_query` events that carried this name |
+| `answers` | integer | Number of `dns_answer` events that carried this name |
+| `answer_ips` | array of strings | Distinct A / AAAA answer IPs observed for this name |
+| `targets` | array | Ranked remote targets whose IP matched one of the observed `answer_ips` |
+
+Each `targets` element currently includes:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `target` | string | `host:port`-style remote target |
+| `connect_attempts` | integer | Number of `connect_attempt` events |
+| `connect_ok` | integer | Number of successful `connect_result` events |
+| `connect_error` | integer | Number of error `connect_result` events |
+| `flow_end` | integer | Number of `flow_end` events |
+
+The outer array follows the same ordering as `top_dns_names`. Each nested
+`targets` array is sorted by descending `connect_attempts`, then descending
+`connect_error`, then descending `connect_ok`, then ascending `target`.
+
+Example:
+
+```json
+"dns_target_correlations": [
+  {
+    "qname": "example.com",
+    "queries": 2,
+    "answers": 1,
+    "answer_ips": ["93.184.216.34"],
+    "targets": [
+      {
+        "target": "93.184.216.34:443",
+        "connect_attempts": 2,
+        "connect_ok": 1,
+        "connect_error": 1,
+        "flow_end": 1
+      }
+    ]
   }
 ]
 ```
@@ -187,6 +236,23 @@ Example:
       "queries": 1,
       "answers": 1,
       "answer_ips": ["93.184.216.34"]
+    }
+  ],
+  "dns_target_correlations": [
+    {
+      "qname": "example.com",
+      "queries": 1,
+      "answers": 1,
+      "answer_ips": ["93.184.216.34"],
+      "targets": [
+        {
+          "target": "93.184.216.34:443",
+          "connect_attempts": 0,
+          "connect_ok": 0,
+          "connect_error": 1,
+          "flow_end": 1
+        }
+      ]
     }
   ],
   "proxy_usage": {

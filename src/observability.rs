@@ -23,6 +23,7 @@ pub mod report {
     pub const PROTOCOLS: &str = "protocols";
     pub const SORTED_PROTOCOLS: &str = "sorted_protocols";
     pub const TOP_DNS_NAMES: &str = "top_dns_names";
+    pub const DNS_TARGET_CORRELATIONS: &str = "dns_target_correlations";
     pub const PROXY_USAGE: &str = "proxy_usage";
     pub const POLICY_VIOLATIONS: &str = "policy_violations";
     pub const SORTED_POLICY_VIOLATIONS: &str = "sorted_policy_violations";
