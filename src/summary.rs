@@ -96,6 +96,7 @@ mod tests {
             root: false,
             doctor: false,
             report: None,
+            report_format: crate::cli::ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,

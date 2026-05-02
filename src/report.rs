@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, ReportFormat};
 
 pub fn run(cli: &Cli) -> Result<i32> {
     let path = cli
@@ -18,7 +18,11 @@ pub fn run(cli: &Cli) -> Result<i32> {
         .as_ref()
         .context("`--report` requires a flow log path")?;
     let report = FlowLogReport::from_path(path)?;
-    print!("{}", report.render(path));
+    let rendered = match cli.report_format {
+        ReportFormat::Text => report.render_text(path),
+        ReportFormat::Markdown => report.render_markdown(path),
+    };
+    print!("{rendered}");
     Ok(0)
 }
 
@@ -72,7 +76,7 @@ impl FlowLogReport {
         Ok(report)
     }
 
-    pub fn render(&self, path: &Path) -> String {
+    pub fn render_text(&self, path: &Path) -> String {
         let mut rendered = format!(
             "childflow report\nflow-log: {}\nschema-version: {}\nevents:\n  total: {}\n  dns_query: {}\n  dns_answer: {}\n  connect_attempt: {}\n  connect_result: {}\n  policy_violation: {}\n  flow_end: {}\n  unknown_event: {}\n",
             path.display(),
@@ -118,6 +122,64 @@ impl FlowLogReport {
             for (target, stats) in self.connection_targets.iter().take(10) {
                 rendered.push_str(&format!(
                     "  {target}: attempts={}, ok={}, error={}, flow_end={}\n",
+                    stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+                ));
+            }
+        }
+
+        rendered
+    }
+
+    pub fn render_markdown(&self, path: &Path) -> String {
+        let mut rendered = format!(
+            "# childflow report\n\n- flow-log: `{}`\n- schema-version: `{}`\n\n## Event counts\n\n| Metric | Count |\n| --- | ---: |\n| total | {} |\n| dns_query | {} |\n| dns_answer | {} |\n| connect_attempt | {} |\n| connect_result | {} |\n| policy_violation | {} |\n| flow_end | {} |\n| unknown_event | {} |\n",
+            path.display(),
+            self.render_schema_versions(),
+            self.total,
+            self.dns_query,
+            self.dns_answer,
+            self.connect_attempt,
+            self.connect_result,
+            self.policy_violation,
+            self.flow_end,
+            self.unknown_event
+        );
+
+        rendered.push_str("\n## Protocols\n\n");
+        if self.protocol_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Protocol | Count |\n| --- | ---: |\n");
+            for (protocol, count) in &self.protocol_counts {
+                rendered.push_str(&format!("| {protocol} | {count} |\n"));
+            }
+        }
+
+        rendered.push_str("\n## Proxy usage\n\n");
+        rendered.push_str("| Metric | Count |\n| --- | ---: |\n");
+        rendered.push_str(&format!(
+            "| proxied_connect_attempts | {} |\n| direct_connect_attempts | {} |\n",
+            self.proxied_connect_attempts, self.direct_connect_attempts
+        ));
+
+        rendered.push_str("\n## Policy violations\n\n");
+        if self.policy_reason_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
+            for (reason, count) in &self.policy_reason_counts {
+                rendered.push_str(&format!("| {reason} | {count} |\n"));
+            }
+        }
+
+        rendered.push_str("\n## Top connection targets\n\n");
+        if self.connection_targets.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Target | Attempts | OK | Error | Flow end |\n| --- | ---: | ---: | ---: | ---: |\n");
+            for (target, stats) in self.connection_targets.iter().take(10) {
+                rendered.push_str(&format!(
+                    "| `{target}` | {} | {} | {} | {} |\n",
                     stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
                 ));
             }
@@ -294,7 +356,7 @@ mod tests {
             direct_connect_attempts: 0,
         };
 
-        let rendered = report.render(Path::new("/tmp/flow.jsonl"));
+        let rendered = report.render_text(Path::new("/tmp/flow.jsonl"));
         assert!(rendered.contains("childflow report"));
         assert!(rendered.contains("flow-log: /tmp/flow.jsonl"));
         assert!(rendered.contains("schema-version: 1"));
@@ -307,6 +369,42 @@ mod tests {
         assert!(rendered.contains("proxied_connect_attempts: 1"));
         assert!(rendered.contains("top-connection-targets:"));
         assert!(rendered.contains("93.184.216.34:443: attempts=1, ok=1"));
+        Ok(())
+    }
+
+    #[test]
+    fn flow_log_report_renders_markdown_output() -> Result<()> {
+        let report = FlowLogReport {
+            total: 3,
+            dns_query: 0,
+            dns_answer: 0,
+            connect_attempt: 1,
+            connect_result: 1,
+            policy_violation: 1,
+            flow_end: 0,
+            unknown_event: 0,
+            schema_versions: BTreeSet::from([1]),
+            protocol_counts: BTreeMap::from([("tcp".into(), 3)]),
+            policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
+            connection_targets: BTreeMap::from([(
+                "93.184.216.34:443".into(),
+                ConnectionTargetStats {
+                    connect_attempts: 1,
+                    connect_ok: 1,
+                    connect_error: 0,
+                    flow_end: 0,
+                },
+            )]),
+            proxied_connect_attempts: 1,
+            direct_connect_attempts: 0,
+        };
+
+        let rendered = report.render_markdown(Path::new("/tmp/flow.jsonl"));
+        assert!(rendered.contains("# childflow report"));
+        assert!(rendered.contains("| total | 3 |"));
+        assert!(rendered.contains("| tcp | 3 |"));
+        assert!(rendered.contains("| proxy_only | 1 |"));
+        assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 |"));
         Ok(())
     }
 

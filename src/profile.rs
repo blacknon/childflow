@@ -389,6 +389,7 @@ command = ["ping", "-c", "1", "1.1.1.1"]
             root: false,
             doctor: false,
             report: None,
+            report_format: crate::cli::ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
             dns: Some("1.1.1.1".parse().unwrap()),
             hosts_file: Some(PathBuf::from("/tmp/hosts.override")),

@@ -50,6 +50,10 @@ struct RawCli {
     #[arg(long = "report")]
     report: Option<PathBuf>,
 
+    /// Select the output format for `--report`.
+    #[arg(long = "report-format", value_enum)]
+    report_format: Option<ReportFormat>,
+
     /// Select the networking backend. This is kept as a hidden compatibility escape hatch; use `--root` for the public CLI.
     #[arg(long = "network-backend", value_enum, hide = true)]
     network_backend: Option<NetworkBackend>,
@@ -134,6 +138,7 @@ pub struct Cli {
     pub root: bool,
     pub doctor: bool,
     pub report: Option<PathBuf>,
+    pub report_format: ReportFormat,
     pub network_backend: NetworkBackend,
     pub dns: Option<IpAddr>,
     pub hosts_file: Option<PathBuf>,
@@ -249,6 +254,7 @@ impl Cli {
             root: false,
             doctor: raw.doctor,
             report: raw.report,
+            report_format: ReportFormat::Text,
             network_backend: profile
                 .and_then(|value| value.backend)
                 .unwrap_or(NetworkBackend::RootlessInternal),
@@ -299,6 +305,9 @@ impl Cli {
         }
         if let Some(value) = raw.network_backend {
             cli.network_backend = value;
+        }
+        if let Some(value) = raw.report_format {
+            cli.report_format = value;
         }
         if let Some(value) = raw.dns {
             cli.dns = Some(value);
@@ -487,6 +496,13 @@ pub enum DefaultPolicy {
     Deny,
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum ReportFormat {
+    #[default]
+    Text,
+    Markdown,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -502,6 +518,7 @@ mod tests {
             root: false,
             doctor: false,
             report: None,
+            report_format: ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,
@@ -807,7 +824,22 @@ mod tests {
         let cli = Cli::parse_from(["childflow", "--report", "/tmp/childflow-flow.jsonl"]);
 
         assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert_eq!(cli.report_format, ReportFormat::Text);
         assert!(cli.command.is_empty());
+    }
+
+    #[test]
+    fn parse_accepts_report_format_flag() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+            "--report-format",
+            "markdown",
+        ]);
+
+        assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert_eq!(cli.report_format, ReportFormat::Markdown);
     }
 
     #[test]
