@@ -105,6 +105,10 @@ Options:
           Use the rootful backend. Without this flag, childflow uses the default rootless backend
       --doctor
           Diagnose whether the current host is ready for the selected backend
+      --report <REPORT>
+          Read a structured flow log and print a report instead of running a command
+      --report-format <REPORT_FORMAT>
+          Select the output format for `--report` [possible values: text, markdown]
   -d, --dns <DNS>
           Force DNS traffic for the child tree to this IPv4 or IPv6 resolver
       --hosts-file <HOSTS_FILE>
@@ -287,6 +291,30 @@ childflow \
   -- curl https://example.com
 ```
 
+Print a post-run summary with top targets and common failure reasons:
+
+```bash
+childflow \
+  --summary \
+  --flow-log ./flow.jsonl \
+  --deny-cidr 10.0.0.0/8 \
+  -- curl https://example.com
+```
+
+Render a text or Markdown report from a saved flow log:
+
+```bash
+childflow --report ./flow.jsonl
+childflow --report ./flow.jsonl --report-format markdown
+```
+
+Check what the current host can support before running:
+
+```bash
+childflow --doctor
+childflow --root --doctor
+```
+
 #### Rootful
 
 Use the rootful backend when you need host-integrated behavior:
@@ -429,6 +457,7 @@ Current event types:
 - `connect_result`
 - `policy_violation`
 - `flow_end`
+- `runtime_failure`
 
 Current schema notes:
 
@@ -444,8 +473,28 @@ Current notes:
 - `--flow-log` is currently supported only by `rootless-internal`
 - each line is standalone JSON, so it is easy to inspect with tools such as `jq`
 - flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
-- `--summary` will also show aggregate flow-log event counts after the run
+- `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
+- `--summary` will also show aggregate flow-log event counts, the top connection target, common connect errors, and runtime failure reason codes after the run
+- `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
+- `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
 - the fuller event-by-event schema is documented in [docs/flow-log-schema.md](docs/flow-log-schema.md)
+
+### Doctor and Report
+
+`childflow --doctor` is the quickest way to see whether the current host can support the selected backend.
+
+- for `rootless-internal`, it checks capability-oriented items such as user namespaces, uidmap helpers, `/dev/net/tun`, AF_PACKET capture, and Ubuntu-style AppArmor userns restrictions
+- for `rootful`, it checks root privileges, forwarding sysctls, required external commands, and AF_PACKET capture
+
+After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a text or Markdown summary with:
+
+- event counts
+- protocol counts
+- proxy usage
+- policy violation reason counts
+- connect error counts
+- runtime failure reason counts
+- top connection targets
 
 ### Capture Modes
 
