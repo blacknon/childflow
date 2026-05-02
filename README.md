@@ -510,6 +510,7 @@ Current notes:
 - flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
 - `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
 - `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, common connect errors, runtime failure reason codes, and runtime failure phases after the run
+- the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)
 - `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
 - `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
 - `--report-format json` emits a machine-readable report that is convenient for CI artifacts or wrapper tooling, including sorted arrays for ranked sections such as policy violations, connect errors, and runtime failures
