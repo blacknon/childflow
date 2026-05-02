@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -33,6 +33,19 @@ pub struct FlowLogReport {
     pub flow_end: usize,
     pub unknown_event: usize,
     pub schema_versions: BTreeSet<u32>,
+    pub protocol_counts: BTreeMap<String, usize>,
+    pub policy_reason_counts: BTreeMap<String, usize>,
+    pub connection_targets: BTreeMap<String, ConnectionTargetStats>,
+    pub proxied_connect_attempts: usize,
+    pub direct_connect_attempts: usize,
+}
+
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
+pub struct ConnectionTargetStats {
+    pub connect_attempts: usize,
+    pub connect_ok: usize,
+    pub connect_error: usize,
+    pub flow_end: usize,
 }
 
 impl FlowLogReport {
@@ -60,7 +73,7 @@ impl FlowLogReport {
     }
 
     pub fn render(&self, path: &Path) -> String {
-        format!(
+        let mut rendered = format!(
             "childflow report\nflow-log: {}\nschema-version: {}\nevents:\n  total: {}\n  dns_query: {}\n  dns_answer: {}\n  connect_attempt: {}\n  connect_result: {}\n  policy_violation: {}\n  flow_end: {}\n  unknown_event: {}\n",
             path.display(),
             self.render_schema_versions(),
@@ -72,7 +85,45 @@ impl FlowLogReport {
             self.policy_violation,
             self.flow_end,
             self.unknown_event
-        )
+        );
+
+        rendered.push_str("protocols:\n");
+        if self.protocol_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (protocol, count) in &self.protocol_counts {
+                rendered.push_str(&format!("  {protocol}: {count}\n"));
+            }
+        }
+
+        rendered.push_str("proxy-usage:\n");
+        rendered.push_str(&format!(
+            "  proxied_connect_attempts: {}\n  direct_connect_attempts: {}\n",
+            self.proxied_connect_attempts, self.direct_connect_attempts
+        ));
+
+        rendered.push_str("policy-violations:\n");
+        if self.policy_reason_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (reason, count) in &self.policy_reason_counts {
+                rendered.push_str(&format!("  {reason}: {count}\n"));
+            }
+        }
+
+        rendered.push_str("top-connection-targets:\n");
+        if self.connection_targets.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (target, stats) in self.connection_targets.iter().take(10) {
+                rendered.push_str(&format!(
+                    "  {target}: attempts={}, ok={}, error={}, flow_end={}\n",
+                    stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+                ));
+            }
+        }
+
+        rendered
     }
 
     pub fn render_event_counts_compact(&self) -> String {
@@ -94,14 +145,50 @@ impl FlowLogReport {
         if let Some(version) = event.schema_version {
             self.schema_versions.insert(version);
         }
+        if let Some(protocol) = event.protocol.as_ref() {
+            *self.protocol_counts.entry(protocol.clone()).or_default() += 1;
+        }
 
         match event.event.as_str() {
             "dns_query" => self.dns_query += 1,
             "dns_answer" => self.dns_answer += 1,
-            "connect_attempt" => self.connect_attempt += 1,
-            "connect_result" => self.connect_result += 1,
-            "policy_violation" => self.policy_violation += 1,
-            "flow_end" => self.flow_end += 1,
+            "connect_attempt" => {
+                self.connect_attempt += 1;
+                if event.via_proxy.unwrap_or(false) {
+                    self.proxied_connect_attempts += 1;
+                } else {
+                    self.direct_connect_attempts += 1;
+                }
+                if let Some(target) = event.remote_addr.or(event.remote) {
+                    self.connection_targets
+                        .entry(target)
+                        .or_default()
+                        .connect_attempts += 1;
+                }
+            }
+            "connect_result" => {
+                self.connect_result += 1;
+                if let Some(target) = event.remote_addr {
+                    let stats = self.connection_targets.entry(target).or_default();
+                    match event.status.as_deref() {
+                        Some("ok") => stats.connect_ok += 1,
+                        Some("error") => stats.connect_error += 1,
+                        _ => {}
+                    }
+                }
+            }
+            "policy_violation" => {
+                self.policy_violation += 1;
+                if let Some(reason) = event.reason_code {
+                    *self.policy_reason_counts.entry(reason).or_default() += 1;
+                }
+            }
+            "flow_end" => {
+                self.flow_end += 1;
+                if let Some(target) = event.remote_addr {
+                    self.connection_targets.entry(target).or_default().flow_end += 1;
+                }
+            }
             _ => self.unknown_event += 1,
         }
     }
@@ -124,11 +211,24 @@ struct FlowLogLine {
     #[serde(default)]
     schema_version: Option<u32>,
     event: String,
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    remote_addr: Option<String>,
+    #[serde(default)]
+    remote: Option<String>,
+    #[serde(default)]
+    via_proxy: Option<bool>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    reason_code: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -139,11 +239,11 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "{\"schema_version\":1,\"event\":\"dns_query\"}\n",
-                "{\"schema_version\":1,\"event\":\"connect_attempt\"}\n",
-                "{\"schema_version\":1,\"event\":\"connect_result\"}\n",
-                "{\"schema_version\":1,\"event\":\"policy_violation\"}\n",
-                "{\"schema_version\":1,\"event\":\"flow_end\"}\n",
+                "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\"}\n",
+                "{\"schema_version\":1,\"event\":\"connect_attempt\",\"protocol\":\"tcp\"}\n",
+                "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\"}\n",
+                "{\"schema_version\":1,\"event\":\"policy_violation\",\"protocol\":\"tcp\"}\n",
+                "{\"schema_version\":1,\"event\":\"flow_end\",\"protocol\":\"tcp\"}\n",
                 "{\"schema_version\":2,\"event\":\"future_event\"}\n"
             ),
         )?;
@@ -157,6 +257,8 @@ mod tests {
         assert_eq!(report.flow_end, 1);
         assert_eq!(report.unknown_event, 1);
         assert_eq!(report.render_schema_versions(), "1, 2");
+        assert_eq!(report.protocol_counts.get("tcp"), Some(&4));
+        assert_eq!(report.policy_reason_counts.get("proxy_only"), None);
 
         let _ = fs::remove_file(path);
         Ok(())
@@ -174,6 +276,22 @@ mod tests {
             flow_end: 0,
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
+            protocol_counts: BTreeMap::from([
+                ("tcp".into(), 2),
+                ("udp".into(), 2),
+            ]),
+            policy_reason_counts: BTreeMap::new(),
+            connection_targets: BTreeMap::from([(
+                "93.184.216.34:443".into(),
+                ConnectionTargetStats {
+                    connect_attempts: 1,
+                    connect_ok: 1,
+                    connect_error: 0,
+                    flow_end: 0,
+                },
+            )]),
+            proxied_connect_attempts: 1,
+            direct_connect_attempts: 0,
         };
 
         let rendered = report.render(Path::new("/tmp/flow.jsonl"));
@@ -183,6 +301,54 @@ mod tests {
         assert!(rendered.contains("total: 4"));
         assert!(rendered.contains("dns_query: 1"));
         assert!(rendered.contains("unknown_event: 0"));
+        assert!(rendered.contains("protocols:"));
+        assert!(rendered.contains("tcp: 2"));
+        assert!(rendered.contains("proxy-usage:"));
+        assert!(rendered.contains("proxied_connect_attempts: 1"));
+        assert!(rendered.contains("top-connection-targets:"));
+        assert!(rendered.contains("93.184.216.34:443: attempts=1, ok=1"));
+        Ok(())
+    }
+
+    #[test]
+    fn flow_log_report_aggregates_connection_targets_and_policy_reasons() -> Result<()> {
+        let path = unique_temp_flow_log_path("report-aggregation");
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema_version\":1,\"event\":\"connect_attempt\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\",\"via_proxy\":true}\n",
+                "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\",\"via_proxy\":true,\"status\":\"ok\"}\n",
+                "{\"schema_version\":1,\"event\":\"flow_end\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\"}\n",
+                "{\"schema_version\":1,\"event\":\"connect_attempt\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false}\n",
+                "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false,\"status\":\"error\"}\n",
+                "{\"schema_version\":1,\"event\":\"policy_violation\",\"protocol\":\"tcp\",\"remote\":\"10.0.0.1:443\",\"reason_code\":\"deny_cidr\"}\n"
+            ),
+        )?;
+
+        let report = FlowLogReport::from_path(&path)?;
+        assert_eq!(report.proxied_connect_attempts, 1);
+        assert_eq!(report.direct_connect_attempts, 1);
+        assert_eq!(report.policy_reason_counts.get("deny_cidr"), Some(&1));
+        assert_eq!(
+            report.connection_targets.get("93.184.216.34:443"),
+            Some(&ConnectionTargetStats {
+                connect_attempts: 1,
+                connect_ok: 1,
+                connect_error: 0,
+                flow_end: 1,
+            })
+        );
+        assert_eq!(
+            report.connection_targets.get("198.51.100.7:8443"),
+            Some(&ConnectionTargetStats {
+                connect_attempts: 1,
+                connect_ok: 0,
+                connect_error: 1,
+                flow_end: 0,
+            })
+        );
+
+        let _ = fs::remove_file(path);
         Ok(())
     }
 
