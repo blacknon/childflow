@@ -29,7 +29,7 @@ The script verifies:
 - HTTPS upstream proxy works with `--proxy-insecure` while keeping hostname verification
 - `childflow` still writes non-empty `pcapng` capture files during the run
 
-The demo runner container defaults to the non-root `childflow` user, then invokes `childflow` itself through `sudo` inside the script so namespace setup stays reliable across CI environments while the demo still exercises the default rootless path.
+The demo runner container defaults to the non-root `childflow` user. The script tries `childflow` without `sudo` first, then falls back to `sudo` only if the rootless namespace bootstrap is blocked by the current host policy (for example Ubuntu 24.04 AppArmor restrictions in CI). Set `CHILDFLOW_SUDO_MODE=never`, `auto`, or `always` to override that behavior.
 
 ## Render a GIF
 

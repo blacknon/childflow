@@ -7,9 +7,50 @@ cd "$repo_root"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 bin_path="$CARGO_TARGET_DIR/debug/childflow"
+CHILDFLOW_SUDO_MODE="${CHILDFLOW_SUDO_MODE:-auto}"
+
+childflow_bootstrap_blocked() {
+  local stderr_file="$1"
+  grep -Eq \
+    'childflow: child bootstrap failed:|childflow: failed to wait for the child to finish rootless tap bootstrap|failed to create tap device|failed to make mount propagation private|failed to bind-mount .* over /etc/(resolv\.conf|hosts)|failed to open AF_PACKET channel|runtime components failed during shutdown' \
+    "$stderr_file"
+}
 
 run_childflow() {
-  sudo -E "$bin_path" "$@"
+  if [[ "$CHILDFLOW_SUDO_MODE" == "always" ]]; then
+    sudo -E "$bin_path" "$@"
+    return
+  fi
+
+  local stdout_file stderr_file status
+  stdout_file="$(mktemp)"
+  stderr_file="$(mktemp)"
+
+  set +e
+  "$bin_path" "$@" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    cat "$stdout_file"
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 0
+  fi
+
+  if [[ "$CHILDFLOW_SUDO_MODE" == "auto" ]] && childflow_bootstrap_blocked "$stderr_file"; then
+    cat "$stderr_file" >&2
+    echo "[e2e] childflow rootless bootstrap was blocked in this environment; retrying with sudo" >&2
+    CHILDFLOW_SUDO_MODE="always"
+    rm -f "$stdout_file" "$stderr_file"
+    sudo -E "$bin_path" "$@"
+    return
+  fi
+
+  cat "$stdout_file"
+  cat "$stderr_file" >&2
+  rm -f "$stdout_file" "$stderr_file"
+  return "$status"
 }
 
 cleanup() {

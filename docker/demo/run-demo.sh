@@ -8,6 +8,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/childflow-target}"
 mkdir -p "$CARGO_TARGET_DIR"
 export PATH="$CARGO_TARGET_DIR/debug:$CARGO_TARGET_DIR/release:$PATH"
 bin_path="$CARGO_TARGET_DIR/debug/childflow"
+CHILDFLOW_SUDO_MODE="${CHILDFLOW_SUDO_MODE:-auto}"
 
 prepare_demo_artifact_dirs() {
   local capture_dir="$repo_root/docker/demo/profiles/captures"
@@ -28,13 +29,48 @@ prepare_demo_artifact_dirs() {
 
 prepare_demo_artifact_dirs
 
-run_childflow() {
-  sudo -E "$bin_path" "$@"
+childflow_bootstrap_blocked() {
+  local stderr_file="$1"
+  grep -Eq \
+    'childflow: child bootstrap failed:|childflow: failed to wait for the child to finish rootless tap bootstrap|failed to create tap device|failed to make mount propagation private|failed to bind-mount .* over /etc/(resolv\.conf|hosts)|failed to open AF_PACKET channel|runtime components failed during shutdown' \
+    "$stderr_file"
 }
 
-resolve_service_ipv4() {
-  local host="$1"
-  getent ahostsv4 "$host" | awk 'NR == 1 { print $1 }'
+run_childflow() {
+  if [[ "$CHILDFLOW_SUDO_MODE" == "always" ]]; then
+    sudo -E "$bin_path" "$@"
+    return
+  fi
+
+  local stdout_file stderr_file status
+  stdout_file="$(mktemp)"
+  stderr_file="$(mktemp)"
+
+  set +e
+  "$bin_path" "$@" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+
+  if [[ "$status" -eq 0 ]]; then
+    cat "$stdout_file"
+    cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+    return 0
+  fi
+
+  if [[ "$CHILDFLOW_SUDO_MODE" == "auto" ]] && childflow_bootstrap_blocked "$stderr_file"; then
+    cat "$stderr_file" >&2
+    echo "[demo] childflow rootless bootstrap was blocked in this environment; retrying with sudo" >&2
+    CHILDFLOW_SUDO_MODE="always"
+    rm -f "$stdout_file" "$stderr_file"
+    sudo -E "$bin_path" "$@"
+    return
+  fi
+
+  cat "$stdout_file"
+  cat "$stderr_file" >&2
+  rm -f "$stdout_file" "$stderr_file"
+  return "$status"
 }
 
 ./docker/demo/wait-for-port.sh proxy-http 3128
@@ -52,33 +88,6 @@ http_proxy_output="$tmpdir/http-proxy.txt"
 https_proxy_output="$tmpdir/https-proxy.txt"
 profile_http_output="$tmpdir/profile-http.txt"
 profile_dump_output="$tmpdir/profile-dump.toml"
-profile_ip_path="$tmpdir/http-origin-ip.toml"
-
-origin_http_ip="$(resolve_service_ipv4 origin-http.demo)"
-origin_https_ip="$(resolve_service_ipv4 origin-https.demo)"
-
-if [[ -z "$origin_http_ip" || -z "$origin_https_ip" ]]; then
-  echo "failed to resolve demo origin container IPs" >&2
-  exit 1
-fi
-
-origin_http_url="http://$origin_http_ip:8080/"
-origin_https_url="https://$origin_https_ip:8443/"
-
-cat >"$profile_ip_path" <<EOF
-extends = "$repo_root/docker/demo/profiles/base.toml"
-capture = "$repo_root/docker/demo/profiles/captures/http-origin.pcapng"
-flow_log = "$repo_root/docker/demo/profiles/logs/http-origin.jsonl"
-command = [
-  "curl",
-  "--connect-timeout",
-  "5",
-  "--max-time",
-  "15",
-  "-fsS",
-  "$origin_http_url",
-]
-EOF
 
 if curl --connect-timeout 3 --max-time 5 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
   echo "direct HTTP access unexpectedly succeeded" >&2
@@ -94,8 +103,9 @@ echo "[demo] verifying HTTP proxy auth failure"
 if run_childflow \
   -c "$tmpdir/http-auth-fail.pcapng" \
   -p http://proxy-http:3128 \
+  --proxy-only \
   -- \
-  curl --connect-timeout 5 --max-time 10 -fsS "$origin_http_url" >/dev/null 2>&1; then
+  curl --connect-timeout 5 --max-time 10 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
   echo "HTTP proxy request unexpectedly succeeded without auth" >&2
   exit 1
 fi
@@ -104,10 +114,11 @@ echo "[demo] verifying HTTPS proxy cert failure"
 if run_childflow \
   -c "$tmpdir/https-cert-fail.pcapng" \
   -p https://proxy-https:3443 \
+  --proxy-only \
   --proxy-user demo \
   --proxy-password demo \
   -- \
-  curl --connect-timeout 5 --max-time 10 -kfsS "$origin_https_url" >/dev/null 2>&1; then
+  curl --connect-timeout 5 --max-time 10 -kfsS https://origin-https.demo:8443/ >/dev/null 2>&1; then
   echo "HTTPS proxy request unexpectedly succeeded without --proxy-insecure" >&2
   exit 1
 fi
@@ -116,16 +127,17 @@ echo "[demo] verifying authenticated HTTP proxy flow"
 run_childflow \
   -c "$tmpdir/http-proxy.pcapng" \
   -p http://proxy-http:3128 \
+  --proxy-only \
   --proxy-user demo \
   --proxy-password demo \
   -- \
-  curl --connect-timeout 5 --max-time 15 -fsS "$origin_http_url" >"$http_proxy_output"
+  curl --connect-timeout 5 --max-time 15 -fsS http://origin-http.demo:8080/ >"$http_proxy_output"
 
 grep -q "origin-http-ok" "$http_proxy_output"
 
 echo "[demo] verifying profile-driven HTTP proxy flow"
 run_childflow \
-  --profile "$profile_ip_path" \
+  --profile "$repo_root/docker/demo/profiles/http-origin.toml" \
   >"$profile_http_output"
 
 grep -q "origin-http-ok" "$profile_http_output"
@@ -148,11 +160,12 @@ echo "[demo] verifying authenticated HTTPS proxy flow"
 run_childflow \
   -c "$tmpdir/https-proxy.pcapng" \
   -p https://proxy-https:3443 \
+  --proxy-only \
   --proxy-user demo \
   --proxy-password demo \
   --proxy-insecure \
   -- \
-  curl --connect-timeout 5 --max-time 15 -kfsS "$origin_https_url" >"$https_proxy_output"
+  curl --connect-timeout 5 --max-time 15 -kfsS https://origin-https.demo:8443/ >"$https_proxy_output"
 
 grep -q "origin-https-ok" "$https_proxy_output"
 

@@ -28,3 +28,5 @@ The e2e script verifies:
 ```bash
 docker compose -f docker/e2e/compose.yml run --build --rm childflow-e2e bash /workspaces/childflow/docker/e2e/run-e2e.sh
 ```
+
+The e2e runner tries `childflow` without `sudo` first and only retries with `sudo` when the rootless namespace bootstrap is blocked by the host environment. Static route changes still use `sudo` because they modify the runner network namespace directly. Set `CHILDFLOW_SUDO_MODE=never`, `auto`, or `always` to override the `childflow` retry behavior.
