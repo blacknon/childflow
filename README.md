@@ -511,6 +511,7 @@ Current notes:
 - for `rootless-internal`, it checks capability-oriented items such as user namespaces, uidmap helpers, `/dev/net/tun`, AF_PACKET capture, and Ubuntu-style AppArmor userns restrictions
 - for `rootful`, it checks root privileges, forwarding sysctls, required external commands, and AF_PACKET capture
 - `--doctor-format json` emits the same diagnosis in a machine-readable form for CI logs or wrapper tooling
+- the fuller JSON doctor schema is documented in [docs/doctor-schema.md](docs/doctor-schema.md)
 
 After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a text, Markdown, or JSON summary with:
 
