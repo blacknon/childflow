@@ -33,6 +33,8 @@ mod profile;
 #[cfg(target_os = "linux")]
 mod proxy;
 #[cfg(target_os = "linux")]
+mod report;
+#[cfg(target_os = "linux")]
 mod sandbox;
 #[cfg(target_os = "linux")]
 mod summary;
@@ -96,6 +98,10 @@ fn real_main() -> Result<i32> {
 
     if cli.doctor {
         return doctor::run(&cli);
+    }
+
+    if cli.report.is_some() {
+        return report::run(&cli);
     }
 
     cli.validate()?;

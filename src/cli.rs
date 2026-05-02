@@ -46,6 +46,10 @@ struct RawCli {
     #[arg(long = "doctor")]
     doctor: bool,
 
+    /// Read a structured flow log and print a text report.
+    #[arg(long = "report")]
+    report: Option<PathBuf>,
+
     /// Select the networking backend. This is kept as a hidden compatibility escape hatch; use `--root` for the public CLI.
     #[arg(long = "network-backend", value_enum, hide = true)]
     network_backend: Option<NetworkBackend>,
@@ -129,6 +133,7 @@ pub struct Cli {
     pub output_view: OutputView,
     pub root: bool,
     pub doctor: bool,
+    pub report: Option<PathBuf>,
     pub network_backend: NetworkBackend,
     pub dns: Option<IpAddr>,
     pub hosts_file: Option<PathBuf>,
@@ -165,6 +170,13 @@ impl Cli {
 
     pub fn validate(&self) -> Result<()> {
         if self.doctor {
+            return Ok(());
+        }
+
+        if self.report.is_some() {
+            if !self.command.is_empty() {
+                bail!("`--report` does not accept a command to execute");
+            }
             return Ok(());
         }
 
@@ -236,6 +248,7 @@ impl Cli {
                 .unwrap_or(OutputView::Child),
             root: false,
             doctor: raw.doctor,
+            report: raw.report,
             network_backend: profile
                 .and_then(|value| value.backend)
                 .unwrap_or(NetworkBackend::RootlessInternal),
@@ -488,6 +501,7 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            report: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,
@@ -789,6 +803,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_report_flag() {
+        let cli = Cli::parse_from(["childflow", "--report", "/tmp/childflow-flow.jsonl"]);
+
+        assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert!(cli.command.is_empty());
+    }
+
+    #[test]
     fn parse_accepts_cidr_policy_flags() {
         let cli = Cli::parse_from([
             "childflow",
@@ -895,6 +917,27 @@ command = ["curl", "https://example.com"]
 
         cli.validate().unwrap();
         assert_eq!(cli.selected_backend(), NetworkBackend::RootlessInternal);
+    }
+
+    #[test]
+    fn report_flag_allows_empty_command() {
+        let cli = Cli {
+            report: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
+            command: Vec::new(),
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn report_flag_rejects_command() {
+        let cli = Cli {
+            report: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
     }
 
     fn unique_temp_profile_dir(prefix: &str) -> PathBuf {

@@ -73,6 +73,7 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            report: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,

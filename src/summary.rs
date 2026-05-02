@@ -2,14 +2,9 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-use serde_json::Value;
-
 use crate::capture::derive_output_paths;
 use crate::cli::{Cli, OutputView};
+use crate::report::FlowLogReport;
 use crate::sandbox::SandboxPolicy;
 use crate::util::render_command;
 
@@ -77,58 +72,9 @@ fn format_flow_log_events(cli: &Cli) -> String {
         return "disabled".to_string();
     };
 
-    match FlowLogEventCounts::from_path(path) {
-        Ok(stats) => stats.render(),
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_event_counts_compact(),
         Err(_) => "unavailable".to_string(),
-    }
-}
-
-#[derive(Default)]
-struct FlowLogEventCounts {
-    total: usize,
-    dns_query: usize,
-    dns_answer: usize,
-    connect_attempt: usize,
-    connect_result: usize,
-    policy_violation: usize,
-    flow_end: usize,
-}
-
-impl FlowLogEventCounts {
-    fn from_path(path: &Path) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut counts = Self::default();
-
-        for line in reader.lines() {
-            let line = line?;
-            let value: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
-            counts.total += 1;
-            match value.get("event").and_then(Value::as_str) {
-                Some("dns_query") => counts.dns_query += 1,
-                Some("dns_answer") => counts.dns_answer += 1,
-                Some("connect_attempt") => counts.connect_attempt += 1,
-                Some("connect_result") => counts.connect_result += 1,
-                Some("policy_violation") => counts.policy_violation += 1,
-                Some("flow_end") => counts.flow_end += 1,
-                _ => {}
-            }
-        }
-
-        Ok(counts)
-    }
-
-    fn render(&self) -> String {
-        format!(
-            "total={}, dns_query={}, dns_answer={}, connect_attempt={}, connect_result={}, policy_violation={}, flow_end={}",
-            self.total,
-            self.dns_query,
-            self.dns_answer,
-            self.connect_attempt,
-            self.connect_result,
-            self.policy_violation,
-            self.flow_end
-        )
     }
 }
 
@@ -149,6 +95,7 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            report: None,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,
