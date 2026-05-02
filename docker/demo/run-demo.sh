@@ -31,6 +31,11 @@ run_childflow() {
   childflow "$@"
 }
 
+resolve_service_ipv4() {
+  local host="$1"
+  getent ahostsv4 "$host" | awk 'NR == 1 { print $1 }'
+}
+
 ./docker/demo/wait-for-port.sh proxy-http 3128
 ./docker/demo/wait-for-port.sh proxy-https 3443
 
@@ -46,6 +51,33 @@ http_proxy_output="$tmpdir/http-proxy.txt"
 https_proxy_output="$tmpdir/https-proxy.txt"
 profile_http_output="$tmpdir/profile-http.txt"
 profile_dump_output="$tmpdir/profile-dump.toml"
+profile_ip_path="$tmpdir/http-origin-ip.toml"
+
+origin_http_ip="$(resolve_service_ipv4 origin-http.demo)"
+origin_https_ip="$(resolve_service_ipv4 origin-https.demo)"
+
+if [[ -z "$origin_http_ip" || -z "$origin_https_ip" ]]; then
+  echo "failed to resolve demo origin container IPs" >&2
+  exit 1
+fi
+
+origin_http_url="http://$origin_http_ip:8080/"
+origin_https_url="https://$origin_https_ip:8443/"
+
+cat >"$profile_ip_path" <<EOF
+extends = "$repo_root/docker/demo/profiles/base.toml"
+capture = "$repo_root/docker/demo/profiles/captures/http-origin.pcapng"
+flow_log = "$repo_root/docker/demo/profiles/logs/http-origin.jsonl"
+command = [
+  "curl",
+  "--connect-timeout",
+  "5",
+  "--max-time",
+  "15",
+  "-fsS",
+  "$origin_http_url",
+]
+EOF
 
 if curl --connect-timeout 3 --max-time 5 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
   echo "direct HTTP access unexpectedly succeeded" >&2
@@ -62,7 +94,7 @@ if run_childflow \
   -c "$tmpdir/http-auth-fail.pcapng" \
   -p http://proxy-http:3128 \
   -- \
-  curl --connect-timeout 5 --max-time 10 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
+  curl --connect-timeout 5 --max-time 10 -fsS "$origin_http_url" >/dev/null 2>&1; then
   echo "HTTP proxy request unexpectedly succeeded without auth" >&2
   exit 1
 fi
@@ -74,7 +106,7 @@ if run_childflow \
   --proxy-user demo \
   --proxy-password demo \
   -- \
-  curl --connect-timeout 5 --max-time 10 -kfsS https://origin-https.demo:8443/ >/dev/null 2>&1; then
+  curl --connect-timeout 5 --max-time 10 -kfsS "$origin_https_url" >/dev/null 2>&1; then
   echo "HTTPS proxy request unexpectedly succeeded without --proxy-insecure" >&2
   exit 1
 fi
@@ -86,13 +118,13 @@ run_childflow \
   --proxy-user demo \
   --proxy-password demo \
   -- \
-  curl --connect-timeout 5 --max-time 15 -fsS http://origin-http.demo:8080/ >"$http_proxy_output"
+  curl --connect-timeout 5 --max-time 15 -fsS "$origin_http_url" >"$http_proxy_output"
 
 grep -q "origin-http-ok" "$http_proxy_output"
 
 echo "[demo] verifying profile-driven HTTP proxy flow"
 run_childflow \
-  --profile "$repo_root/docker/demo/profiles/http-origin.toml" \
+  --profile "$profile_ip_path" \
   >"$profile_http_output"
 
 grep -q "origin-http-ok" "$profile_http_output"
@@ -119,7 +151,7 @@ run_childflow \
   --proxy-password demo \
   --proxy-insecure \
   -- \
-  curl --connect-timeout 5 --max-time 15 -kfsS https://origin-https.demo:8443/ >"$https_proxy_output"
+  curl --connect-timeout 5 --max-time 15 -kfsS "$origin_https_url" >"$https_proxy_output"
 
 grep -q "origin-https-ok" "$https_proxy_output"
 

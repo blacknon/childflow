@@ -145,6 +145,7 @@ fn real_main() -> Result<i32> {
                 ready_pipe: child_network_bootstrap.as_ref().map(|_| ready_file),
                 tap_transfer: child_network_bootstrap.as_ref().map(|_| tap_child),
                 resolv_conf: dns_plan.resolv_conf_path(),
+                resolv_conf_required: dns_plan.resolv_conf_required(),
                 hosts_file: hosts_plan.hosts_path(),
                 network_bootstrap: child_network_bootstrap.as_ref(),
                 extra_env: &child_proxy_env,

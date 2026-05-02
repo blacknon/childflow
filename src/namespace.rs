@@ -66,6 +66,7 @@ pub struct ChildExecParams<'a> {
     pub ready_pipe: Option<File>,
     pub tap_transfer: Option<UnixStream>,
     pub resolv_conf: Option<&'a Path>,
+    pub resolv_conf_required: bool,
     pub hosts_file: Option<&'a Path>,
     pub network_bootstrap: Option<&'a ChildNetworkBootstrap>,
     pub extra_env: &'a [(String, String)],
@@ -80,6 +81,7 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
         mut ready_pipe,
         tap_transfer,
         resolv_conf,
+        resolv_conf_required,
         hosts_file,
         network_bootstrap,
         extra_env,
@@ -113,19 +115,7 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
     make_mount_propagation_private()?;
 
     if let Some(resolv_conf) = resolv_conf {
-        mount(
-            Some(resolv_conf),
-            "/etc/resolv.conf",
-            None::<&str>,
-            MsFlags::MS_BIND,
-            None::<&str>,
-        )
-        .with_context(|| {
-            format!(
-                "failed to bind-mount {} over /etc/resolv.conf",
-                resolv_conf.display()
-            )
-        })?;
+        bind_mount_resolv_conf(resolv_conf, resolv_conf_required)?;
     }
 
     if let Some(hosts_file) = hosts_file {
@@ -233,12 +223,43 @@ fn make_mount_propagation_private() -> Result<()> {
     Ok(())
 }
 
+fn bind_mount_resolv_conf(resolv_conf: &Path, required: bool) -> Result<()> {
+    if let Err(err) = mount(
+        Some(resolv_conf),
+        "/etc/resolv.conf",
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    ) {
+        if can_skip_resolv_conf_bind(err, required) {
+            crate::util::warn(
+                "AppArmor denied bind-mounting the generated resolv.conf inside the rootless user namespace. Continuing with the inherited resolv.conf, so hostname resolution may be limited in this environment.",
+            );
+            return Ok(());
+        }
+        return Err(anyhow::Error::new(err).context(format!(
+            "failed to bind-mount {} over /etc/resolv.conf",
+            resolv_conf.display()
+        )));
+    }
+
+    Ok(())
+}
+
 fn can_skip_mount_private(err: nix::errno::Errno) -> bool {
     matches!(err, nix::errno::Errno::EACCES | nix::errno::Errno::EPERM)
         && current_apparmor_profile()
             .as_deref()
             .is_some_and(|profile| profile.starts_with("unprivileged_userns"))
         && root_mount_propagates_outward() == Some(false)
+}
+
+fn can_skip_resolv_conf_bind(err: nix::errno::Errno, required: bool) -> bool {
+    !required
+        && matches!(err, nix::errno::Errno::EACCES | nix::errno::Errno::EPERM)
+        && current_apparmor_profile()
+            .as_deref()
+            .is_some_and(|profile| profile.starts_with("unprivileged_userns"))
 }
 
 fn build_mount_private_error(err: nix::errno::Errno) -> anyhow::Error {
@@ -619,29 +640,6 @@ fn format_optional_value(value: Option<String>) -> String {
     value.unwrap_or_else(|| "<unavailable>".to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_mountinfo_propagates_outward;
-
-    #[test]
-    fn parse_mountinfo_marks_private_root_as_not_propagating_outward() {
-        let line = "611 610 0:57 / / rw,relatime - overlay overlay rw";
-        assert!(!parse_mountinfo_propagates_outward(line));
-    }
-
-    #[test]
-    fn parse_mountinfo_marks_slave_root_as_not_propagating_outward() {
-        let line = "842 829 0:325 / / rw,relatime master:128 - overlay overlay rw";
-        assert!(!parse_mountinfo_propagates_outward(line));
-    }
-
-    #[test]
-    fn parse_mountinfo_marks_shared_root_as_propagating_outward() {
-        let line = "61 0 8:2 / / rw,relatime shared:1 - ext4 /dev/sda1 rw";
-        assert!(parse_mountinfo_propagates_outward(line));
-    }
-}
-
 fn command_in_path(program: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| {
@@ -832,4 +830,27 @@ fn ifreq_name_to_string(raw_name: &[nix::libc::c_char; nix::libc::IFNAMSIZ]) -> 
         .collect();
     String::from_utf8(bytes)
         .map_err(|err| anyhow!("kernel returned a non-UTF8 tap device name: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mountinfo_propagates_outward;
+
+    #[test]
+    fn parse_mountinfo_marks_private_root_as_not_propagating_outward() {
+        let line = "611 610 0:57 / / rw,relatime - overlay overlay rw";
+        assert!(!parse_mountinfo_propagates_outward(line));
+    }
+
+    #[test]
+    fn parse_mountinfo_marks_slave_root_as_not_propagating_outward() {
+        let line = "842 829 0:325 / / rw,relatime master:128 - overlay overlay rw";
+        assert!(!parse_mountinfo_propagates_outward(line));
+    }
+
+    #[test]
+    fn parse_mountinfo_marks_shared_root_as_propagating_outward() {
+        let line = "61 0 8:2 / / rw,relatime shared:1 - ext4 /dev/sda1 rw";
+        assert!(parse_mountinfo_propagates_outward(line));
+    }
 }
