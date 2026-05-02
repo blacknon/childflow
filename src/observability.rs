@@ -22,6 +22,7 @@ pub mod report {
     pub const EVENT_COUNTS: &str = "event_counts";
     pub const PROTOCOLS: &str = "protocols";
     pub const SORTED_PROTOCOLS: &str = "sorted_protocols";
+    pub const TOP_DNS_NAMES: &str = "top_dns_names";
     pub const PROXY_USAGE: &str = "proxy_usage";
     pub const POLICY_VIOLATIONS: &str = "policy_violations";
     pub const SORTED_POLICY_VIOLATIONS: &str = "sorted_policy_violations";
@@ -36,6 +37,7 @@ pub mod report {
 
 pub mod summary {
     pub const FLOW_LOG_EVENTS: &str = "flow-log events";
+    pub const FLOW_LOG_DNS_NAMES: &str = "flow-log dns names";
     pub const FLOW_LOG_TOP_TARGET: &str = "flow-log top target";
     pub const FLOW_LOG_POLICY_VIOLATIONS: &str = "flow-log policy violations";
     pub const FLOW_LOG_CONNECT_ERRORS: &str = "flow-log connect errors";

@@ -42,6 +42,7 @@ pub struct FlowLogReport {
     pub unknown_event: usize,
     pub schema_versions: BTreeSet<u32>,
     pub protocol_counts: BTreeMap<String, usize>,
+    pub dns_name_counts: BTreeMap<String, DnsNameStats>,
     pub policy_reason_counts: BTreeMap<String, usize>,
     pub connect_error_counts: BTreeMap<String, usize>,
     pub runtime_failure_reason_counts: BTreeMap<String, usize>,
@@ -57,6 +58,12 @@ pub struct ConnectionTargetStats {
     pub connect_ok: usize,
     pub connect_error: usize,
     pub flow_end: usize,
+}
+
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize)]
+pub struct DnsNameStats {
+    pub queries: usize,
+    pub answers: usize,
 }
 
 impl FlowLogReport {
@@ -109,6 +116,18 @@ impl FlowLogReport {
         } else {
             for (protocol, count) in top_count_entries(&self.protocol_counts, usize::MAX) {
                 rendered.push_str(&format!("  {protocol}: {count}\n"));
+            }
+        }
+
+        rendered.push_str("top-dns-names:\n");
+        if self.dns_name_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (qname, stats) in self.top_dns_names(10) {
+                rendered.push_str(&format!(
+                    "  {qname}: queries={}, answers={}\n",
+                    stats.queries, stats.answers
+                ));
             }
         }
 
@@ -196,6 +215,19 @@ impl FlowLogReport {
             rendered.push_str("| Protocol | Count |\n| --- | ---: |\n");
             for (protocol, count) in top_count_entries(&self.protocol_counts, usize::MAX) {
                 rendered.push_str(&format!("| {protocol} | {count} |\n"));
+            }
+        }
+
+        rendered.push_str("\n## Top DNS names\n\n");
+        if self.dns_name_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| DNS name | Queries | Answers |\n| --- | ---: | ---: |\n");
+            for (qname, stats) in self.top_dns_names(10) {
+                rendered.push_str(&format!(
+                    "| `{qname}` | {} | {} |\n",
+                    stats.queries, stats.answers
+                ));
             }
         }
 
@@ -295,8 +327,18 @@ impl FlowLogReport {
         }
 
         match event.event.as_str() {
-            "dns_query" => self.dns_query += 1,
-            "dns_answer" => self.dns_answer += 1,
+            "dns_query" => {
+                self.dns_query += 1;
+                if let Some(qname) = event.qname {
+                    self.dns_name_counts.entry(qname).or_default().queries += 1;
+                }
+            }
+            "dns_answer" => {
+                self.dns_answer += 1;
+                if let Some(qname) = event.qname {
+                    self.dns_name_counts.entry(qname).or_default().answers += 1;
+                }
+            }
             "connect_attempt" => {
                 self.connect_attempt += 1;
                 if event.via_proxy.unwrap_or(false) {
@@ -383,6 +425,34 @@ impl FlowLogReport {
         });
         entries.truncate(limit);
         entries
+    }
+
+    pub fn top_dns_names(&self, limit: usize) -> Vec<(&str, &DnsNameStats)> {
+        let mut entries = self
+            .dns_name_counts
+            .iter()
+            .map(|(qname, stats)| (qname.as_str(), stats))
+            .collect::<Vec<_>>();
+        entries.sort_by(|(left_name, left_stats), (right_name, right_stats)| {
+            right_stats
+                .queries
+                .cmp(&left_stats.queries)
+                .then_with(|| right_stats.answers.cmp(&left_stats.answers))
+                .then_with(|| left_name.cmp(right_name))
+        });
+        entries.truncate(limit);
+        entries
+    }
+
+    pub fn render_top_dns_name_compact(&self) -> String {
+        let Some((qname, stats)) = self.top_dns_names(1).into_iter().next() else {
+            return "none".to_string();
+        };
+
+        format!(
+            "{qname} (queries={}, answers={})",
+            stats.queries, stats.answers
+        )
     }
 
     pub fn render_top_target_compact(&self) -> String {
@@ -500,6 +570,20 @@ impl FlowLogReport {
                 .expect("sorted_protocols should serialize"),
         );
         root.insert(
+            observability_report::TOP_DNS_NAMES.to_string(),
+            serde_json::to_value(
+                self.top_dns_names(10)
+                    .into_iter()
+                    .map(|(qname, stats)| JsonDnsName {
+                        qname,
+                        queries: stats.queries,
+                        answers: stats.answers,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .expect("top_dns_names should serialize"),
+        );
+        root.insert(
             observability_report::PROXY_USAGE.to_string(),
             serde_json::json!({
                 "proxied_connect_attempts": self.proxied_connect_attempts,
@@ -583,6 +667,15 @@ impl FlowLogReport {
             lines.push("- top connection target: none".to_string());
         }
 
+        if let Some((qname, stats)) = self.top_dns_names(1).into_iter().next() {
+            lines.push(format!(
+                "- top DNS name: `{qname}` (queries={}, answers={})",
+                stats.queries, stats.answers
+            ));
+        } else {
+            lines.push("- top DNS name: none".to_string());
+        }
+
         lines.push(self.render_markdown_count_highlight(
             "most common policy violation",
             &self.policy_reason_counts,
@@ -640,6 +733,8 @@ struct FlowLogLine {
     #[serde(default)]
     protocol: Option<String>,
     #[serde(default)]
+    qname: Option<String>,
+    #[serde(default)]
     remote_addr: Option<String>,
     #[serde(default)]
     remote: Option<String>,
@@ -662,6 +757,13 @@ struct JsonConnectionTarget<'a> {
     connect_ok: usize,
     connect_error: usize,
     flow_end: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonDnsName<'a> {
+    qname: &'a str,
+    queries: usize,
+    answers: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -732,6 +834,13 @@ mod tests {
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
             protocol_counts: BTreeMap::from([("tcp".into(), 2), ("udp".into(), 2)]),
+            dns_name_counts: BTreeMap::from([(
+                "example.com".into(),
+                DnsNameStats {
+                    queries: 1,
+                    answers: 1,
+                },
+            )]),
             policy_reason_counts: BTreeMap::new(),
             connect_error_counts: BTreeMap::new(),
             runtime_failure_reason_counts: BTreeMap::new(),
@@ -759,6 +868,8 @@ mod tests {
         assert!(rendered.contains("unknown_event: 0"));
         assert!(rendered.contains("protocols:"));
         assert!(rendered.contains("tcp: 2"));
+        assert!(rendered.contains("top-dns-names:"));
+        assert!(rendered.contains("example.com: queries=1, answers=1"));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
         assert!(rendered.contains("connect-errors:\n  <none>"));
@@ -783,6 +894,13 @@ mod tests {
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
             protocol_counts: BTreeMap::from([("tcp".into(), 3)]),
+            dns_name_counts: BTreeMap::from([(
+                "example.com".into(),
+                DnsNameStats {
+                    queries: 2,
+                    answers: 1,
+                },
+            )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
@@ -806,6 +924,7 @@ mod tests {
         assert!(rendered.contains(
             "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0)"
         ));
+        assert!(rendered.contains("- top DNS name: `example.com` (queries=2, answers=1)"));
         assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
         assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
         assert!(rendered.contains("- most common runtime failure: `tap_create_blocked` (1)"));
@@ -813,6 +932,7 @@ mod tests {
         assert!(rendered.contains("| total | 3 |"));
         assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));
+        assert!(rendered.contains("| `example.com` | 2 | 1 |"));
         assert!(rendered.contains("| proxy_only | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
@@ -835,6 +955,13 @@ mod tests {
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
             protocol_counts: BTreeMap::from([("tcp".into(), 3)]),
+            dns_name_counts: BTreeMap::from([(
+                "example.com".into(),
+                DnsNameStats {
+                    queries: 2,
+                    answers: 1,
+                },
+            )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
@@ -861,6 +988,10 @@ mod tests {
         assert_eq!(
             json["sorted_protocols"][0],
             serde_json::json!({"key":"tcp","count":3})
+        );
+        assert_eq!(
+            json["top_dns_names"][0],
+            serde_json::json!({"qname":"example.com","queries":2,"answers":1})
         );
         assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
         assert_eq!(json["policy_violations"]["proxy_only"], 1);
@@ -931,6 +1062,44 @@ mod tests {
                 connect_error: 1,
                 flow_end: 0,
             })
+        );
+
+        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn flow_log_report_aggregates_dns_names() -> Result<()> {
+        let path = unique_temp_flow_log_path("report-dns-names");
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n",
+                "{\"schema_version\":1,\"event\":\"dns_answer\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n",
+                "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"api.example.com\"}\n",
+                "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n"
+            ),
+        )?;
+
+        let report = FlowLogReport::from_path(&path)?;
+        assert_eq!(
+            report.dns_name_counts.get("example.com"),
+            Some(&DnsNameStats {
+                queries: 2,
+                answers: 1,
+            })
+        );
+        assert_eq!(
+            report
+                .top_dns_names(2)
+                .into_iter()
+                .map(|(qname, _)| qname)
+                .collect::<Vec<_>>(),
+            vec!["example.com", "api.example.com"]
+        );
+        assert_eq!(
+            report.render_top_dns_name_compact(),
+            "example.com (queries=2, answers=1)"
         );
 
         let _ = fs::remove_file(path);

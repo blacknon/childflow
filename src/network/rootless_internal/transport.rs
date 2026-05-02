@@ -342,6 +342,31 @@ pub(super) fn dns_query_type(payload: &[u8]) -> Option<u16> {
     ]))
 }
 
+pub(super) fn dns_query_name(payload: &[u8]) -> Option<String> {
+    if payload.len() < DNS_HEADER_LEN {
+        return None;
+    }
+    let qdcount = u16::from_be_bytes([payload[4], payload[5]]);
+    if qdcount != 1 {
+        return None;
+    }
+
+    let mut offset = DNS_HEADER_LEN;
+    let mut labels = Vec::new();
+    while offset < payload.len() {
+        let label_len = payload[offset] as usize;
+        offset += 1;
+        if label_len == 0 {
+            return (!labels.is_empty()).then(|| labels.join(".").to_ascii_lowercase());
+        }
+        let end = offset.checked_add(label_len)?;
+        let label = std::str::from_utf8(payload.get(offset..end)?).ok()?;
+        labels.push(label.to_string());
+        offset = end;
+    }
+    None
+}
+
 fn dns_question_end(payload: &[u8]) -> Option<usize> {
     let mut offset = DNS_HEADER_LEN;
     while offset < payload.len() {
@@ -449,6 +474,17 @@ mod tests {
             0x01,
         ];
         assert_eq!(dns_query_type(&query), Some(DNS_TYPE_AAAA));
+    }
+
+    #[test]
+    fn dns_query_name_extracts_normalized_qname() {
+        let query = [
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'E',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'C', b'O', b'M', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+
+        assert_eq!(dns_query_name(&query).as_deref(), Some("example.com"));
     }
 
     #[test]

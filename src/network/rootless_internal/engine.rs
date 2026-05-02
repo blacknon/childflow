@@ -30,7 +30,7 @@ use super::packet::{
 use super::state::{FlowKey, TcpSession};
 use super::tap::TapHandle;
 use super::transport::{
-    connect_remote, dns_query_type, relay_dns_udp, relay_udp_payload,
+    connect_remote, dns_query_name, dns_query_type, relay_dns_udp, relay_udp_payload,
     synthesize_empty_dns_response, UdpRelayOutcome, DNS_TYPE_AAAA,
 };
 
@@ -525,6 +525,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         leak_detected,
     } = ctx;
     let dns_qtype = dns_query_type_name(&udp.payload);
+    let dns_qname = dns_query_name(&udp.payload);
     if udp.dst_port == 53
         && (udp.meta.dst_ip == IpAddr::V4(addr_plan.gateway_ipv4)
             || udp.meta.dst_ip == IpAddr::V6(addr_plan.gateway_ipv6))
@@ -562,6 +563,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             log_dns_answer(
                 flow_log,
                 SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qname.as_deref(),
                 dns_qtype,
                 DnsAnswerMode::SyntheticEmpty,
                 response.len(),
@@ -570,7 +572,12 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         }
 
         if !allow_ipv6_outbound && dns_query_type(&udp.payload) == Some(DNS_TYPE_AAAA) {
-            log_dns_query(flow_log, SocketAddr::new(udp.meta.dst_ip, 53), dns_qtype)?;
+            log_dns_query(
+                flow_log,
+                SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qname.as_deref(),
+                dns_qtype,
+            )?;
             let response = synthesize_empty_dns_response(&udp.payload)?;
             let frame = packet::build_udp_frame(
                 addr_plan.gateway_mac,
@@ -591,6 +598,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             log_dns_answer(
                 flow_log,
                 SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qname.as_deref(),
                 dns_qtype,
                 DnsAnswerMode::SyntheticEmpty,
                 response.len(),
@@ -599,7 +607,12 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         }
 
         if sandbox_policy.offline {
-            log_dns_query(flow_log, SocketAddr::new(udp.meta.dst_ip, 53), dns_qtype)?;
+            log_dns_query(
+                flow_log,
+                SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qname.as_deref(),
+                dns_qtype,
+            )?;
             let response = synthesize_empty_dns_response(&udp.payload)?;
             let frame = packet::build_udp_frame(
                 addr_plan.gateway_mac,
@@ -620,6 +633,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             log_dns_answer(
                 flow_log,
                 SocketAddr::new(udp.meta.dst_ip, 53),
+                dns_qname.as_deref(),
                 dns_qtype,
                 DnsAnswerMode::SyntheticEmpty,
                 response.len(),
@@ -635,7 +649,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         };
 
         let server = SocketAddr::new(upstream_ip, 53);
-        log_dns_query(flow_log, server, dns_qtype)?;
+        log_dns_query(flow_log, server, dns_qname.as_deref(), dns_qtype)?;
         let response = relay_dns_udp(upstream_ip, &udp.payload)?;
         let frame = packet::build_udp_frame(
             addr_plan.gateway_mac,
@@ -656,6 +670,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         log_dns_answer(
             flow_log,
             server,
+            dns_qname.as_deref(),
             dns_qtype,
             DnsAnswerMode::Relayed,
             response.len(),
@@ -764,10 +779,11 @@ fn log_connect_result(
 fn log_dns_query(
     flow_log: &mut Option<FlowLogger>,
     server: SocketAddr,
+    qname: Option<&str>,
     qtype: Option<&'static str>,
 ) -> Result<()> {
     if let Some(logger) = flow_log.as_mut() {
-        logger.log_dns_query(server, qtype)?;
+        logger.log_dns_query(server, qname, qtype)?;
     }
     Ok(())
 }
@@ -775,12 +791,13 @@ fn log_dns_query(
 fn log_dns_answer(
     flow_log: &mut Option<FlowLogger>,
     server: SocketAddr,
+    qname: Option<&str>,
     qtype: Option<&'static str>,
     mode: DnsAnswerMode,
     bytes: usize,
 ) -> Result<()> {
     if let Some(logger) = flow_log.as_mut() {
-        logger.log_dns_answer(server, qtype, mode, bytes)?;
+        logger.log_dns_answer(server, qname, qtype, mode, bytes)?;
     }
     Ok(())
 }

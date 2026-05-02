@@ -27,13 +27,15 @@ fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
         .unwrap_or_else(|| "<none>".to_string());
 
     format!(
-        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\nexit: {exit_code}\n",
+        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\nexit: {exit_code}\n",
         backend_name(cli),
         format_controls(&sandbox_policy.active_controls()),
         format_capture(cli),
         format_flow_log(cli),
         observability_summary::FLOW_LOG_EVENTS,
         format_flow_log_events(cli),
+        observability_summary::FLOW_LOG_DNS_NAMES,
+        format_flow_log_dns_names(cli),
         observability_summary::FLOW_LOG_TOP_TARGET,
         format_flow_log_top_target(cli),
         observability_summary::FLOW_LOG_POLICY_VIOLATIONS,
@@ -115,6 +117,17 @@ fn format_flow_log_top_target(cli: &Cli) -> String {
 
     match FlowLogReport::from_path(path) {
         Ok(report) => report.render_top_target_compact(),
+        Err(_) => "unavailable".to_string(),
+    }
+}
+
+fn format_flow_log_dns_names(cli: &Cli) -> String {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return "disabled".to_string();
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_top_dns_name_compact(),
         Err(_) => "unavailable".to_string(),
     }
 }
@@ -234,6 +247,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
             status: "disabled".to_string(),
             path: None,
             event_counts: None,
+            top_dns_name: None,
             top_target: None,
             policy_violations: Vec::new(),
             connect_errors: Vec::new(),
@@ -257,6 +271,15 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                 runtime_failure: report.runtime_failure,
                 unknown_event: report.unknown_event,
             }),
+            top_dns_name: report
+                .top_dns_names(1)
+                .into_iter()
+                .next()
+                .map(|(qname, stats)| SummaryTopDnsName {
+                    qname: qname.to_string(),
+                    queries: stats.queries,
+                    answers: stats.answers,
+                }),
             top_target: report.top_connection_targets(1).into_iter().next().map(
                 |(target, stats)| SummaryTopTarget {
                     target: target.to_string(),
@@ -275,6 +298,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
             status: "unavailable".to_string(),
             path: Some(path.display().to_string()),
             event_counts: None,
+            top_dns_name: None,
             top_target: None,
             policy_violations: Vec::new(),
             connect_errors: Vec::new(),
@@ -319,6 +343,7 @@ struct SummaryFlowLogReport {
     status: String,
     path: Option<String>,
     event_counts: Option<SummaryEventCounts>,
+    top_dns_name: Option<SummaryTopDnsName>,
     top_target: Option<SummaryTopTarget>,
     policy_violations: Vec<SummaryCountEntry>,
     connect_errors: Vec<SummaryCountEntry>,
@@ -337,6 +362,13 @@ struct SummaryEventCounts {
     flow_end: usize,
     runtime_failure: usize,
     unknown_event: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryTopDnsName {
+    qname: String,
+    queries: usize,
+    answers: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -411,6 +443,7 @@ mod tests {
         assert!(rendered.contains("capture: disabled"));
         assert!(rendered.contains("flow-log: disabled"));
         assert!(rendered.contains("flow-log events: disabled"));
+        assert!(rendered.contains("flow-log dns names: disabled"));
         assert!(rendered.contains("flow-log top target: disabled"));
         assert!(rendered.contains("flow-log policy violations: disabled"));
         assert!(rendered.contains("flow-log connect errors: disabled"));
@@ -436,6 +469,7 @@ mod tests {
         ));
         assert!(rendered.contains("flow-log: /tmp/flow.jsonl"));
         assert!(rendered.contains("flow-log events: unavailable"));
+        assert!(rendered.contains("flow-log dns names: unavailable"));
         assert!(rendered.contains("flow-log top target: unavailable"));
         assert!(rendered.contains("flow-log policy violations: unavailable"));
         assert!(rendered.contains("flow-log connect errors: unavailable"));
@@ -464,6 +498,8 @@ mod tests {
         fs::write(
             &flow_log_path,
             concat!(
+                "{\"event\":\"dns_query\",\"qname\":\"example.com\",\"ts_ms\":0}\n",
+                "{\"event\":\"dns_answer\",\"qname\":\"example.com\",\"ts_ms\":0}\n",
                 "{\"event\":\"connect_attempt\",\"ts_ms\":1}\n",
                 "{\"event\":\"connect_result\",\"status\":\"error\",\"error\":\"connection refused\",\"remote_addr\":\"93.184.216.34:443\",\"ts_ms\":2}\n",
                 "{\"event\":\"policy_violation\",\"reason_code\":\"deny_cidr\",\"ts_ms\":3}\n",
@@ -476,12 +512,15 @@ mod tests {
 
         let rendered = render_run_summary(&cli, 0);
 
-        assert!(rendered.contains("flow-log events: total=5"));
+        assert!(rendered.contains("flow-log events: total=7"));
         assert!(rendered.contains("connect_attempt=1"));
         assert!(rendered.contains("connect_result=1"));
+        assert!(rendered.contains("dns_query=1"));
+        assert!(rendered.contains("dns_answer=1"));
         assert!(rendered.contains("policy_violation=1"));
         assert!(rendered.contains("flow_end=1"));
         assert!(rendered.contains("runtime_failure=1"));
+        assert!(rendered.contains("flow-log dns names: example.com (queries=1, answers=1)"));
         assert!(rendered.contains(
             "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1)"
         ));
@@ -510,6 +549,7 @@ mod tests {
         assert_eq!(value["capture"]["effective"], "wire-egress");
         assert_eq!(value["capture"]["output"], "/tmp/capture.pcapng");
         assert_eq!(value["flow_log"]["status"], "disabled");
+        assert!(value["flow_log"]["top_dns_name"].is_null());
     }
 
     fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {

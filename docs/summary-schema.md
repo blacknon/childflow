@@ -53,6 +53,7 @@ Example:
 | `status` | string | Current values are `disabled`, `available`, or `unavailable` |
 | `path` | string or null | Path passed to `--flow-log` when present |
 | `event_counts` | object or null | Aggregate flow-log event counts |
+| `top_dns_name` | object or null | Most frequently observed DNS name |
 | `top_target` | object or null | Most active connection target |
 | `policy_violations` | array | Ranked policy violation counts |
 | `connect_errors` | array | Ranked connect error counts |
@@ -134,6 +135,24 @@ Example:
 }
 ```
 
+## `top_dns_name`
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `qname` | string | Normalized DNS question name |
+| `queries` | integer | Number of `dns_query` events for this name |
+| `answers` | integer | Number of `dns_answer` events for this name |
+
+Example:
+
+```json
+"top_dns_name": {
+  "qname": "example.com",
+  "queries": 1,
+  "answers": 1
+}
+```
+
 ## Example
 
 ```json
@@ -155,14 +174,19 @@ Example:
     "path": "./flow.jsonl",
     "event_counts": {
       "total": 5,
-      "dns_query": 0,
-      "dns_answer": 0,
+      "dns_query": 1,
+      "dns_answer": 1,
       "connect_attempt": 1,
       "connect_result": 1,
       "policy_violation": 1,
       "flow_end": 1,
       "runtime_failure": 1,
       "unknown_event": 0
+    },
+    "top_dns_name": {
+      "qname": "example.com",
+      "queries": 1,
+      "answers": 1
     },
     "top_target": {
       "target": "93.184.216.34:443",

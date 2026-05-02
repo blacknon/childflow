@@ -30,12 +30,13 @@ Every event currently includes these fields:
 | `server` | string | Yes | Socket string such as `1.1.1.1:53` |
 | `server_ip` | string | Yes | IP-only server field |
 | `server_port` | integer | Yes | Current value is `53` |
+| `qname` | string or null | Yes | Normalized DNS question name when it can be extracted from the packet |
 | `qtype` | string | Yes | Current values are `A`, `AAAA`, `other`, or `unknown` |
 
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000000,"event":"dns_query","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qtype":"A"}
+{"schema_version":1,"ts_ms":1760000000000,"event":"dns_query","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qname":"example.com","qtype":"A"}
 ```
 
 ### `dns_answer`
@@ -47,6 +48,7 @@ Example:
 | `server` | string | Yes | Socket string such as `1.1.1.1:53` |
 | `server_ip` | string | Yes | IP-only server field |
 | `server_port` | integer | Yes | Current value is `53` |
+| `qname` | string or null | Yes | Mirrors the paired query name when available |
 | `qtype` | string | Yes | Mirrors the paired query classification |
 | `mode` | string | Yes | Current values are `relayed` or `synthetic_empty` |
 | `bytes` | integer | Yes | Response payload length |
@@ -54,7 +56,7 @@ Example:
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000001,"event":"dns_answer","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qtype":"A","mode":"relayed","bytes":128}
+{"schema_version":1,"ts_ms":1760000000001,"event":"dns_answer","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qname":"example.com","qtype":"A","mode":"relayed","bytes":128}
 ```
 
 ### `connect_attempt`

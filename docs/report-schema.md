@@ -9,7 +9,7 @@ This document describes the current JSON shape of that report.
 
 - current output format: one JSON object
 - current source artifact: `childflow --flow-log`
-- current report focus: event counts, ranked aggregates, and top connection targets
+- current report focus: event counts, ranked aggregates, top DNS names, and top connection targets
 
 ## Top-level fields
 
@@ -20,6 +20,7 @@ This document describes the current JSON shape of that report.
 | `event_counts` | object | Counts per event type |
 | `protocols` | object | Map of protocol name to count |
 | `sorted_protocols` | array | Ranked protocol counts |
+| `top_dns_names` | array | Ranked DNS names with query / answer counts |
 | `proxy_usage` | object | Counts for proxied vs direct connect attempts |
 | `policy_violations` | object | Map of `reason_code` to count |
 | `sorted_policy_violations` | array | Ranked policy violation counts |
@@ -97,6 +98,31 @@ Example:
 }
 ```
 
+## `top_dns_names`
+
+Each element currently includes:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `qname` | string | Normalized DNS question name |
+| `queries` | integer | Number of `dns_query` events that carried this name |
+| `answers` | integer | Number of `dns_answer` events that carried this name |
+
+The array is currently sorted by descending `queries`, then descending `answers`,
+then ascending `qname`.
+
+Example:
+
+```json
+"top_dns_names": [
+  {
+    "qname": "example.com",
+    "queries": 2,
+    "answers": 1
+  }
+]
+```
+
 ## `top_connection_targets`
 
 Each element currently includes:
@@ -150,6 +176,13 @@ Example:
   "sorted_protocols": [
     { "key": "tcp", "count": 3 },
     { "key": "udp", "count": 1 }
+  ],
+  "top_dns_names": [
+    {
+      "qname": "example.com",
+      "queries": 1,
+      "answers": 1
+    }
   ],
   "proxy_usage": {
     "proxied_connect_attempts": 1,

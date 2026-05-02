@@ -73,13 +73,19 @@ impl FlowLogger {
         })
     }
 
-    pub fn log_dns_query(&mut self, server: SocketAddr, qtype: Option<&'static str>) -> Result<()> {
+    pub fn log_dns_query(
+        &mut self,
+        server: SocketAddr,
+        qname: Option<&str>,
+        qtype: Option<&'static str>,
+    ) -> Result<()> {
         self.write_event(json!({
             "event": "dns_query",
             "protocol": "udp",
             "server": server.to_string(),
             "server_ip": server.ip().to_string(),
             "server_port": server.port(),
+            "qname": qname,
             "qtype": qtype.unwrap_or("unknown"),
         }))
     }
@@ -87,6 +93,7 @@ impl FlowLogger {
     pub fn log_dns_answer(
         &mut self,
         server: SocketAddr,
+        qname: Option<&str>,
         qtype: Option<&'static str>,
         mode: DnsAnswerMode,
         bytes: usize,
@@ -97,6 +104,7 @@ impl FlowLogger {
             "server": server.to_string(),
             "server_ip": server.ip().to_string(),
             "server_port": server.port(),
+            "qname": qname,
             "qtype": qtype.unwrap_or("unknown"),
             "mode": mode.as_str(),
             "bytes": bytes,
@@ -281,9 +289,10 @@ mod tests {
     fn flow_logger_writes_dns_events_with_structured_server_fields() -> Result<()> {
         let path = unique_temp_flow_log_path("flow-log-dns");
         let mut logger = FlowLogger::open(&path)?;
-        logger.log_dns_query("1.1.1.1:53".parse()?, Some("A"))?;
+        logger.log_dns_query("1.1.1.1:53".parse()?, Some("example.com"), Some("A"))?;
         logger.log_dns_answer(
             "1.1.1.1:53".parse()?,
+            Some("example.com"),
             Some("A"),
             DnsAnswerMode::Relayed,
             128,
@@ -296,6 +305,7 @@ mod tests {
         assert!(contents.contains("\"protocol\":\"udp\""));
         assert!(contents.contains("\"server_ip\":\"1.1.1.1\""));
         assert!(contents.contains("\"server_port\":53"));
+        assert!(contents.contains("\"qname\":\"example.com\""));
         assert!(contents.contains("\"event\":\"dns_answer\""));
         assert!(contents.contains("\"mode\":\"relayed\""));
         assert!(contents.contains("\"bytes\":128"));
@@ -316,6 +326,7 @@ mod tests {
         )?;
         logger.log_dns_answer(
             "1.1.1.1:53".parse()?,
+            Some("example.com"),
             Some("AAAA"),
             DnsAnswerMode::SyntheticEmpty,
             0,
