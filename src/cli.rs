@@ -90,6 +90,10 @@ struct RawCli {
     #[arg(long = "summary")]
     summary: bool,
 
+    /// Select the output format for `--summary`.
+    #[arg(long = "summary-format", value_enum)]
+    summary_format: Option<SummaryFormat>,
+
     /// Write structured flow events as JSON Lines. Currently supported only by the default rootless backend.
     #[arg(long = "flow-log")]
     flow_log: Option<PathBuf>,
@@ -152,6 +156,7 @@ pub struct Cli {
     pub proxy_password: Option<String>,
     pub proxy_insecure: bool,
     pub summary: bool,
+    pub summary_format: SummaryFormat,
     pub flow_log: Option<PathBuf>,
     pub offline: bool,
     pub block_private: bool,
@@ -273,6 +278,7 @@ impl Cli {
                 .and_then(|value| value.proxy_insecure)
                 .unwrap_or(false),
             summary: profile.and_then(|value| value.summary).unwrap_or(false),
+            summary_format: SummaryFormat::Text,
             flow_log: profile.and_then(|value| value.flow_log.clone()),
             offline: profile.and_then(|value| value.offline).unwrap_or(false),
             block_private: profile
@@ -338,6 +344,9 @@ impl Cli {
         }
         if raw.summary {
             cli.summary = true;
+        }
+        if let Some(value) = raw.summary_format {
+            cli.summary_format = value;
         }
         if let Some(value) = raw.flow_log {
             cli.flow_log = Some(value);
@@ -520,6 +529,13 @@ pub enum DoctorFormat {
     Json,
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum SummaryFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -545,6 +561,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: false,
+            summary_format: SummaryFormat::Text,
             flow_log: None,
             offline: false,
             block_private: false,
@@ -872,6 +889,22 @@ mod tests {
 
         assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
         assert_eq!(cli.report_format, ReportFormat::Json);
+    }
+
+    #[test]
+    fn parse_accepts_summary_format_flag() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--summary",
+            "--summary-format",
+            "json",
+            "--",
+            "curl",
+            "https://example.com",
+        ]);
+
+        assert!(cli.summary);
+        assert_eq!(cli.summary_format, SummaryFormat::Json);
     }
 
     #[test]

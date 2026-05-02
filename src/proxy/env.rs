@@ -84,6 +84,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: false,
+            summary_format: crate::cli::SummaryFormat::Text,
             flow_log: None,
             offline: false,
             block_private: false,

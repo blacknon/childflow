@@ -397,6 +397,10 @@ impl FlowLogReport {
             .join(", ")
     }
 
+    pub fn policy_violation_entries(&self, limit: usize) -> Vec<(&str, usize)> {
+        top_count_entries(&self.policy_reason_counts, limit)
+    }
+
     pub fn render_connect_errors_compact(&self, limit: usize) -> String {
         if self.connect_error_counts.is_empty() {
             return "none".to_string();
@@ -407,6 +411,10 @@ impl FlowLogReport {
             .map(|(error, count)| format!("{error}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    pub fn connect_error_entries(&self, limit: usize) -> Vec<(&str, usize)> {
+        top_count_entries(&self.connect_error_counts, limit)
     }
 
     pub fn render_runtime_failures_compact(&self, limit: usize) -> String {
@@ -421,6 +429,10 @@ impl FlowLogReport {
             .join(", ")
     }
 
+    pub fn runtime_failure_entries(&self, limit: usize) -> Vec<(&str, usize)> {
+        top_count_entries(&self.runtime_failure_reason_counts, limit)
+    }
+
     pub fn render_runtime_failure_phases_compact(&self, limit: usize) -> String {
         if self.runtime_failure_phase_counts.is_empty() {
             return "none".to_string();
@@ -431,6 +443,10 @@ impl FlowLogReport {
             .map(|(phase, count)| format!("{phase}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    pub fn runtime_failure_phase_entries(&self, limit: usize) -> Vec<(&str, usize)> {
+        top_count_entries(&self.runtime_failure_phase_counts, limit)
     }
 
     fn json_value(&self, path: &Path) -> Value {

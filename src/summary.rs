@@ -3,14 +3,19 @@
 // that can be found in the LICENSE file.
 
 use crate::capture::{derive_output_paths, effective_view_name, requested_view_name};
-use crate::cli::{Cli, OutputView};
+use crate::cli::{Cli, OutputView, SummaryFormat};
 use crate::observability::summary as observability_summary;
 use crate::report::FlowLogReport;
 use crate::sandbox::SandboxPolicy;
 use crate::util::render_command;
+use serde::Serialize;
 
 pub fn print_run_summary(cli: &Cli, exit_code: i32) {
-    eprint!("{}", render_run_summary(cli, exit_code));
+    let rendered = match cli.summary_format {
+        SummaryFormat::Text => render_run_summary(cli, exit_code),
+        SummaryFormat::Json => render_run_summary_json(cli, exit_code),
+    };
+    eprint!("{rendered}");
 }
 
 fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
@@ -158,6 +163,199 @@ fn format_flow_log_runtime_failure_phases(cli: &Cli) -> String {
     }
 }
 
+fn render_run_summary_json(cli: &Cli, exit_code: i32) -> String {
+    let sandbox_policy = SandboxPolicy::from_cli(cli);
+    let command = cli
+        .command
+        .split_first()
+        .map(|(program, args)| render_command(program, args))
+        .unwrap_or_else(|| "<none>".to_string());
+
+    let summary = SummaryJsonReport {
+        backend: backend_name(cli).to_string(),
+        command,
+        exit_code,
+        sandbox_controls: sandbox_policy.active_controls(),
+        capture: build_capture_summary(cli),
+        flow_log: build_flow_log_summary(cli),
+    };
+
+    serde_json::to_string_pretty(&summary).expect("summary JSON should serialize") + "\n"
+}
+
+fn build_capture_summary(cli: &Cli) -> SummaryCaptureReport {
+    let Some(output) = cli.output.as_ref() else {
+        return SummaryCaptureReport {
+            status: "disabled".to_string(),
+            requested: None,
+            effective: None,
+            output: None,
+            child_output: None,
+            egress_output: None,
+        };
+    };
+
+    let requested = requested_view_name(cli.output_view).to_string();
+    let effective = effective_view_name(cli.output_view).to_string();
+
+    match cli.output_view {
+        OutputView::Both => match derive_output_paths(output, cli.output_view) {
+            Ok((child, egress)) => SummaryCaptureReport {
+                status: "enabled".to_string(),
+                requested: Some(requested),
+                effective: Some(effective),
+                output: None,
+                child_output: Some(child.display().to_string()),
+                egress_output: Some(egress.display().to_string()),
+            },
+            Err(_) => SummaryCaptureReport {
+                status: "enabled".to_string(),
+                requested: Some(requested),
+                effective: Some(effective),
+                output: Some(output.display().to_string()),
+                child_output: None,
+                egress_output: None,
+            },
+        },
+        _ => SummaryCaptureReport {
+            status: "enabled".to_string(),
+            requested: Some(requested),
+            effective: Some(effective),
+            output: Some(output.display().to_string()),
+            child_output: None,
+            egress_output: None,
+        },
+    }
+}
+
+fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return SummaryFlowLogReport {
+            status: "disabled".to_string(),
+            path: None,
+            event_counts: None,
+            top_target: None,
+            policy_violations: Vec::new(),
+            connect_errors: Vec::new(),
+            runtime_failures: Vec::new(),
+            runtime_failure_phases: Vec::new(),
+        };
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => SummaryFlowLogReport {
+            status: "available".to_string(),
+            path: Some(path.display().to_string()),
+            event_counts: Some(SummaryEventCounts {
+                total: report.total,
+                dns_query: report.dns_query,
+                dns_answer: report.dns_answer,
+                connect_attempt: report.connect_attempt,
+                connect_result: report.connect_result,
+                policy_violation: report.policy_violation,
+                flow_end: report.flow_end,
+                runtime_failure: report.runtime_failure,
+                unknown_event: report.unknown_event,
+            }),
+            top_target: report
+                .top_connection_targets(1)
+                .into_iter()
+                .next()
+                .map(|(target, stats)| SummaryTopTarget {
+                    target: target.to_string(),
+                    connect_attempts: stats.connect_attempts,
+                    connect_ok: stats.connect_ok,
+                    connect_error: stats.connect_error,
+                    flow_end: stats.flow_end,
+                }),
+            policy_violations: count_entries_to_json(report.policy_violation_entries(3)),
+            connect_errors: count_entries_to_json(report.connect_error_entries(3)),
+            runtime_failures: count_entries_to_json(report.runtime_failure_entries(3)),
+            runtime_failure_phases: count_entries_to_json(report.runtime_failure_phase_entries(3)),
+        },
+        Err(_) => SummaryFlowLogReport {
+            status: "unavailable".to_string(),
+            path: Some(path.display().to_string()),
+            event_counts: None,
+            top_target: None,
+            policy_violations: Vec::new(),
+            connect_errors: Vec::new(),
+            runtime_failures: Vec::new(),
+            runtime_failure_phases: Vec::new(),
+        },
+    }
+}
+
+fn count_entries_to_json(entries: Vec<(&str, usize)>) -> Vec<SummaryCountEntry> {
+    entries
+        .into_iter()
+        .map(|(key, count)| SummaryCountEntry {
+            key: key.to_string(),
+            count,
+        })
+        .collect()
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryJsonReport {
+    backend: String,
+    command: String,
+    exit_code: i32,
+    sandbox_controls: Vec<String>,
+    capture: SummaryCaptureReport,
+    flow_log: SummaryFlowLogReport,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryCaptureReport {
+    status: String,
+    requested: Option<String>,
+    effective: Option<String>,
+    output: Option<String>,
+    child_output: Option<String>,
+    egress_output: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryFlowLogReport {
+    status: String,
+    path: Option<String>,
+    event_counts: Option<SummaryEventCounts>,
+    top_target: Option<SummaryTopTarget>,
+    policy_violations: Vec<SummaryCountEntry>,
+    connect_errors: Vec<SummaryCountEntry>,
+    runtime_failures: Vec<SummaryCountEntry>,
+    runtime_failure_phases: Vec<SummaryCountEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryEventCounts {
+    total: usize,
+    dns_query: usize,
+    dns_answer: usize,
+    connect_attempt: usize,
+    connect_result: usize,
+    policy_violation: usize,
+    flow_end: usize,
+    runtime_failure: usize,
+    unknown_event: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryTopTarget {
+    target: String,
+    connect_attempts: usize,
+    connect_ok: usize,
+    connect_error: usize,
+    flow_end: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryCountEntry {
+    key: String,
+    count: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -167,6 +365,7 @@ mod tests {
     use super::*;
     use crate::cli::{DefaultPolicy, DoctorFormat, ProxySpec};
     use crate::network::NetworkBackend;
+    use serde_json::Value;
 
     fn make_cli() -> Cli {
         Cli {
@@ -186,6 +385,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: true,
+            summary_format: SummaryFormat::Text,
             flow_log: None,
             offline: false,
             block_private: false,
@@ -295,6 +495,25 @@ mod tests {
         ));
 
         let _ = fs::remove_file(flow_log_path);
+    }
+
+    #[test]
+    fn render_run_summary_json_emits_machine_readable_summary() {
+        let mut cli = make_cli();
+        cli.summary_format = SummaryFormat::Json;
+        cli.output = Some(PathBuf::from("/tmp/capture.pcapng"));
+        cli.output_view = OutputView::WireEgress;
+
+        let rendered = render_run_summary_json(&cli, 3);
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["backend"], "rootless-internal");
+        assert_eq!(value["exit_code"], 3);
+        assert_eq!(value["capture"]["status"], "enabled");
+        assert_eq!(value["capture"]["requested"], "wire-egress");
+        assert_eq!(value["capture"]["effective"], "wire-egress");
+        assert_eq!(value["capture"]["output"], "/tmp/capture.pcapng");
+        assert_eq!(value["flow_log"]["status"], "disabled");
     }
 
     fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {

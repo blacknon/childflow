@@ -130,6 +130,8 @@ Options:
           Ignore certificate trust errors for https:// upstream proxies while still validating the hostname
       --summary
           Print a post-run summary to stderr
+      --summary-format <SUMMARY_FORMAT>
+          Select the output format for `--summary` [default: text] [possible values: text, json]
       --flow-log <FLOW_LOG>
           Write structured flow events as JSON Lines. Currently supported only by the default rootless backend
       --offline
@@ -305,6 +307,16 @@ childflow \
   --summary \
   --flow-log ./flow.jsonl \
   --deny-cidr 10.0.0.0/8 \
+  -- curl https://example.com
+```
+
+Emit the post-run summary as JSON for CI or wrapper tooling:
+
+```bash
+childflow \
+  --summary \
+  --summary-format json \
+  --flow-log ./flow.jsonl \
   -- curl https://example.com
 ```
 

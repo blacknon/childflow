@@ -399,6 +399,7 @@ command = ["ping", "-c", "1", "1.1.1.1"]
             proxy_password: Some("secret".into()),
             proxy_insecure: true,
             summary: true,
+            summary_format: crate::cli::SummaryFormat::Text,
             flow_log: Some(PathBuf::from("/tmp/flow.jsonl")),
             offline: false,
             block_private: true,
