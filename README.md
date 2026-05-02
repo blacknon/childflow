@@ -33,19 +33,19 @@ It has two Linux backends: `rootless-internal` for the default day-to-day path, 
   </colgroup>
   <tr>
     <td valign="top" width="33%">
-      <img src="./img/childflow-proxy-demo.gif" alt="childflow proxy and capture example" width="100%" /><br />
+      <img src="./img/childflow-proxy-demo.gif" alt="childflow proxy and capture example" width="360" height="228" /><br />
       <strong>Proxy control and capture</strong><br /><br />
       <code>childflow --profile<br />./docker/demo/profiles/http-origin.toml</code><br /><br />
       Block direct access, force the command tree through a proxy, and inspect only that tree's capture.
     </td>
     <td valign="top" width="33%">
-      <img src="./img/childflow-profile-demo.gif" alt="childflow profile example" width="100%" /><br />
+      <img src="./img/childflow-profile-demo.gif" alt="childflow profile example" width="360" height="228" /><br />
       <strong>Reusable profiles</strong><br /><br />
       <code>childflow --profile<br />./profiles/default-deny.toml<br />--dump-profile</code><br /><br />
       Keep sandbox settings in TOML, inherit from a base profile, and inspect the merged effective configuration.
     </td>
     <td valign="top" width="33%">
-      <img src="./img/childflow-flow-log-demo.gif" alt="childflow flow log example" width="100%" /><br />
+      <img src="./img/childflow-flow-log-demo.gif" alt="childflow flow log example" width="360" height="228" /><br />
       <strong>Structured flow logs</strong><br /><br />
       <code>childflow --summary<br />--flow-log ./flow.jsonl<br />-- curl https://example.com</code><br /><br />
       Record structured DNS, connect, and policy events for the command tree without dropping down to packet-level inspection first.
