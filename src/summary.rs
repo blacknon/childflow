@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
-use crate::capture::derive_output_paths;
+use crate::capture::{derive_output_paths, effective_view_name, requested_view_name};
 use crate::cli::{Cli, OutputView};
 use crate::report::FlowLogReport;
 use crate::sandbox::SandboxPolicy;
@@ -52,14 +52,27 @@ fn format_capture(cli: &Cli) -> String {
         return "disabled".to_string();
     };
 
+    let requested = requested_view_name(cli.output_view);
+    let effective = effective_view_name(cli.output_view);
+
     match cli.output_view {
         OutputView::Both => match derive_output_paths(output, cli.output_view) {
             Ok((child, egress)) => {
-                format!("child={}, egress={}", child.display(), egress.display())
+                format!(
+                    "requested={requested}, effective={effective}, child={}, egress={}",
+                    child.display(),
+                    egress.display()
+                )
             }
-            Err(_) => output.display().to_string(),
+            Err(_) => format!(
+                "requested={requested}, effective={effective}, output={}",
+                output.display()
+            ),
         },
-        _ => output.display().to_string(),
+        _ => format!(
+            "requested={requested}, effective={effective}, output={}",
+            output.display()
+        ),
     }
 }
 
@@ -187,7 +200,7 @@ mod tests {
 
         assert!(rendered.contains("backend: rootful"));
         assert!(rendered.contains(
-            "capture: child=/tmp/capture.child.pcapng, egress=/tmp/capture.egress.pcapng"
+            "capture: requested=both, effective=child+egress, child=/tmp/capture.child.pcapng, egress=/tmp/capture.egress.pcapng"
         ));
         assert!(rendered.contains("flow-log: /tmp/flow.jsonl"));
         assert!(rendered.contains("flow-log events: unavailable"));
@@ -195,6 +208,19 @@ mod tests {
         assert!(rendered.contains("flow-log connect errors: unavailable"));
         assert!(rendered.contains("flow-log runtime failures: unavailable"));
         assert!(rendered.contains("command: curl https://example.com"));
+    }
+
+    #[test]
+    fn render_run_summary_lists_requested_and_effective_capture_views() {
+        let mut cli = make_cli();
+        cli.output = Some(PathBuf::from("/tmp/capture.pcapng"));
+        cli.output_view = OutputView::WireEgress;
+
+        let rendered = render_run_summary(&cli, 0);
+
+        assert!(rendered.contains(
+            "capture: requested=wire-egress, effective=wire-egress, output=/tmp/capture.pcapng"
+        ));
     }
 
     #[test]
