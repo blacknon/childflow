@@ -24,6 +24,8 @@ This document describes the current JSON shape of that report.
 | `proxy_usage` | object | Counts for proxied vs direct connect attempts |
 | `policy_violations` | object | Map of `reason_code` to count |
 | `sorted_policy_violations` | array | Ranked policy violation counts |
+| `policy_matched_domains` | object | Map of matched blocked domain name to count |
+| `sorted_policy_matched_domains` | array | Ranked matched blocked domain counts |
 | `connect_errors` | object | Map of connect error string to count |
 | `sorted_connect_errors` | array | Ranked connect error counts |
 | `runtime_failures` | object | Map of runtime failure `reason_code` to count |
@@ -81,6 +83,8 @@ Example:
   { "key": "proxy_only", "count": 1 }
 ]
 ```
+
+The same ranked-entry shape is also used by `sorted_policy_matched_domains`.
 
 ## `proxy_usage`
 
@@ -264,6 +268,12 @@ Example:
   },
   "sorted_policy_violations": [
     { "key": "proxy_only", "count": 1 }
+  ],
+  "policy_matched_domains": {
+    "blocked.test": 1
+  },
+  "sorted_policy_matched_domains": [
+    { "key": "blocked.test", "count": 1 }
   ],
   "connect_errors": {
     "connection refused": 1

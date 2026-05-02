@@ -46,6 +46,7 @@ pub struct FlowLogReport {
     pub protocol_counts: BTreeMap<String, usize>,
     pub dns_name_counts: BTreeMap<String, DnsNameStats>,
     pub policy_reason_counts: BTreeMap<String, usize>,
+    pub policy_matched_domain_counts: BTreeMap<String, usize>,
     pub connect_error_counts: BTreeMap<String, usize>,
     pub runtime_failure_reason_counts: BTreeMap<String, usize>,
     pub runtime_failure_phase_counts: BTreeMap<String, usize>,
@@ -188,6 +189,16 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("policy-matched-domains:\n");
+        if self.policy_matched_domain_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (domain, count) in top_count_entries(&self.policy_matched_domain_counts, usize::MAX)
+            {
+                rendered.push_str(&format!("  {domain}: {count}\n"));
+            }
+        }
+
         rendered.push_str("connect-errors:\n");
         if self.connect_error_counts.is_empty() {
             rendered.push_str("  <none>\n");
@@ -316,6 +327,17 @@ impl FlowLogReport {
             rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
             for (reason, count) in top_count_entries(&self.policy_reason_counts, usize::MAX) {
                 rendered.push_str(&format!("| {reason} | {count} |\n"));
+            }
+        }
+
+        rendered.push_str("\n## Policy matched domains\n\n");
+        if self.policy_matched_domain_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Domain | Count |\n| --- | ---: |\n");
+            for (domain, count) in top_count_entries(&self.policy_matched_domain_counts, usize::MAX)
+            {
+                rendered.push_str(&format!("| `{domain}` | {count} |\n"));
             }
         }
 
@@ -454,6 +476,9 @@ impl FlowLogReport {
                 self.policy_violation += 1;
                 if let Some(reason) = event.reason_code {
                     *self.policy_reason_counts.entry(reason).or_default() += 1;
+                }
+                if let Some(domain) = event.matched_domain {
+                    *self.policy_matched_domain_counts.entry(domain).or_default() += 1;
                 }
             }
             "runtime_failure" => {
@@ -679,6 +704,22 @@ impl FlowLogReport {
         top_count_entries(&self.policy_reason_counts, limit)
     }
 
+    pub fn render_policy_matched_domains_compact(&self, limit: usize) -> String {
+        if self.policy_matched_domain_counts.is_empty() {
+            return "none".to_string();
+        }
+
+        top_count_entries(&self.policy_matched_domain_counts, limit)
+            .into_iter()
+            .map(|(domain, count)| format!("{domain}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub fn policy_matched_domain_entries(&self, limit: usize) -> Vec<(&str, usize)> {
+        top_count_entries(&self.policy_matched_domain_counts, limit)
+    }
+
     pub fn render_connect_errors_compact(&self, limit: usize) -> String {
         if self.connect_error_counts.is_empty() {
             return "none".to_string();
@@ -804,6 +845,16 @@ impl FlowLogReport {
                 .expect("sorted_policy_violations should serialize"),
         );
         root.insert(
+            observability_report::POLICY_MATCHED_DOMAINS.to_string(),
+            serde_json::to_value(&self.policy_matched_domain_counts)
+                .expect("policy_matched_domains should serialize"),
+        );
+        root.insert(
+            observability_report::SORTED_POLICY_MATCHED_DOMAINS.to_string(),
+            serde_json::to_value(json_count_entries(&self.policy_matched_domain_counts))
+                .expect("sorted_policy_matched_domains should serialize"),
+        );
+        root.insert(
             observability_report::CONNECT_ERRORS.to_string(),
             serde_json::to_value(&self.connect_error_counts)
                 .expect("connect_errors should serialize"),
@@ -906,6 +957,10 @@ impl FlowLogReport {
             &self.policy_reason_counts,
         ));
         lines.push(self.render_markdown_count_highlight(
+            "most common matched domain",
+            &self.policy_matched_domain_counts,
+        ));
+        lines.push(self.render_markdown_count_highlight(
             "most common connect error",
             &self.connect_error_counts,
         ));
@@ -976,6 +1031,8 @@ struct FlowLogLine {
     error: Option<String>,
     #[serde(default)]
     reason_code: Option<String>,
+    #[serde(default)]
+    matched_domain: Option<String>,
     #[serde(default)]
     phase: Option<String>,
 }
@@ -1075,6 +1132,7 @@ mod tests {
                 },
             )]),
             policy_reason_counts: BTreeMap::new(),
+            policy_matched_domain_counts: BTreeMap::new(),
             connect_error_counts: BTreeMap::new(),
             runtime_failure_reason_counts: BTreeMap::new(),
             runtime_failure_phase_counts: BTreeMap::new(),
@@ -1109,6 +1167,7 @@ mod tests {
         ));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
+        assert!(rendered.contains("policy-matched-domains:\n  <none>"));
         assert!(rendered.contains("connect-errors:\n  <none>"));
         assert!(rendered.contains("runtime-failures:\n  <none>"));
         assert!(rendered.contains("runtime-failure-phases:\n  <none>"));
@@ -1140,6 +1199,7 @@ mod tests {
                 },
             )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
+            policy_matched_domain_counts: BTreeMap::from([("blocked.test".into(), 1)]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
             runtime_failure_phase_counts: BTreeMap::from([("child_bootstrap".into(), 1)]),
@@ -1169,6 +1229,7 @@ mod tests {
             "- top DNS target correlation: `example.com` -> 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0)"
         ));
         assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
+        assert!(rendered.contains("- most common matched domain: `blocked.test` (1)"));
         assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
         assert!(rendered.contains("- most common runtime failure: `tap_create_blocked` (1)"));
         assert!(rendered.contains("- most common runtime failure phase: `child_bootstrap` (1)"));
@@ -1180,6 +1241,7 @@ mod tests {
             "| `example.com` | 93.184.216.34 | 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0) |"
         ));
         assert!(rendered.contains("| proxy_only | 1 |"));
+        assert!(rendered.contains("| `blocked.test` | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
         assert!(rendered.contains("| child_bootstrap | 1 |"));
@@ -1210,6 +1272,7 @@ mod tests {
                 },
             )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
+            policy_matched_domain_counts: BTreeMap::from([("blocked.test".into(), 1)]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
             runtime_failure_phase_counts: BTreeMap::from([("child_bootstrap".into(), 1)]),
@@ -1254,6 +1317,11 @@ mod tests {
             json["sorted_policy_violations"][0],
             serde_json::json!({"key":"proxy_only","count":1})
         );
+        assert_eq!(json["policy_matched_domains"]["blocked.test"], 1);
+        assert_eq!(
+            json["sorted_policy_matched_domains"][0],
+            serde_json::json!({"key":"blocked.test","count":1})
+        );
         assert_eq!(json["connect_errors"]["connection refused"], 2);
         assert_eq!(
             json["sorted_connect_errors"][0],
@@ -1287,7 +1355,7 @@ mod tests {
                 "{\"schema_version\":1,\"event\":\"flow_end\",\"protocol\":\"tcp\",\"remote_addr\":\"93.184.216.34:443\"}\n",
                 "{\"schema_version\":1,\"event\":\"connect_attempt\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false}\n",
                 "{\"schema_version\":1,\"event\":\"connect_result\",\"protocol\":\"tcp\",\"remote_addr\":\"198.51.100.7:8443\",\"via_proxy\":false,\"status\":\"error\",\"error\":\"connection refused\"}\n",
-                "{\"schema_version\":1,\"event\":\"policy_violation\",\"protocol\":\"tcp\",\"remote\":\"10.0.0.1:443\",\"reason_code\":\"deny_cidr\"}\n"
+                "{\"schema_version\":1,\"event\":\"policy_violation\",\"protocol\":\"tcp\",\"remote\":\"10.0.0.1:443\",\"reason_code\":\"deny_cidr\",\"matched_domain\":\"blocked.test\"}\n"
             ),
         )?;
 
@@ -1295,6 +1363,10 @@ mod tests {
         assert_eq!(report.proxied_connect_attempts, 1);
         assert_eq!(report.direct_connect_attempts, 1);
         assert_eq!(report.policy_reason_counts.get("deny_cidr"), Some(&1));
+        assert_eq!(
+            report.policy_matched_domain_counts.get("blocked.test"),
+            Some(&1)
+        );
         assert_eq!(report.runtime_failure, 0);
         assert_eq!(
             report.connect_error_counts.get("connection refused"),
@@ -1434,6 +1506,10 @@ mod tests {
                 ("deny_cidr".into(), 2),
                 ("proxy_only".into(), 1),
             ]),
+            policy_matched_domain_counts: BTreeMap::from([
+                ("blocked.test".into(), 2),
+                ("example.com".into(), 1),
+            ]),
             connect_error_counts: BTreeMap::from([
                 ("connection refused".into(), 2),
                 ("timed out".into(), 1),
@@ -1469,6 +1545,10 @@ mod tests {
         assert_eq!(
             report.render_policy_violations_compact(2),
             "deny_cidr=2, proxy_only=1"
+        );
+        assert_eq!(
+            report.render_policy_matched_domains_compact(2),
+            "blocked.test=2, example.com=1"
         );
         assert_eq!(
             report.render_connect_errors_compact(2),

@@ -56,6 +56,7 @@ Example:
 | `top_dns_name` | object or null | Most frequently observed DNS name |
 | `top_target` | object or null | Most active connection target |
 | `policy_violations` | array | Ranked policy violation counts |
+| `policy_matched_domains` | array | Ranked matched blocked domain counts |
 | `connect_errors` | array | Ranked connect error counts |
 | `runtime_failures` | array | Ranked runtime failure counts |
 | `runtime_failure_phases` | array | Ranked runtime failure phase counts |
@@ -95,7 +96,7 @@ Example:
 
 ## Ranked entries
 
-`policy_violations`, `connect_errors`, `runtime_failures`, and
+`policy_violations`, `policy_matched_domains`, `connect_errors`, `runtime_failures`, and
 `runtime_failure_phases` use a common ranked entry shape:
 
 | Field | Type | Notes |
@@ -232,6 +233,9 @@ Example:
     },
     "policy_violations": [
       { "key": "deny_cidr", "count": 1 }
+    ],
+    "policy_matched_domains": [
+      { "key": "blocked.test", "count": 1 }
     ],
     "connect_errors": [
       { "key": "connection refused", "count": 1 }

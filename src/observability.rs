@@ -27,6 +27,8 @@ pub mod report {
     pub const PROXY_USAGE: &str = "proxy_usage";
     pub const POLICY_VIOLATIONS: &str = "policy_violations";
     pub const SORTED_POLICY_VIOLATIONS: &str = "sorted_policy_violations";
+    pub const POLICY_MATCHED_DOMAINS: &str = "policy_matched_domains";
+    pub const SORTED_POLICY_MATCHED_DOMAINS: &str = "sorted_policy_matched_domains";
     pub const CONNECT_ERRORS: &str = "connect_errors";
     pub const SORTED_CONNECT_ERRORS: &str = "sorted_connect_errors";
     pub const RUNTIME_FAILURES: &str = "runtime_failures";
@@ -41,6 +43,7 @@ pub mod summary {
     pub const FLOW_LOG_DNS_NAMES: &str = "flow-log dns names";
     pub const FLOW_LOG_TOP_TARGET: &str = "flow-log top target";
     pub const FLOW_LOG_POLICY_VIOLATIONS: &str = "flow-log policy violations";
+    pub const FLOW_LOG_POLICY_MATCHED_DOMAINS: &str = "flow-log policy matched domains";
     pub const FLOW_LOG_CONNECT_ERRORS: &str = "flow-log connect errors";
     pub const FLOW_LOG_RUNTIME_FAILURES: &str = "flow-log runtime failures";
     pub const FLOW_LOG_RUNTIME_FAILURE_PHASES: &str = "flow-log runtime failure phases";
