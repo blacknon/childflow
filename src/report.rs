@@ -166,9 +166,10 @@ impl FlowLogReport {
 
     pub fn render_markdown(&self, path: &Path) -> String {
         let mut rendered = format!(
-            "# childflow report\n\n- flow-log: `{}`\n- schema-version: `{}`\n\n## Event counts\n\n| Metric | Count |\n| --- | ---: |\n| total | {} |\n| dns_query | {} |\n| dns_answer | {} |\n| connect_attempt | {} |\n| connect_result | {} |\n| policy_violation | {} |\n| flow_end | {} |\n| runtime_failure | {} |\n| unknown_event | {} |\n",
+            "# childflow report\n\n- flow-log: `{}`\n- schema-version: `{}`\n\n## Highlights\n\n{}\n## Event counts\n\n| Metric | Count |\n| --- | ---: |\n| total | {} |\n| dns_query | {} |\n| dns_answer | {} |\n| connect_attempt | {} |\n| connect_result | {} |\n| policy_violation | {} |\n| flow_end | {} |\n| runtime_failure | {} |\n| unknown_event | {} |\n",
             path.display(),
             self.render_schema_versions(),
+            self.render_markdown_highlights(),
             self.total,
             self.dns_query,
             self.dns_answer,
@@ -428,6 +429,54 @@ impl FlowLogReport {
             .map(|(phase, count)| format!("{phase}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    fn render_markdown_highlights(&self) -> String {
+        let mut lines = Vec::new();
+
+        lines.push(format!(
+            "- proxy usage: proxied connect attempts={}, direct connect attempts={}",
+            self.proxied_connect_attempts, self.direct_connect_attempts
+        ));
+
+        if let Some((target, stats)) = self.top_connection_targets(1).into_iter().next() {
+            lines.push(format!(
+                "- top connection target: `{target}` (attempts={}, ok={}, error={}, flow_end={})",
+                stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+            ));
+        } else {
+            lines.push("- top connection target: none".to_string());
+        }
+
+        lines.push(self.render_markdown_count_highlight(
+            "most common policy violation",
+            &self.policy_reason_counts,
+        ));
+        lines.push(self.render_markdown_count_highlight(
+            "most common connect error",
+            &self.connect_error_counts,
+        ));
+        lines.push(self.render_markdown_count_highlight(
+            "most common runtime failure",
+            &self.runtime_failure_reason_counts,
+        ));
+        lines.push(self.render_markdown_count_highlight(
+            "most common runtime failure phase",
+            &self.runtime_failure_phase_counts,
+        ));
+
+        lines.join("\n") + "\n\n"
+    }
+
+    fn render_markdown_count_highlight(
+        &self,
+        label: &str,
+        counts: &BTreeMap<String, usize>,
+    ) -> String {
+        match top_count_entries(counts, 1).into_iter().next() {
+            Some((key, count)) => format!("- {label}: `{key}` ({count})"),
+            None => format!("- {label}: none"),
+        }
     }
 }
 
@@ -701,6 +750,16 @@ mod tests {
 
         let rendered = report.render_markdown(Path::new("/tmp/flow.jsonl"));
         assert!(rendered.contains("# childflow report"));
+        assert!(rendered.contains("## Highlights"));
+        assert!(rendered.contains(
+            "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0)"
+        ));
+        assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
+        assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
+        assert!(rendered.contains("- most common runtime failure: `tap_create_blocked` (1)"));
+        assert!(rendered.contains(
+            "- most common runtime failure phase: `child_bootstrap` (1)"
+        ));
         assert!(rendered.contains("| total | 3 |"));
         assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));
