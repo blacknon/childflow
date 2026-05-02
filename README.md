@@ -144,8 +144,12 @@ Options:
           Choose whether unmatched outbound destinations are allowed or denied [default: allow] [possible values: allow, deny]
       --allow-cidr <ALLOW_CIDRS>
           Allow outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --allow-domain <ALLOW_DOMAINS>
+          Allow outbound destinations whose resolved DNS names match this domain rule. Currently supported only by the default rootless backend
       --deny-cidr <DENY_CIDRS>
           Deny outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --deny-domain <DENY_DOMAINS>
+          Deny outbound destinations whose resolved DNS names match this domain rule. Currently supported only by the default rootless backend
       --proxy-only
           Require outbound traffic to use the configured upstream proxy path
       --fail-on-leak
@@ -219,6 +223,21 @@ Block a destination range explicitly:
 
 ```bash
 childflow --deny-cidr 10.0.0.0/8 -- ./scanner
+```
+
+Allow only traffic that resolves from a specific domain:
+
+```bash
+childflow \
+  --default-policy deny \
+  --allow-domain example.com \
+  -- curl https://example.com
+```
+
+Block a domain and its subdomains:
+
+```bash
+childflow --deny-domain example.com -- curl https://api.example.com
 ```
 
 #### Proxy
@@ -335,7 +354,7 @@ comments surface the main target and failure modes first:
 ## Highlights
 
 - proxy usage: proxied connect attempts=1, direct connect attempts=0
-- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0)
+- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0, dns_names=example.com)
 - most common policy violation: `proxy_only` (1)
 - most common connect error: `connection refused` (2)
 - most common runtime failure: `tap_create_blocked` (1)
@@ -416,8 +435,12 @@ Use `--root` when you specifically need host-integrated behavior that the rootle
   deny destinations unless they match an explicit allow rule
 - `--allow-cidr`
   allow IPv4 or IPv6 CIDRs
+- `--allow-domain`
+  allow destinations whose resolved DNS names match an exact domain or one of its subdomains
 - `--deny-cidr`
   deny IPv4 or IPv6 CIDRs
+- `--deny-domain`
+  deny destinations whose resolved DNS names match an exact domain or one of its subdomains
 - `--proxy-only`
   require outbound traffic to use the configured proxy path
 - `--fail-on-leak`
@@ -427,6 +450,8 @@ Current notes:
 
 - `--proxy-only` is primarily a TCP-focused control; in the rootless backend, direct DNS / UDP / ICMP traffic is also blocked rather than relayed
 - `--fail-on-leak` is currently supported only by `rootless-internal`
+- `--allow-domain` and `--deny-domain` are currently supported only by `rootless-internal`
+- domain rules are normalized to lowercase and also match subdomains, so `example.com` matches both `example.com` and `api.example.com`
 
 ### Profiles
 
@@ -448,6 +473,7 @@ block_private = true
 block_metadata = true
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains = ["example.com"]
 command = ["curl", "https://203.0.113.10/healthz"]
 ```
 
@@ -467,10 +493,12 @@ Current notes:
 - merge order is: parent profile, child profile, then explicit CLI flags
 - CLI flags override profile values when both are present
 - for list-valued settings such as `allow_cidrs` and `deny_cidrs`, explicit CLI flags replace the profile list instead of appending to it
+- the same replacement behavior applies to `allow_domains` and `deny_domains`
 - an explicit CLI command after `--` replaces the profile `command`
 - `--dump-profile` prints the merged effective TOML and exits without running the command
 - relative paths inside a profile are resolved relative to the profile file itself
 - profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `summary_format`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
+- profile keys also support `allow_domains` and `deny_domains` for rootless domain policy
 - `--root` remains a CLI-only convenience flag; use `backend = "rootful"` in profiles when you want the rootful backend
 - the fuller key-by-key schema is documented in [docs/profile-schema.md](docs/profile-schema.md)
 
@@ -504,6 +532,8 @@ Current schema notes:
 - `dns_query` and `dns_answer` include stable `server_ip` / `server_port` fields
 - `dns_answer.mode` is currently one of `relayed` or `synthetic_empty`
 - `policy_violation` includes structured fields such as `action`, `reason_code`, `control`, and `matched_cidr` when applicable
+- `dns_answer.answer_ips` carries the resolved A / AAAA addresses observed for a DNS name
+- `policy_violation.matched_domain` is set when a `--deny-domain` rule blocked the query or the resolved destination
 
 Current notes:
 
@@ -512,6 +542,7 @@ Current notes:
 - flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
 - `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
 - `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, common connect errors, runtime failure reason codes, and runtime failure phases after the run
+- top connection targets in `--summary` / `--report` also include correlated `dns_names` when `childflow` observed DNS answers for the target IP
 - the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)
 - `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
 - `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments

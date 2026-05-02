@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -815,6 +815,95 @@ fn rootless_internal_deny_cidr_blocks_local_http() -> Result<()> {
 }
 
 #[test]
+fn rootless_internal_default_deny_allows_explicit_domain() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-allow-domain-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let _dns_server = LocalDnsServer::spawn("127.0.0.54", "allowed.test", host_ip)?;
+
+    let output = run_childflow_command(&[
+        "--default-policy",
+        "deny",
+        "--allow-domain",
+        "allowed.test",
+        "-d",
+        "127.0.0.54",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://allowed.test:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal allow-domain smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "expected allow-domain childflow run to succeed, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-allow-domain-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("allow-domain local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_deny_domain_blocks_local_http_via_dns_resolution() -> Result<()> {
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-deny-domain-should-not-connect")?;
+    let flow_log_path = unique_temp_flow_log_path("rootless-deny-domain");
+
+    let output = run_childflow_command(&[
+        "--flow-log",
+        flow_log_path.to_str().unwrap(),
+        "--deny-domain",
+        "blocked.test",
+        "-d",
+        "127.0.0.54",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://blocked.test:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal deny-domain smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected deny-domain childflow run to fail, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "deny-domain sandbox unexpectedly reached the local HTTP server"
+    );
+
+    let flow_log = std::fs::read_to_string(&flow_log_path)
+        .with_context(|| format!("failed to read {}", flow_log_path.display()))?;
+    assert!(flow_log.contains("\"event\":\"policy_violation\""));
+    assert!(flow_log.contains("\"protocol\":\"dns\""));
+    assert!(flow_log.contains("\"reason_code\":\"deny_domain\""));
+    assert!(flow_log.contains("\"control\":\"--deny-domain\""));
+    assert!(flow_log.contains("\"matched_domain\":\"blocked.test\""));
+    assert!(flow_log.contains("\"remote\":\"blocked.test\""));
+
+    let _ = std::fs::remove_file(&flow_log_path);
+    Ok(())
+}
+
+#[test]
 fn rootless_internal_proxy_only_blocks_udp_leak() -> Result<()> {
     let (_server_addr, requests) = spawn_local_udp_server()?;
     let (proxy_addr, _proxy_requests) = spawn_http_connect_proxy()?;
@@ -1589,6 +1678,134 @@ fn privileged_ip_command<const N: usize>(args: [&str; N]) -> Command {
         command
     }
 }
+
+struct LocalDnsServer {
+    child: Child,
+}
+
+impl LocalDnsServer {
+    fn spawn(bind_ip: &str, expected_qname: &str, answer_ip: Ipv4Addr) -> Result<Self> {
+        let script_path = unique_temp_profile_dir("rootless-local-dns").join("dns_server.py");
+        fs::write(&script_path, LOCAL_DNS_SERVER_PY)
+            .with_context(|| format!("failed to write {}", script_path.display()))?;
+
+        let mut command = if unsafe { nix::libc::geteuid() } == 0 {
+            Command::new("python3")
+        } else {
+            let mut command = Command::new("sudo");
+            command.arg("-n").arg("python3");
+            command
+        };
+
+        let mut child = command
+            .arg(script_path.to_str().unwrap())
+            .arg(bind_ip)
+            .arg(expected_qname)
+            .arg(answer_ip.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to start local DNS server helper")?;
+
+        let mut stdout = String::new();
+        let stdout_pipe = child
+            .stdout
+            .as_mut()
+            .context("local DNS server did not expose stdout")?;
+        let mut buf = [0_u8; 1];
+        loop {
+            let n = stdout_pipe
+                .read(&mut buf)
+                .context("failed to read local DNS server readiness signal")?;
+            if n == 0 {
+                let mut stderr = String::new();
+                if let Some(stderr_pipe) = child.stderr.as_mut() {
+                    let _ = stderr_pipe.read_to_string(&mut stderr);
+                }
+                bail!(
+                    "local DNS server exited before readiness; stderr: {}",
+                    stderr.trim()
+                );
+            }
+            stdout.push(buf[0] as char);
+            if stdout.ends_with('\n') {
+                break;
+            }
+        }
+
+        if stdout.trim() != "READY" {
+            bail!(
+                "unexpected local DNS server readiness line: {}",
+                stdout.trim()
+            );
+        }
+
+        Ok(Self { child })
+    }
+}
+
+impl Drop for LocalDnsServer {
+    fn drop(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+const LOCAL_DNS_SERVER_PY: &str = r#"#!/usr/bin/env python3
+import ipaddress
+import socket
+import struct
+import sys
+
+bind_ip, expected_qname, answer_ip = sys.argv[1], sys.argv[2].rstrip(".").lower(), sys.argv[3]
+answer_bytes = ipaddress.IPv4Address(answer_ip).packed
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind((bind_ip, 53))
+print("READY", flush=True)
+
+data, addr = sock.recvfrom(2048)
+if len(data) < 12:
+    sys.exit(1)
+
+qid = data[:2]
+qdcount = struct.unpack("!H", data[4:6])[0]
+if qdcount != 1:
+    sys.exit(1)
+
+offset = 12
+labels = []
+while True:
+    if offset >= len(data):
+        sys.exit(1)
+    length = data[offset]
+    offset += 1
+    if length == 0:
+        break
+    labels.append(data[offset:offset + length].decode("ascii"))
+    offset += length
+
+question_end = offset + 4
+question = data[12:question_end]
+qname = ".".join(labels).rstrip(".").lower()
+qtype = struct.unpack("!H", data[offset:offset + 2])[0]
+
+flags = 0x8180
+answers = b""
+ancount = 0
+if qname == expected_qname and qtype == 1:
+    answers = struct.pack("!HHHLH4s", 0xC00C, 1, 1, 30, 4, answer_bytes)
+    ancount = 1
+
+header = qid + struct.pack("!HHHHH", flags, qdcount, ancount, 0, 0)
+sock.sendto(header + question + answers, addr)
+"#;
 
 fn read_http_headers(stream: &mut TcpStream) -> Result<String> {
     let mut buf = Vec::new();

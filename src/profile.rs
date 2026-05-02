@@ -60,6 +60,10 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deny_cidrs: Option<Vec<IpNetwork>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_domains: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deny_domains: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail_on_leak: Option<bool>,
@@ -96,6 +100,8 @@ impl Profile {
             default_policy: Some(cli.default_policy),
             allow_cidrs: (!cli.allow_cidrs.is_empty()).then_some(cli.allow_cidrs.clone()),
             deny_cidrs: (!cli.deny_cidrs.is_empty()).then_some(cli.deny_cidrs.clone()),
+            allow_domains: (!cli.allow_domains.is_empty()).then_some(cli.allow_domains.clone()),
+            deny_domains: (!cli.deny_domains.is_empty()).then_some(cli.deny_domains.clone()),
             proxy_only: cli.proxy_only.then_some(true),
             fail_on_leak: cli.fail_on_leak.then_some(true),
             iface: cli.iface.clone(),
@@ -143,6 +149,8 @@ impl Profile {
             default_policy: child.default_policy.or(self.default_policy),
             allow_cidrs: child.allow_cidrs.or(self.allow_cidrs),
             deny_cidrs: child.deny_cidrs.or(self.deny_cidrs),
+            allow_domains: child.allow_domains.or(self.allow_domains),
+            deny_domains: child.deny_domains.or(self.deny_domains),
             proxy_only: child.proxy_only.or(self.proxy_only),
             fail_on_leak: child.fail_on_leak.or(self.fail_on_leak),
             iface: child.iface.or(self.iface),
@@ -324,6 +332,7 @@ summary = true
 summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains = ["example.com"]
 command = ["curl", "https://example.com"]
 "#,
         )
@@ -333,6 +342,7 @@ command = ["curl", "https://example.com"]
             r#"
 extends = "../base.toml"
 deny_cidrs = ["198.51.100.0/24"]
+deny_domains = ["blocked.example.com"]
 command = ["ping", "-c", "1", "1.1.1.1"]
 "#,
         )
@@ -348,9 +358,14 @@ command = ["ping", "-c", "1", "1.1.1.1"]
             profile.allow_cidrs,
             Some(vec!["203.0.113.10/32".parse().unwrap()])
         );
+        assert_eq!(profile.allow_domains, Some(vec!["example.com".into()]));
         assert_eq!(
             profile.deny_cidrs,
             Some(vec!["198.51.100.0/24".parse().unwrap()])
+        );
+        assert_eq!(
+            profile.deny_domains,
+            Some(vec!["blocked.example.com".into()])
         );
         assert_eq!(
             profile.command,
@@ -413,6 +428,8 @@ command = ["ping", "-c", "1", "1.1.1.1"]
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["203.0.113.10/32".parse().unwrap()],
             deny_cidrs: vec!["198.51.100.0/24".parse().unwrap()],
+            allow_domains: vec!["example.com".into()],
+            deny_domains: vec!["blocked.example.com".into()],
             proxy_only: true,
             fail_on_leak: true,
             iface: None,
@@ -426,6 +443,8 @@ command = ["ping", "-c", "1", "1.1.1.1"]
         assert!(rendered.contains("proxy = \"https://proxy.example.com:443\""));
         assert!(rendered.contains("summary_format = \"text\""));
         assert!(rendered.contains("default_policy = \"deny\""));
+        assert!(rendered.contains("allow_domains = [\"example.com\"]"));
+        assert!(rendered.contains("deny_domains = [\"blocked.example.com\"]"));
         assert!(rendered.contains("command = ["));
         assert!(rendered.contains("\"curl\""));
         assert!(rendered.contains("\"https://example.com\""));

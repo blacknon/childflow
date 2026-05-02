@@ -5,7 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::net::SocketAddr;
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -185,8 +187,12 @@ impl FlowLogReport {
         } else {
             for (target, stats) in self.top_connection_targets(10) {
                 rendered.push_str(&format!(
-                    "  {target}: attempts={}, ok={}, error={}, flow_end={}\n",
-                    stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+                    "  {target}: attempts={}, ok={}, error={}, flow_end={}, dns_names={}\n",
+                    stats.connect_attempts,
+                    stats.connect_ok,
+                    stats.connect_error,
+                    stats.flow_end,
+                    self.render_dns_names_for_target(target)
                 ));
             }
         }
@@ -292,11 +298,17 @@ impl FlowLogReport {
         if self.connection_targets.is_empty() {
             rendered.push_str("_none_\n");
         } else {
-            rendered.push_str("| Target | Attempts | OK | Error | Flow end |\n| --- | ---: | ---: | ---: | ---: |\n");
+            rendered.push_str(
+                "| Target | Attempts | OK | Error | Flow end | DNS names |\n| --- | ---: | ---: | ---: | ---: | --- |\n",
+            );
             for (target, stats) in self.top_connection_targets(10) {
                 rendered.push_str(&format!(
-                    "| `{target}` | {} | {} | {} | {} |\n",
-                    stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+                    "| `{target}` | {} | {} | {} | {} | {} |\n",
+                    stats.connect_attempts,
+                    stats.connect_ok,
+                    stats.connect_error,
+                    stats.flow_end,
+                    self.render_dns_names_for_target(target)
                 ));
             }
         }
@@ -481,14 +493,40 @@ impl FlowLogReport {
         }
     }
 
+    pub fn dns_names_for_target(&self, target: &str) -> Vec<String> {
+        let Some(ip) = SocketAddr::from_str(target)
+            .ok()
+            .map(|addr| addr.ip().to_string())
+        else {
+            return Vec::new();
+        };
+        self.dns_name_counts
+            .iter()
+            .filter_map(|(qname, stats)| stats.answer_ips.contains(&ip).then_some(qname.clone()))
+            .collect()
+    }
+
+    fn render_dns_names_for_target(&self, target: &str) -> String {
+        let dns_names = self.dns_names_for_target(target);
+        if dns_names.is_empty() {
+            "none".to_string()
+        } else {
+            dns_names.join(", ")
+        }
+    }
+
     pub fn render_top_target_compact(&self) -> String {
         let Some((target, stats)) = self.top_connection_targets(1).into_iter().next() else {
             return "none".to_string();
         };
 
         format!(
-            "{target} (attempts={}, ok={}, error={}, flow_end={})",
-            stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+            "{target} (attempts={}, ok={}, error={}, flow_end={}, dns_names={})",
+            stats.connect_attempts,
+            stats.connect_ok,
+            stats.connect_error,
+            stats.flow_end,
+            self.render_dns_names_for_target(target)
         )
     }
 
@@ -668,6 +706,7 @@ impl FlowLogReport {
                         connect_ok: stats.connect_ok,
                         connect_error: stats.connect_error,
                         flow_end: stats.flow_end,
+                        dns_names: self.dns_names_for_target(target),
                     })
                     .collect::<Vec<_>>(),
             )
@@ -687,8 +726,12 @@ impl FlowLogReport {
 
         if let Some((target, stats)) = self.top_connection_targets(1).into_iter().next() {
             lines.push(format!(
-                "- top connection target: `{target}` (attempts={}, ok={}, error={}, flow_end={})",
-                stats.connect_attempts, stats.connect_ok, stats.connect_error, stats.flow_end
+                "- top connection target: `{target}` (attempts={}, ok={}, error={}, flow_end={}, dns_names={})",
+                stats.connect_attempts,
+                stats.connect_ok,
+                stats.connect_error,
+                stats.flow_end,
+                self.render_dns_names_for_target(target)
             ));
         } else {
             lines.push("- top connection target: none".to_string());
@@ -737,10 +780,7 @@ impl FlowLogReport {
     }
 }
 
-fn top_count_entries<'a>(
-    counts: &'a BTreeMap<String, usize>,
-    limit: usize,
-) -> Vec<(&'a str, usize)> {
+fn top_count_entries(counts: &BTreeMap<String, usize>, limit: usize) -> Vec<(&str, usize)> {
     let mut entries = counts
         .iter()
         .map(|(name, count)| (name.as_str(), *count))
@@ -788,6 +828,7 @@ struct JsonConnectionTarget<'a> {
     connect_ok: usize,
     connect_error: usize,
     flow_end: usize,
+    dns_names: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -956,7 +997,7 @@ mod tests {
         assert!(rendered.contains("# childflow report"));
         assert!(rendered.contains("## Highlights"));
         assert!(rendered.contains(
-            "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0)"
+            "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0, dns_names=example.com)"
         ));
         assert!(rendered.contains(
             "- top DNS name: `example.com` (queries=2, answers=1, answer_ips=93.184.216.34)"
@@ -973,7 +1014,7 @@ mod tests {
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
         assert!(rendered.contains("| child_bootstrap | 1 |"));
-        assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 |"));
+        assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 | example.com |"));
         Ok(())
     }
 
@@ -1029,6 +1070,10 @@ mod tests {
         assert_eq!(
             json["top_dns_names"][0],
             serde_json::json!({"qname":"example.com","queries":2,"answers":1,"answer_ips":["93.184.216.34"]})
+        );
+        assert_eq!(
+            json["top_connection_targets"][0]["dns_names"],
+            serde_json::json!(["example.com"])
         );
         assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
         assert_eq!(json["policy_violations"]["proxy_only"], 1);
@@ -1139,6 +1184,10 @@ mod tests {
             report.render_top_dns_name_compact(),
             "example.com (queries=2, answers=1, answer_ips=93.184.216.34)"
         );
+        assert_eq!(
+            report.dns_names_for_target("93.184.216.34:443"),
+            vec!["example.com".to_string()]
+        );
 
         let _ = fs::remove_file(path);
         Ok(())
@@ -1218,7 +1267,7 @@ mod tests {
 
         assert_eq!(
             report.render_top_target_compact(),
-            "a.example:443 (attempts=3, ok=1, error=2, flow_end=1)"
+            "a.example:443 (attempts=3, ok=1, error=2, flow_end=1, dns_names=none)"
         );
         assert_eq!(
             report.render_policy_violations_compact(2),

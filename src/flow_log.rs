@@ -55,6 +55,7 @@ pub struct PolicyViolationEvent<'a> {
     pub reason_code: &'static str,
     pub control: &'static str,
     pub matched_cidr: Option<&'a str>,
+    pub matched_domain: Option<&'a str>,
     pub reason: &'a str,
 }
 
@@ -154,6 +155,7 @@ impl FlowLogger {
             "reason_code": violation.reason_code,
             "control": violation.control,
             "matched_cidr": violation.matched_cidr,
+            "matched_domain": violation.matched_domain,
             "reason": violation.reason,
         }))
     }
@@ -267,6 +269,7 @@ mod tests {
             reason_code: "deny_cidr",
             control: "--deny-cidr",
             matched_cidr: Some("10.0.0.0/8"),
+            matched_domain: None,
             reason: "--deny-cidr matched",
         })?;
         drop(logger);
@@ -281,6 +284,7 @@ mod tests {
         assert!(contents.contains("\"reason_code\":\"deny_cidr\""));
         assert!(contents.contains("\"control\":\"--deny-cidr\""));
         assert!(contents.contains("\"matched_cidr\":\"10.0.0.0/8\""));
+        assert!(contents.contains("\"matched_domain\":null"));
         assert!(contents.contains("\"reason\":\"--deny-cidr matched\""));
 
         let _ = fs::remove_file(&path);

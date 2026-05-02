@@ -11,6 +11,7 @@ use clap::{Parser, ValueEnum};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::normalize_domain_rule;
 use crate::network::NetworkBackend;
 use crate::profile::Profile;
 
@@ -122,6 +123,14 @@ struct RawCli {
     #[arg(long = "deny-cidr")]
     deny_cidrs: Vec<IpNetwork>,
 
+    /// Allow outbound destinations that were resolved from this DNS name or one of its subdomains.
+    #[arg(long = "allow-domain", value_parser = parse_domain_rule)]
+    allow_domains: Vec<String>,
+
+    /// Deny outbound destinations that were resolved from this DNS name or one of its subdomains.
+    #[arg(long = "deny-domain", value_parser = parse_domain_rule)]
+    deny_domains: Vec<String>,
+
     /// Require outbound traffic to use the configured upstream proxy path.
     #[arg(long = "proxy-only")]
     proxy_only: bool,
@@ -164,6 +173,8 @@ pub struct Cli {
     pub default_policy: DefaultPolicy,
     pub allow_cidrs: Vec<IpNetwork>,
     pub deny_cidrs: Vec<IpNetwork>,
+    pub allow_domains: Vec<String>,
+    pub deny_domains: Vec<String>,
     pub proxy_only: bool,
     pub fail_on_leak: bool,
     pub iface: Option<String>,
@@ -246,6 +257,14 @@ impl Cli {
             bail!("`--flow-log` is currently supported only by the `rootless-internal` backend");
         }
 
+        if (!self.allow_domains.is_empty() || !self.deny_domains.is_empty())
+            && matches!(self.selected_backend(), NetworkBackend::Rootful)
+        {
+            bail!(
+                "`--allow-domain` and `--deny-domain` are currently supported only by the `rootless-internal` backend"
+            );
+        }
+
         Ok(())
     }
 
@@ -297,6 +316,12 @@ impl Cli {
                 .unwrap_or_default(),
             deny_cidrs: profile
                 .and_then(|value| value.deny_cidrs.clone())
+                .unwrap_or_default(),
+            allow_domains: profile
+                .and_then(|value| value.allow_domains.clone())
+                .unwrap_or_default(),
+            deny_domains: profile
+                .and_then(|value| value.deny_domains.clone())
                 .unwrap_or_default(),
             proxy_only: profile.and_then(|value| value.proxy_only).unwrap_or(false),
             fail_on_leak: profile
@@ -370,6 +395,12 @@ impl Cli {
         }
         if !raw.deny_cidrs.is_empty() {
             cli.deny_cidrs = raw.deny_cidrs;
+        }
+        if !raw.allow_domains.is_empty() {
+            cli.allow_domains = raw.allow_domains;
+        }
+        if !raw.deny_domains.is_empty() {
+            cli.deny_domains = raw.deny_domains;
         }
         if raw.proxy_only {
             cli.proxy_only = true;
@@ -485,6 +516,10 @@ fn parse_host_port(input: &str) -> std::result::Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
+fn parse_domain_rule(input: &str) -> std::result::Result<String, String> {
+    normalize_domain_rule(input)
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ProxyType {
     Http,
@@ -572,6 +607,8 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
             iface: None,
@@ -655,6 +692,17 @@ mod tests {
         let cli = Cli {
             root: true,
             flow_log: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_domain_policy_for_rootful_backend() {
+        let cli = Cli {
+            root: true,
+            allow_domains: vec!["example.com".into()],
             ..make_cli()
         };
 
@@ -932,6 +980,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_domain_policy_flags() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--allow-domain",
+            "Example.com.",
+            "--deny-domain",
+            "blocked.example.com",
+            "--",
+            "curl",
+        ]);
+
+        assert_eq!(cli.allow_domains, vec!["example.com"]);
+        assert_eq!(cli.deny_domains, vec!["blocked.example.com"]);
+    }
+
+    #[test]
     fn parse_profile_supplies_command_and_relative_paths() {
         let temp_dir = unique_temp_profile_dir("cli-profile-relative");
         let profile_path = temp_dir.join("sandbox.toml");
@@ -982,6 +1046,7 @@ summary = true
 summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains = ["example.com"]
 command = ["curl", "https://example.com"]
 "#,
         )
@@ -1009,6 +1074,7 @@ command = ["curl", "https://example.com"]
         assert_eq!(cli.default_policy, DefaultPolicy::Allow);
         assert_eq!(cli.allow_cidrs.len(), 1);
         assert_eq!(cli.deny_cidrs.len(), 1);
+        assert_eq!(cli.allow_domains, vec!["example.com"]);
         assert_eq!(cli.command, vec!["ping", "-c", "1", "1.1.1.1"]);
 
         let _ = fs::remove_file(&profile_path);

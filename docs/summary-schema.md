@@ -122,6 +122,7 @@ Example:
 | `connect_ok` | integer | Number of successful `connect_result` events |
 | `connect_error` | integer | Number of error `connect_result` events |
 | `flow_end` | integer | Number of `flow_end` events |
+| `dns_names` | array of strings | Correlated DNS names whose observed `answer_ips` included this target IP |
 
 Example:
 
@@ -131,7 +132,8 @@ Example:
   "connect_attempts": 1,
   "connect_ok": 0,
   "connect_error": 1,
-  "flow_end": 1
+  "flow_end": 1,
+  "dns_names": ["example.com"]
 }
 ```
 
@@ -196,7 +198,8 @@ Example:
       "connect_attempts": 0,
       "connect_ok": 0,
       "connect_error": 1,
-      "flow_end": 1
+      "flow_end": 1,
+      "dns_names": ["example.com"]
     },
     "policy_violations": [
       { "key": "deny_cidr", "count": 1 }

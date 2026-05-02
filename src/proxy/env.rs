@@ -92,6 +92,8 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
             iface: None,

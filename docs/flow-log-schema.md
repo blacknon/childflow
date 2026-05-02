@@ -106,15 +106,16 @@ Example:
 | `remote_ip` | string or null | Yes | Present when the violation has a concrete remote IP |
 | `remote_port` | integer or null | Yes | Present when the violation has a concrete port |
 | `action` | string | Yes | Current value is `deny` |
-| `reason_code` | string | Yes | Current values include `offline`, `metadata`, `private`, `deny_cidr`, `default_deny`, `proxy_only` |
-| `control` | string | Yes | Current values include `--offline`, `--block-metadata`, `--block-private`, `--deny-cidr`, `--default-policy`, `--proxy-only` |
+| `reason_code` | string | Yes | Current values include `offline`, `metadata`, `private`, `deny_cidr`, `deny_domain`, `default_deny`, `proxy_only` |
+| `control` | string | Yes | Current values include `--offline`, `--block-metadata`, `--block-private`, `--deny-cidr`, `--deny-domain`, `--default-policy`, `--proxy-only` |
 | `matched_cidr` | string or null | Yes | Set for CIDR-based deny rules |
+| `matched_domain` | string or null | Yes | Set for domain-based deny rules |
 | `reason` | string | Yes | Human-readable explanation |
 
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000004,"event":"policy_violation","protocol":"tcp","remote":"10.0.0.1:443","remote_ip":"10.0.0.1","remote_port":443,"action":"deny","reason_code":"deny_cidr","control":"--deny-cidr","matched_cidr":"10.0.0.0/8","reason":"blocked by `--deny-cidr 10.0.0.0/8`"}
+{"schema_version":1,"ts_ms":1760000000004,"event":"policy_violation","protocol":"tcp","remote":"10.0.0.1:443","remote_ip":"10.0.0.1","remote_port":443,"action":"deny","reason_code":"deny_cidr","control":"--deny-cidr","matched_cidr":"10.0.0.0/8","matched_domain":null,"reason":"blocked by `--deny-cidr 10.0.0.0/8`"}
 ```
 
 ### `flow_end`

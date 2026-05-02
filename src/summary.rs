@@ -288,6 +288,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                     connect_ok: stats.connect_ok,
                     connect_error: stats.connect_error,
                     flow_end: stats.flow_end,
+                    dns_names: report.dns_names_for_target(target),
                 },
             ),
             policy_violations: count_entries_to_json(report.policy_violation_entries(3)),
@@ -380,6 +381,7 @@ struct SummaryTopTarget {
     connect_ok: usize,
     connect_error: usize,
     flow_end: usize,
+    dns_names: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -425,6 +427,8 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
             iface: None,
@@ -526,7 +530,7 @@ mod tests {
             "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34)"
         ));
         assert!(rendered.contains(
-            "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1)"
+            "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, dns_names=example.com)"
         ));
         assert!(rendered.contains("flow-log policy violations: deny_cidr=1"));
         assert!(rendered.contains("flow-log connect errors: connection refused=1"));

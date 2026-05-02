@@ -3,11 +3,13 @@
 // that can be found in the LICENSE file.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use ipnetwork::IpNetwork;
 
 use crate::cli::{Cli, DefaultPolicy};
+use crate::domain::matches_domain_rule;
 
 pub const PRIVATE_IPV4_CIDRS: &[&str] = &[
     "10.0.0.0/8",
@@ -31,6 +33,8 @@ pub struct SandboxPolicy {
     pub default_policy: DefaultPolicy,
     pub allow_cidrs: Vec<IpNetwork>,
     pub deny_cidrs: Vec<IpNetwork>,
+    pub allow_domains: Vec<String>,
+    pub deny_domains: Vec<String>,
     pub proxy_only: bool,
     pub fail_on_leak: bool,
 }
@@ -44,6 +48,8 @@ impl SandboxPolicy {
             default_policy: cli.default_policy,
             allow_cidrs: cli.allow_cidrs.clone(),
             deny_cidrs: cli.deny_cidrs.clone(),
+            allow_domains: cli.allow_domains.clone(),
+            deny_domains: cli.deny_domains.clone(),
             proxy_only: cli.proxy_only,
             fail_on_leak: cli.fail_on_leak,
         }
@@ -69,6 +75,12 @@ impl SandboxPolicy {
         for cidr in &self.deny_cidrs {
             controls.push(format!("deny-cidr={cidr}"));
         }
+        for domain in &self.allow_domains {
+            controls.push(format!("allow-domain={domain}"));
+        }
+        for domain in &self.deny_domains {
+            controls.push(format!("deny-domain={domain}"));
+        }
         if self.proxy_only {
             controls.push("proxy-only".to_string());
         }
@@ -78,35 +90,47 @@ impl SandboxPolicy {
         controls
     }
 
+    #[allow(dead_code)]
     pub fn block_reason_for_remote_ip(&self, ip: IpAddr) -> Option<BlockReason> {
-        if self.offline {
-            return Some(BlockReason::Offline);
-        }
-        if self.block_metadata && is_metadata_ip(ip) {
-            return Some(BlockReason::Metadata);
-        }
-        if self.block_private && is_private_ip(ip) {
-            return Some(BlockReason::Private);
-        }
-        if let Some(cidr) = self.deny_cidrs.iter().find(|cidr| cidr.contains(ip)) {
-            return Some(BlockReason::DeniedCidr(*cidr));
-        }
-        if self.allow_cidrs.iter().any(|cidr| cidr.contains(ip)) {
-            return None;
-        }
-        if matches!(self.default_policy, DefaultPolicy::Deny) {
-            return Some(BlockReason::DefaultDeny);
-        }
-        if self.proxy_only {
-            return Some(BlockReason::ProxyOnly);
-        }
-        None
+        self.block_reason_for_remote_ip_with_domains(ip, None)
     }
 
+    pub fn block_reason_for_remote_ip_with_domains(
+        &self,
+        ip: IpAddr,
+        resolved_domains: Option<&BTreeSet<String>>,
+    ) -> Option<BlockReason> {
+        self.block_reason_for_remote(ip, None, resolved_domains)
+    }
+
+    pub fn block_reason_for_dns_name(&self, qname: &str) -> Option<BlockReason> {
+        self.matching_denied_domain_name(qname)
+            .map(|domain| BlockReason::DeniedDomain(domain.to_string()))
+    }
+
+    #[allow(dead_code)]
     pub fn block_reason_for_tcp_remote_ip(
         &self,
         ip: IpAddr,
         is_proxied: bool,
+    ) -> Option<BlockReason> {
+        self.block_reason_for_tcp_remote_ip_with_domains(ip, is_proxied, None)
+    }
+
+    pub fn block_reason_for_tcp_remote_ip_with_domains(
+        &self,
+        ip: IpAddr,
+        is_proxied: bool,
+        resolved_domains: Option<&BTreeSet<String>>,
+    ) -> Option<BlockReason> {
+        self.block_reason_for_remote(ip, Some(is_proxied), resolved_domains)
+    }
+
+    fn block_reason_for_remote(
+        &self,
+        ip: IpAddr,
+        is_proxied: Option<bool>,
+        resolved_domains: Option<&BTreeSet<String>>,
     ) -> Option<BlockReason> {
         if self.offline {
             return Some(BlockReason::Offline);
@@ -120,16 +144,47 @@ impl SandboxPolicy {
         if let Some(cidr) = self.deny_cidrs.iter().find(|cidr| cidr.contains(ip)) {
             return Some(BlockReason::DeniedCidr(*cidr));
         }
+        if let Some(domain) = self.matching_denied_domain(resolved_domains) {
+            return Some(BlockReason::DeniedDomain(domain.to_string()));
+        }
         if self.allow_cidrs.iter().any(|cidr| cidr.contains(ip)) {
+            return None;
+        }
+        if self.matches_allowed_domain(resolved_domains) {
             return None;
         }
         if matches!(self.default_policy, DefaultPolicy::Deny) {
             return Some(BlockReason::DefaultDeny);
         }
-        if self.proxy_only && !is_proxied {
+        if is_proxied != Some(true) && self.proxy_only {
             return Some(BlockReason::ProxyOnly);
         }
         None
+    }
+
+    fn matching_denied_domain(&self, resolved_domains: Option<&BTreeSet<String>>) -> Option<&str> {
+        let domains = resolved_domains?;
+        self.deny_domains.iter().find_map(|rule| {
+            domains
+                .iter()
+                .any(|qname| matches_domain_rule(qname, rule))
+                .then_some(rule.as_str())
+        })
+    }
+
+    fn matching_denied_domain_name<'a>(&'a self, qname: &str) -> Option<&'a str> {
+        self.deny_domains
+            .iter()
+            .find_map(|rule| matches_domain_rule(qname, rule).then_some(rule.as_str()))
+    }
+
+    fn matches_allowed_domain(&self, resolved_domains: Option<&BTreeSet<String>>) -> bool {
+        let Some(domains) = resolved_domains else {
+            return false;
+        };
+        self.allow_domains
+            .iter()
+            .any(|rule| domains.iter().any(|qname| matches_domain_rule(qname, rule)))
     }
 }
 
@@ -139,6 +194,7 @@ pub enum BlockReason {
     Metadata,
     Private,
     DeniedCidr(IpNetwork),
+    DeniedDomain(String),
     DefaultDeny,
     ProxyOnly,
 }
@@ -150,6 +206,7 @@ impl BlockReason {
             Self::Metadata => "metadata",
             Self::Private => "private",
             Self::DeniedCidr(_) => "deny_cidr",
+            Self::DeniedDomain(_) => "deny_domain",
             Self::DefaultDeny => "default_deny",
             Self::ProxyOnly => "proxy_only",
         }
@@ -161,6 +218,7 @@ impl BlockReason {
             Self::Metadata => "--block-metadata",
             Self::Private => "--block-private",
             Self::DeniedCidr(_) => "--deny-cidr",
+            Self::DeniedDomain(_) => "--deny-domain",
             Self::DefaultDeny => "--default-policy",
             Self::ProxyOnly => "--proxy-only",
         }
@@ -173,12 +231,22 @@ impl BlockReason {
         }
     }
 
+    pub fn matched_domain(&self) -> Option<&str> {
+        match self {
+            Self::DeniedDomain(domain) => Some(domain.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn describe(&self) -> Cow<'static, str> {
         match self {
             Self::Offline => Cow::Borrowed("blocked by `--offline`"),
             Self::Metadata => Cow::Borrowed("blocked by `--block-metadata`"),
             Self::Private => Cow::Borrowed("blocked by `--block-private`"),
             Self::DeniedCidr(cidr) => Cow::Owned(format!("blocked by `--deny-cidr {cidr}`")),
+            Self::DeniedDomain(domain) => {
+                Cow::Owned(format!("blocked by `--deny-domain {domain}`"))
+            }
             Self::DefaultDeny => Cow::Borrowed("blocked by `--default-policy deny`"),
             Self::ProxyOnly => Cow::Borrowed("blocked by `--proxy-only`"),
         }
@@ -229,6 +297,8 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["169.254.169.254/32".parse().unwrap()],
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
         };
@@ -264,6 +334,8 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["192.0.2.0/24".parse().unwrap()],
             deny_cidrs: vec!["198.51.100.0/24".parse().unwrap()],
+            allow_domains: vec!["example.com".into()],
+            deny_domains: vec!["blocked.example.com".into()],
             proxy_only: true,
             fail_on_leak: true,
         };
@@ -277,6 +349,8 @@ mod tests {
                 "default-policy=deny".to_string(),
                 "allow-cidr=192.0.2.0/24".to_string(),
                 "deny-cidr=198.51.100.0/24".to_string(),
+                "allow-domain=example.com".to_string(),
+                "deny-domain=blocked.example.com".to_string(),
                 "proxy-only".to_string(),
                 "fail-on-leak".to_string(),
             ]
@@ -292,6 +366,8 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
         };
@@ -311,6 +387,8 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: vec!["203.0.113.0/24".parse().unwrap()],
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
         };
@@ -330,6 +408,8 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["203.0.113.0/24".parse().unwrap()],
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
         };
@@ -353,6 +433,8 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["203.0.113.0/24".parse().unwrap()],
             deny_cidrs: vec!["203.0.113.128/25".parse().unwrap()],
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
         };
@@ -372,6 +454,8 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: true,
             fail_on_leak: false,
         };
@@ -396,6 +480,61 @@ mod tests {
         assert_eq!(
             reason.matched_cidr(),
             Some("203.0.113.0/24".parse().unwrap())
+        );
+        assert_eq!(reason.matched_domain(), None);
+    }
+
+    #[test]
+    fn deny_domain_blocks_matching_resolved_name() {
+        let policy = SandboxPolicy {
+            offline: false,
+            block_private: false,
+            block_metadata: false,
+            default_policy: DefaultPolicy::Allow,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains: vec!["example.com".into()],
+            proxy_only: false,
+            fail_on_leak: false,
+        };
+        let resolved = BTreeSet::from(["api.example.com".to_string()]);
+
+        let reason = policy
+            .block_reason_for_tcp_remote_ip_with_domains(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                false,
+                Some(&resolved),
+            )
+            .unwrap();
+
+        assert_eq!(reason.code(), "deny_domain");
+        assert_eq!(reason.control(), "--deny-domain");
+        assert_eq!(reason.matched_domain(), Some("example.com"));
+    }
+
+    #[test]
+    fn default_deny_allows_matching_allow_domain() {
+        let policy = SandboxPolicy {
+            offline: false,
+            block_private: false,
+            block_metadata: false,
+            default_policy: DefaultPolicy::Deny,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            allow_domains: vec!["example.com".into()],
+            deny_domains: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
+        };
+        let resolved = BTreeSet::from(["api.example.com".to_string()]);
+
+        assert_eq!(
+            policy.block_reason_for_remote_ip_with_domains(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                Some(&resolved),
+            ),
+            None
         );
     }
 }

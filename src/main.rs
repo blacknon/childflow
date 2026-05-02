@@ -19,6 +19,8 @@ mod dns;
 #[cfg(target_os = "linux")]
 mod doctor;
 #[cfg(target_os = "linux")]
+mod domain;
+#[cfg(target_os = "linux")]
 mod flow_log;
 #[cfg(target_os = "linux")]
 mod hosts;
@@ -134,7 +136,7 @@ fn run_command_tree(cli: &Cli) -> Result<i32> {
     let namespace_mode = network::namespace_mode(backend);
     let run_id = util::unique_run_id();
     let network_plan = network::NetworkPlan::new();
-    let child_bootstrap = network::prepare_child_bootstrap(&cli, &network_plan)?;
+    let child_bootstrap = network::prepare_child_bootstrap(cli, &network_plan)?;
     let dns_plan = DnsPlan::prepare(
         &run_id,
         backend,
@@ -143,7 +145,7 @@ fn run_command_tree(cli: &Cli) -> Result<i32> {
         network_plan.host_ipv6(),
     )?;
     let hosts_plan = HostsPlan::prepare(&run_id, cli.hosts_file.as_deref())?;
-    let proxy_plan = ProxyPlan::from_cli(&cli)?;
+    let proxy_plan = ProxyPlan::from_cli(cli)?;
     let child_proxy_env = proxy_plan
         .as_ref()
         .map(ProxyPlan::child_env)
@@ -180,7 +182,7 @@ fn run_command_tree(cli: &Cli) -> Result<i32> {
                 extra_env: &child_proxy_env,
                 command: &cli.command,
             }) {
-                log_runtime_failure_event(&cli, "child_bootstrap", &err);
+                log_runtime_failure_event(cli, "child_bootstrap", &err);
                 eprintln!("childflow: child bootstrap failed: {err:#}");
                 if let Some(code) = runtime_failure::classify_error(&err) {
                     eprintln!("childflow: child bootstrap reason_code: {}", code.as_str());
@@ -206,7 +208,7 @@ fn run_command_tree(cli: &Cli) -> Result<i32> {
                     let runtime = ParentRuntime::start(
                         &run_id,
                         child,
-                        &cli,
+                        cli,
                         &network_plan,
                         &dns_plan,
                         proxy_plan.as_ref(),
@@ -258,7 +260,7 @@ fn run_command_tree(cli: &Cli) -> Result<i32> {
                     let runtime = ParentRuntime::start(
                         &run_id,
                         child,
-                        &cli,
+                        cli,
                         &network_plan,
                         &dns_plan,
                         proxy_plan.as_ref(),
@@ -285,7 +287,7 @@ fn run_command_tree(cli: &Cli) -> Result<i32> {
                 exit_code = 1;
             }
             if cli.summary {
-                summary::print_run_summary(&cli, exit_code);
+                summary::print_run_summary(cli, exit_code);
             }
 
             Ok(exit_code)

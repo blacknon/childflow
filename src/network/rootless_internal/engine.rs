@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{BorrowedFd, RawFd};
@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
 use crate::capture::CaptureWriters;
+use crate::domain::normalize_domain_name;
 use crate::flow_log::{ConnectResultStatus, DnsAnswerMode, FlowLogger, PolicyViolationEvent};
 use crate::proxy::rootless_relay::ProxyUpstreamConfig;
 use crate::sandbox::{BlockReason, SandboxPolicy};
@@ -118,6 +119,29 @@ struct ConnectionState {
     flow_end_logged: bool,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct ResolvedDomainIndex {
+    ip_to_domains: BTreeMap<IpAddr, BTreeSet<String>>,
+}
+
+impl ResolvedDomainIndex {
+    fn note_resolution(&mut self, qname: &str, answer_ips: &[IpAddr]) {
+        let Some(qname) = normalize_domain_name(qname) else {
+            return;
+        };
+        for ip in answer_ips {
+            self.ip_to_domains
+                .entry(*ip)
+                .or_default()
+                .insert(qname.clone());
+        }
+    }
+
+    pub(super) fn domains_for_ip(&self, ip: IpAddr) -> Option<&BTreeSet<String>> {
+        self.ip_to_domains.get(&ip)
+    }
+}
+
 struct UdpRelayRequest {
     gateway_mac: [u8; 6],
     child_mac: [u8; 6],
@@ -151,6 +175,7 @@ struct TcpPacketContext<'a> {
     capture: &'a mut Option<CaptureWriters>,
     flow_log: &'a mut Option<FlowLogger>,
     leak_detected: &'a Arc<AtomicBool>,
+    resolved_domains: &'a ResolvedDomainIndex,
 }
 
 struct UdpPacketContext<'a> {
@@ -163,6 +188,7 @@ struct UdpPacketContext<'a> {
     event_tx: &'a Sender<RemoteEvent>,
     flow_log: &'a mut Option<FlowLogger>,
     leak_detected: &'a Arc<AtomicBool>,
+    resolved_domains: &'a mut ResolvedDomainIndex,
 }
 
 fn run_engine(
@@ -175,6 +201,7 @@ fn run_engine(
     let (event_tx, event_rx) = mpsc::channel();
     let mut child_mac = None;
     let mut connections: HashMap<FlowKey, ConnectionState> = HashMap::new();
+    let mut resolved_domains = ResolvedDomainIndex::default();
     let mut buf = [0_u8; 65535];
 
     while !stop.load(Ordering::Relaxed) {
@@ -210,6 +237,7 @@ fn run_engine(
                                 capture: &mut config.capture,
                                 flow_log: &mut config.flow_log,
                                 leak_detected: &leak_detected,
+                                resolved_domains: &resolved_domains,
                             },
                             &tcp,
                         )?;
@@ -227,6 +255,7 @@ fn run_engine(
                                 event_tx: &event_tx,
                                 flow_log: &mut config.flow_log,
                                 leak_detected: &leak_detected,
+                                resolved_domains: &mut resolved_domains,
                             },
                             &udp,
                         )?;
@@ -239,6 +268,7 @@ fn run_engine(
                             &config.sandbox_policy,
                             &mut config.flow_log,
                             &leak_detected,
+                            &resolved_domains,
                             &icmp,
                         )?;
                     }
@@ -250,6 +280,7 @@ fn run_engine(
                             &config.sandbox_policy,
                             &mut config.flow_log,
                             &leak_detected,
+                            &resolved_domains,
                             &icmp,
                         )?;
                     }
@@ -291,6 +322,7 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
         capture,
         flow_log,
         leak_detected,
+        resolved_domains,
     } = ctx;
     let key = FlowKey {
         child_ip: tcp.meta.src_ip,
@@ -305,9 +337,11 @@ fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket) -> Result
     }
 
     if tcp.syn && !tcp.ack {
-        if let Some(reason) =
-            sandbox_policy.block_reason_for_tcp_remote_ip(key.remote_ip, proxy_upstream.is_some())
-        {
+        if let Some(reason) = sandbox_policy.block_reason_for_tcp_remote_ip_with_domains(
+            key.remote_ip,
+            proxy_upstream.is_some(),
+            resolved_domains.domains_for_ip(key.remote_ip),
+        ) {
             note_policy_violation(
                 flow_log,
                 leak_detected,
@@ -523,6 +557,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         event_tx,
         flow_log,
         leak_detected,
+        resolved_domains,
     } = ctx;
     let dns_qtype = dns_query_type_name(&udp.payload);
     let dns_qname = dns_query_name(&udp.payload);
@@ -530,6 +565,56 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         && (udp.meta.dst_ip == IpAddr::V4(addr_plan.gateway_ipv4)
             || udp.meta.dst_ip == IpAddr::V6(addr_plan.gateway_ipv6))
     {
+        if let Some(qname) = dns_qname.as_deref() {
+            if let Some(reason) = sandbox_policy.block_reason_for_dns_name(qname) {
+                log_dns_query(
+                    flow_log,
+                    SocketAddr::new(udp.meta.dst_ip, 53),
+                    dns_qname.as_deref(),
+                    dns_qtype,
+                )?;
+                note_policy_violation(
+                    flow_log,
+                    leak_detected,
+                    &sandbox_policy,
+                    PolicyViolationTarget {
+                        protocol: "dns",
+                        remote: qname,
+                        remote_ip: None,
+                        remote_port: None,
+                    },
+                    &reason,
+                );
+                let response = synthesize_empty_dns_response(&udp.payload)?;
+                let frame = packet::build_udp_frame(
+                    addr_plan.gateway_mac,
+                    udp.meta.src_mac,
+                    udp.meta.dst_ip,
+                    udp.meta.src_ip,
+                    53,
+                    udp.src_port,
+                    &response,
+                )?;
+                tap.write_all(&frame)
+                    .context("failed to write synthetic denied-domain DNS response to tap")?;
+                capture_frame(
+                    capture,
+                    &frame,
+                    "failed to capture a synthetic rootless denied-domain DNS response frame",
+                );
+                log_dns_answer(
+                    flow_log,
+                    SocketAddr::new(udp.meta.dst_ip, 53),
+                    dns_qname.as_deref(),
+                    dns_qtype,
+                    DnsAnswerMode::SyntheticEmpty,
+                    response.len(),
+                    &[],
+                )?;
+                return Ok(());
+            }
+        }
+
         if sandbox_policy.proxy_only {
             note_policy_violation(
                 flow_log,
@@ -655,6 +740,9 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         log_dns_query(flow_log, server, dns_qname.as_deref(), dns_qtype)?;
         let response = relay_dns_udp(upstream_ip, &udp.payload)?;
         let resolved_ips = dns_answer_ips(&response);
+        if let Some(qname) = dns_qname.as_deref() {
+            resolved_domains.note_resolution(qname, &resolved_ips);
+        }
         let frame = packet::build_udp_frame(
             addr_plan.gateway_mac,
             udp.meta.src_mac,
@@ -683,7 +771,10 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         return Ok(());
     }
 
-    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(udp.meta.dst_ip) {
+    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip_with_domains(
+        udp.meta.dst_ip,
+        resolved_domains.domains_for_ip(udp.meta.dst_ip),
+    ) {
         note_policy_violation(
             flow_log,
             leak_detected,
@@ -749,6 +840,7 @@ fn note_policy_violation(
             reason_code: reason.code(),
             control: reason.control(),
             matched_cidr: matched_cidr.as_deref(),
+            matched_domain: reason.matched_domain(),
             reason: &reason.describe(),
         }) {
             util::warn(format!("{err:#}"));

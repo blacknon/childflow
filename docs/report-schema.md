@@ -136,6 +136,7 @@ Each element currently includes:
 | `connect_ok` | integer | Number of successful `connect_result` events |
 | `connect_error` | integer | Number of error `connect_result` events |
 | `flow_end` | integer | Number of `flow_end` events |
+| `dns_names` | array of strings | Correlated DNS names whose observed `answer_ips` included this target IP |
 
 The array is currently sorted by descending `connect_attempts`, then descending
 `connect_error`, then descending `connect_ok`, then ascending `target`.
@@ -149,7 +150,8 @@ Example:
     "connect_attempts": 2,
     "connect_ok": 1,
     "connect_error": 1,
-    "flow_end": 1
+    "flow_end": 1,
+    "dns_names": ["example.com"]
   }
 ]
 ```
@@ -221,7 +223,8 @@ Example:
       "connect_attempts": 1,
       "connect_ok": 0,
       "connect_error": 1,
-      "flow_end": 0
+      "flow_end": 0,
+      "dns_names": ["example.com"]
     }
   ]
 }
