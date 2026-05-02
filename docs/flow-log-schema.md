@@ -130,6 +130,21 @@ Example:
 {"schema_version":1,"ts_ms":1760000000005,"event":"flow_end","protocol":"tcp","remote_addr":"93.184.216.34:443","remote_ip":"93.184.216.34","remote_port":443}
 ```
 
+### `runtime_failure`
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `event` | string | Yes | Always `runtime_failure` |
+| `phase` | string | Yes | Failure phase such as `child_bootstrap`, `run`, `cli_validate`, or `preflight` |
+| `reason_code` | string | Yes | Stable runtime failure code such as `tap_create_blocked`, `packet_capture_blocked`, or `runtime_shutdown_failed` |
+| `detail` | string | Yes | Human-readable error detail captured at the failure site |
+
+Example:
+
+```json
+{"schema_version":1,"ts_ms":1760000000006,"event":"runtime_failure","phase":"child_bootstrap","reason_code":"tap_create_blocked","detail":"failed to create tap device `tap0` inside the rootless-internal child namespace using TUNSETIFF"}
+```
+
 ## Compatibility Notes
 
 - Additive fields within the same `schema_version` should be considered possible.

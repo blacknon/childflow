@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
@@ -56,6 +56,12 @@ pub struct PolicyViolationEvent<'a> {
     pub control: &'static str,
     pub matched_cidr: Option<&'a str>,
     pub reason: &'a str,
+}
+
+pub struct RuntimeFailureEvent<'a> {
+    pub phase: &'a str,
+    pub reason_code: &'a str,
+    pub detail: &'a str,
 }
 
 impl FlowLogger {
@@ -153,18 +159,37 @@ impl FlowLogger {
     }
 
     fn write_event(&mut self, mut value: Value) -> Result<()> {
-        if let Value::Object(ref mut map) = value {
-            map.insert("schema_version".into(), json!(FLOW_LOG_SCHEMA_VERSION));
-            map.insert("ts_ms".into(), json!(timestamp_millis()));
-        }
-        serde_json::to_writer(&mut self.writer, &value)
-            .context("failed to serialize flow log event")?;
-        self.writer
-            .write_all(b"\n")
-            .context("failed to write flow log newline")?;
-        self.writer.flush().context("failed to flush flow log")?;
-        Ok(())
+        write_event_line(&mut self.writer, &mut value)
     }
+}
+
+pub fn append_runtime_failure(path: &Path, failure: RuntimeFailureEvent<'_>) -> Result<()> {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open flow log for append at {}", path.display()))?;
+    let mut writer = BufWriter::new(file);
+    let mut value = json!({
+        "event": "runtime_failure",
+        "phase": failure.phase,
+        "reason_code": failure.reason_code,
+        "detail": failure.detail,
+    });
+    write_event_line(&mut writer, &mut value)
+}
+
+fn write_event_line(writer: &mut BufWriter<File>, value: &mut Value) -> Result<()> {
+    if let Value::Object(map) = value {
+        map.insert("schema_version".into(), json!(FLOW_LOG_SCHEMA_VERSION));
+        map.insert("ts_ms".into(), json!(timestamp_millis()));
+    }
+    serde_json::to_writer(&mut *writer, value).context("failed to serialize flow log event")?;
+    writer
+        .write_all(b"\n")
+        .context("failed to write flow log newline")?;
+    writer.flush().context("failed to flush flow log")?;
+    Ok(())
 }
 
 fn timestamp_millis() -> u128 {
@@ -183,7 +208,8 @@ mod tests {
     use anyhow::{Context, Result};
 
     use super::{
-        ConnectResultStatus, DnsAnswerMode, FlowLogger, PolicyViolationEvent,
+        append_runtime_failure, ConnectResultStatus, DnsAnswerMode, FlowLogger,
+        PolicyViolationEvent, RuntimeFailureEvent,
         FLOW_LOG_SCHEMA_VERSION,
     };
 
@@ -301,6 +327,29 @@ mod tests {
             .with_context(|| format!("failed to read {}", path.display()))?;
         assert!(contents.contains("\"status\":\"error\""));
         assert!(contents.contains("\"mode\":\"synthetic_empty\""));
+
+        let _ = fs::remove_file(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn append_runtime_failure_writes_structured_event() -> Result<()> {
+        let path = unique_temp_flow_log_path("flow-log-runtime-failure");
+        append_runtime_failure(
+            &path,
+            RuntimeFailureEvent {
+                phase: "child_bootstrap",
+                reason_code: "tap_create_blocked",
+                detail: "failed to create tap device `tap0`",
+            },
+        )?;
+
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        assert!(contents.contains("\"event\":\"runtime_failure\""));
+        assert!(contents.contains("\"phase\":\"child_bootstrap\""));
+        assert!(contents.contains("\"reason_code\":\"tap_create_blocked\""));
+        assert!(contents.contains("\"detail\":\"failed to create tap device `tap0`\""));
 
         let _ = fs::remove_file(&path);
         Ok(())

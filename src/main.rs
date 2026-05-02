@@ -46,7 +46,7 @@ mod tproxy;
 mod util;
 
 #[cfg(target_os = "linux")]
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 #[cfg(target_os = "linux")]
 use nix::sys::wait::{waitpid, WaitStatus};
 #[cfg(target_os = "linux")]
@@ -109,8 +109,24 @@ fn real_main() -> Result<i32> {
         return report::run(&cli);
     }
 
-    cli.validate()?;
-    preflight::run(&cli)?;
+    if let Err(err) = cli.validate() {
+        log_runtime_failure_event(&cli, "cli_validate", &err);
+        return Err(err);
+    }
+    if let Err(err) = preflight::run(&cli) {
+        log_runtime_failure_event(&cli, "preflight", &err);
+        return Err(err);
+    }
+    match run_command_tree(&cli) {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            log_runtime_failure_event(&cli, "run", &err);
+            Err(err)
+        }
+    }
+}
+
+fn run_command_tree(cli: &Cli) -> Result<i32> {
     let backend = cli.selected_backend();
 
     let namespace_mode = network::namespace_mode(backend);
@@ -162,6 +178,7 @@ fn real_main() -> Result<i32> {
                 extra_env: &child_proxy_env,
                 command: &cli.command,
             }) {
+                log_runtime_failure_event(&cli, "child_bootstrap", &err);
                 eprintln!("childflow: child bootstrap failed: {err:#}");
                 if let Some(code) = runtime_failure::classify_error(&err) {
                     eprintln!("childflow: child bootstrap reason_code: {}", code.as_str());
@@ -271,6 +288,28 @@ fn real_main() -> Result<i32> {
 
             Ok(exit_code)
         }
+    }
+}
+
+fn log_runtime_failure_event(cli: &Cli, phase: &str, err: &Error) {
+    let Some(path) = cli.flow_log.as_deref() else {
+        return;
+    };
+
+    let reason_code = runtime_failure::classify_or_unknown(err);
+    let detail = format!("{err:#}");
+    if let Err(log_err) = flow_log::append_runtime_failure(
+        path,
+        flow_log::RuntimeFailureEvent {
+            phase,
+            reason_code: reason_code.as_str(),
+            detail: &detail,
+        },
+    ) {
+        util::debug(format!(
+            "failed to append runtime failure event to {}: {log_err:#}",
+            path.display()
+        ));
     }
 }
 

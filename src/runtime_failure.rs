@@ -6,6 +6,7 @@ use anyhow::Error;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeFailureCode {
+    UnknownRuntimeFailure,
     NamespaceUnshareFailed,
     UserNamespaceMappingFailed,
     MountPropagationBlocked,
@@ -20,6 +21,7 @@ pub enum RuntimeFailureCode {
 impl RuntimeFailureCode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::UnknownRuntimeFailure => "unknown_runtime_failure",
             Self::NamespaceUnshareFailed => "namespace_unshare_failed",
             Self::UserNamespaceMappingFailed => "user_namespace_mapping_failed",
             Self::MountPropagationBlocked => "mount_propagation_blocked",
@@ -84,6 +86,10 @@ fn classify_text(text: &str) -> Option<RuntimeFailureCode> {
     None
 }
 
+pub fn classify_or_unknown(err: &Error) -> RuntimeFailureCode {
+    classify_error(err).unwrap_or(RuntimeFailureCode::UnknownRuntimeFailure)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
@@ -122,6 +128,10 @@ mod tests {
 
     #[test]
     fn runtime_failure_codes_use_stable_strings() {
+        assert_eq!(
+            RuntimeFailureCode::UnknownRuntimeFailure.as_str(),
+            "unknown_runtime_failure"
+        );
         assert_eq!(
             RuntimeFailureCode::UserNamespaceMappingFailed.as_str(),
             "user_namespace_mapping_failed"

@@ -35,11 +35,13 @@ pub struct FlowLogReport {
     pub connect_result: usize,
     pub policy_violation: usize,
     pub flow_end: usize,
+    pub runtime_failure: usize,
     pub unknown_event: usize,
     pub schema_versions: BTreeSet<u32>,
     pub protocol_counts: BTreeMap<String, usize>,
     pub policy_reason_counts: BTreeMap<String, usize>,
     pub connect_error_counts: BTreeMap<String, usize>,
+    pub runtime_failure_reason_counts: BTreeMap<String, usize>,
     pub connection_targets: BTreeMap<String, ConnectionTargetStats>,
     pub proxied_connect_attempts: usize,
     pub direct_connect_attempts: usize,
@@ -79,7 +81,7 @@ impl FlowLogReport {
 
     pub fn render_text(&self, path: &Path) -> String {
         let mut rendered = format!(
-            "childflow report\nflow-log: {}\nschema-version: {}\nevents:\n  total: {}\n  dns_query: {}\n  dns_answer: {}\n  connect_attempt: {}\n  connect_result: {}\n  policy_violation: {}\n  flow_end: {}\n  unknown_event: {}\n",
+            "childflow report\nflow-log: {}\nschema-version: {}\nevents:\n  total: {}\n  dns_query: {}\n  dns_answer: {}\n  connect_attempt: {}\n  connect_result: {}\n  policy_violation: {}\n  flow_end: {}\n  runtime_failure: {}\n  unknown_event: {}\n",
             path.display(),
             self.render_schema_versions(),
             self.total,
@@ -89,6 +91,7 @@ impl FlowLogReport {
             self.connect_result,
             self.policy_violation,
             self.flow_end,
+            self.runtime_failure,
             self.unknown_event
         );
 
@@ -125,6 +128,15 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("runtime-failures:\n");
+        if self.runtime_failure_reason_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (reason, count) in &self.runtime_failure_reason_counts {
+                rendered.push_str(&format!("  {reason}: {count}\n"));
+            }
+        }
+
         rendered.push_str("top-connection-targets:\n");
         if self.connection_targets.is_empty() {
             rendered.push_str("  <none>\n");
@@ -142,7 +154,7 @@ impl FlowLogReport {
 
     pub fn render_markdown(&self, path: &Path) -> String {
         let mut rendered = format!(
-            "# childflow report\n\n- flow-log: `{}`\n- schema-version: `{}`\n\n## Event counts\n\n| Metric | Count |\n| --- | ---: |\n| total | {} |\n| dns_query | {} |\n| dns_answer | {} |\n| connect_attempt | {} |\n| connect_result | {} |\n| policy_violation | {} |\n| flow_end | {} |\n| unknown_event | {} |\n",
+            "# childflow report\n\n- flow-log: `{}`\n- schema-version: `{}`\n\n## Event counts\n\n| Metric | Count |\n| --- | ---: |\n| total | {} |\n| dns_query | {} |\n| dns_answer | {} |\n| connect_attempt | {} |\n| connect_result | {} |\n| policy_violation | {} |\n| flow_end | {} |\n| runtime_failure | {} |\n| unknown_event | {} |\n",
             path.display(),
             self.render_schema_versions(),
             self.total,
@@ -152,6 +164,7 @@ impl FlowLogReport {
             self.connect_result,
             self.policy_violation,
             self.flow_end,
+            self.runtime_failure,
             self.unknown_event
         );
 
@@ -192,6 +205,16 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("\n## Runtime failures\n\n");
+        if self.runtime_failure_reason_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
+            for (reason, count) in &self.runtime_failure_reason_counts {
+                rendered.push_str(&format!("| {reason} | {count} |\n"));
+            }
+        }
+
         rendered.push_str("\n## Top connection targets\n\n");
         if self.connection_targets.is_empty() {
             rendered.push_str("_none_\n");
@@ -210,7 +233,7 @@ impl FlowLogReport {
 
     pub fn render_event_counts_compact(&self) -> String {
         format!(
-            "total={}, dns_query={}, dns_answer={}, connect_attempt={}, connect_result={}, policy_violation={}, flow_end={}, unknown_event={}",
+            "total={}, dns_query={}, dns_answer={}, connect_attempt={}, connect_result={}, policy_violation={}, flow_end={}, runtime_failure={}, unknown_event={}",
             self.total,
             self.dns_query,
             self.dns_answer,
@@ -218,6 +241,7 @@ impl FlowLogReport {
             self.connect_result,
             self.policy_violation,
             self.flow_end,
+            self.runtime_failure,
             self.unknown_event
         )
     }
@@ -268,6 +292,12 @@ impl FlowLogReport {
                 self.policy_violation += 1;
                 if let Some(reason) = event.reason_code {
                     *self.policy_reason_counts.entry(reason).or_default() += 1;
+                }
+            }
+            "runtime_failure" => {
+                self.runtime_failure += 1;
+                if let Some(reason) = event.reason_code {
+                    *self.runtime_failure_reason_counts.entry(reason).or_default() += 1;
                 }
             }
             "flow_end" => {
@@ -405,6 +435,7 @@ mod tests {
             connect_result: 1,
             policy_violation: 0,
             flow_end: 0,
+            runtime_failure: 0,
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
             protocol_counts: BTreeMap::from([
@@ -413,6 +444,7 @@ mod tests {
             ]),
             policy_reason_counts: BTreeMap::new(),
             connect_error_counts: BTreeMap::new(),
+            runtime_failure_reason_counts: BTreeMap::new(),
             connection_targets: BTreeMap::from([(
                 "93.184.216.34:443".into(),
                 ConnectionTargetStats {
@@ -432,12 +464,14 @@ mod tests {
         assert!(rendered.contains("schema-version: 1"));
         assert!(rendered.contains("total: 4"));
         assert!(rendered.contains("dns_query: 1"));
+        assert!(rendered.contains("runtime_failure: 0"));
         assert!(rendered.contains("unknown_event: 0"));
         assert!(rendered.contains("protocols:"));
         assert!(rendered.contains("tcp: 2"));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
         assert!(rendered.contains("connect-errors:\n  <none>"));
+        assert!(rendered.contains("runtime-failures:\n  <none>"));
         assert!(rendered.contains("top-connection-targets:"));
         assert!(rendered.contains("93.184.216.34:443: attempts=1, ok=1"));
         Ok(())
@@ -453,11 +487,13 @@ mod tests {
             connect_result: 1,
             policy_violation: 1,
             flow_end: 0,
+            runtime_failure: 1,
             unknown_event: 0,
             schema_versions: BTreeSet::from([1]),
             protocol_counts: BTreeMap::from([("tcp".into(), 3)]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
+            runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
             connection_targets: BTreeMap::from([(
                 "93.184.216.34:443".into(),
                 ConnectionTargetStats {
@@ -474,9 +510,11 @@ mod tests {
         let rendered = report.render_markdown(Path::new("/tmp/flow.jsonl"));
         assert!(rendered.contains("# childflow report"));
         assert!(rendered.contains("| total | 3 |"));
+        assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));
         assert!(rendered.contains("| proxy_only | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
+        assert!(rendered.contains("| tap_create_blocked | 1 |"));
         assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 |"));
         Ok(())
     }
@@ -500,6 +538,7 @@ mod tests {
         assert_eq!(report.proxied_connect_attempts, 1);
         assert_eq!(report.direct_connect_attempts, 1);
         assert_eq!(report.policy_reason_counts.get("deny_cidr"), Some(&1));
+        assert_eq!(report.runtime_failure, 0);
         assert_eq!(
             report.connect_error_counts.get("connection refused"),
             Some(&1)
@@ -595,6 +634,32 @@ mod tests {
             report.render_connect_errors_compact(2),
             "connection refused=2, timed out=1"
         );
+    }
+
+    #[test]
+    fn flow_log_report_counts_runtime_failures() -> Result<()> {
+        let path = unique_temp_flow_log_path("report-runtime-failures");
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema_version\":1,\"event\":\"runtime_failure\",\"phase\":\"child_bootstrap\",\"reason_code\":\"tap_create_blocked\",\"detail\":\"tap create failed\"}\n",
+                "{\"schema_version\":1,\"event\":\"runtime_failure\",\"phase\":\"run\",\"reason_code\":\"runtime_shutdown_failed\",\"detail\":\"shutdown failed\"}\n"
+            ),
+        )?;
+
+        let report = FlowLogReport::from_path(&path)?;
+        assert_eq!(report.runtime_failure, 2);
+        assert_eq!(
+            report.runtime_failure_reason_counts.get("tap_create_blocked"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.runtime_failure_reason_counts.get("runtime_shutdown_failed"),
+            Some(&1)
+        );
+
+        let _ = fs::remove_file(path);
+        Ok(())
     }
 
     fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {
