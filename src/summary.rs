@@ -279,6 +279,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                     qname: qname.to_string(),
                     queries: stats.queries,
                     answers: stats.answers,
+                    answer_ips: stats.answer_ips.iter().cloned().collect(),
                 }),
             top_target: report.top_connection_targets(1).into_iter().next().map(
                 |(target, stats)| SummaryTopTarget {
@@ -369,6 +370,7 @@ struct SummaryTopDnsName {
     qname: String,
     queries: usize,
     answers: usize,
+    answer_ips: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -499,7 +501,7 @@ mod tests {
             &flow_log_path,
             concat!(
                 "{\"event\":\"dns_query\",\"qname\":\"example.com\",\"ts_ms\":0}\n",
-                "{\"event\":\"dns_answer\",\"qname\":\"example.com\",\"ts_ms\":0}\n",
+                "{\"event\":\"dns_answer\",\"qname\":\"example.com\",\"answer_ips\":[\"93.184.216.34\"],\"ts_ms\":0}\n",
                 "{\"event\":\"connect_attempt\",\"ts_ms\":1}\n",
                 "{\"event\":\"connect_result\",\"status\":\"error\",\"error\":\"connection refused\",\"remote_addr\":\"93.184.216.34:443\",\"ts_ms\":2}\n",
                 "{\"event\":\"policy_violation\",\"reason_code\":\"deny_cidr\",\"ts_ms\":3}\n",
@@ -520,7 +522,9 @@ mod tests {
         assert!(rendered.contains("policy_violation=1"));
         assert!(rendered.contains("flow_end=1"));
         assert!(rendered.contains("runtime_failure=1"));
-        assert!(rendered.contains("flow-log dns names: example.com (queries=1, answers=1)"));
+        assert!(rendered.contains(
+            "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34)"
+        ));
         assert!(rendered.contains(
             "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1)"
         ));

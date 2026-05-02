@@ -64,6 +64,7 @@ pub struct ConnectionTargetStats {
 pub struct DnsNameStats {
     pub queries: usize,
     pub answers: usize,
+    pub answer_ips: BTreeSet<String>,
 }
 
 impl FlowLogReport {
@@ -125,8 +126,10 @@ impl FlowLogReport {
         } else {
             for (qname, stats) in self.top_dns_names(10) {
                 rendered.push_str(&format!(
-                    "  {qname}: queries={}, answers={}\n",
-                    stats.queries, stats.answers
+                    "  {qname}: queries={}, answers={}, answer_ips={}\n",
+                    stats.queries,
+                    stats.answers,
+                    Self::render_dns_answer_ips(stats)
                 ));
             }
         }
@@ -222,11 +225,15 @@ impl FlowLogReport {
         if self.dns_name_counts.is_empty() {
             rendered.push_str("_none_\n");
         } else {
-            rendered.push_str("| DNS name | Queries | Answers |\n| --- | ---: | ---: |\n");
+            rendered.push_str(
+                "| DNS name | Queries | Answers | Answer IPs |\n| --- | ---: | ---: | --- |\n",
+            );
             for (qname, stats) in self.top_dns_names(10) {
                 rendered.push_str(&format!(
-                    "| `{qname}` | {} | {} |\n",
-                    stats.queries, stats.answers
+                    "| `{qname}` | {} | {} | {} |\n",
+                    stats.queries,
+                    stats.answers,
+                    Self::render_dns_answer_ips(stats)
                 ));
             }
         }
@@ -336,7 +343,11 @@ impl FlowLogReport {
             "dns_answer" => {
                 self.dns_answer += 1;
                 if let Some(qname) = event.qname {
-                    self.dns_name_counts.entry(qname).or_default().answers += 1;
+                    let stats = self.dns_name_counts.entry(qname).or_default();
+                    stats.answers += 1;
+                    for answer_ip in event.answer_ips {
+                        stats.answer_ips.insert(answer_ip);
+                    }
                 }
             }
             "connect_attempt" => {
@@ -450,9 +461,24 @@ impl FlowLogReport {
         };
 
         format!(
-            "{qname} (queries={}, answers={})",
-            stats.queries, stats.answers
+            "{qname} (queries={}, answers={}, answer_ips={})",
+            stats.queries,
+            stats.answers,
+            Self::render_dns_answer_ips(stats)
         )
+    }
+
+    fn render_dns_answer_ips(stats: &DnsNameStats) -> String {
+        if stats.answer_ips.is_empty() {
+            "none".to_string()
+        } else {
+            stats
+                .answer_ips
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
     }
 
     pub fn render_top_target_compact(&self) -> String {
@@ -578,6 +604,7 @@ impl FlowLogReport {
                         qname,
                         queries: stats.queries,
                         answers: stats.answers,
+                        answer_ips: stats.answer_ips.iter().cloned().collect::<Vec<_>>(),
                     })
                     .collect::<Vec<_>>(),
             )
@@ -669,8 +696,10 @@ impl FlowLogReport {
 
         if let Some((qname, stats)) = self.top_dns_names(1).into_iter().next() {
             lines.push(format!(
-                "- top DNS name: `{qname}` (queries={}, answers={})",
-                stats.queries, stats.answers
+                "- top DNS name: `{qname}` (queries={}, answers={}, answer_ips={})",
+                stats.queries,
+                stats.answers,
+                Self::render_dns_answer_ips(stats)
             ));
         } else {
             lines.push("- top DNS name: none".to_string());
@@ -735,6 +764,8 @@ struct FlowLogLine {
     #[serde(default)]
     qname: Option<String>,
     #[serde(default)]
+    answer_ips: Vec<String>,
+    #[serde(default)]
     remote_addr: Option<String>,
     #[serde(default)]
     remote: Option<String>,
@@ -764,6 +795,7 @@ struct JsonDnsName<'a> {
     qname: &'a str,
     queries: usize,
     answers: usize,
+    answer_ips: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -839,6 +871,7 @@ mod tests {
                 DnsNameStats {
                     queries: 1,
                     answers: 1,
+                    answer_ips: BTreeSet::from(["93.184.216.34".into()]),
                 },
             )]),
             policy_reason_counts: BTreeMap::new(),
@@ -869,7 +902,7 @@ mod tests {
         assert!(rendered.contains("protocols:"));
         assert!(rendered.contains("tcp: 2"));
         assert!(rendered.contains("top-dns-names:"));
-        assert!(rendered.contains("example.com: queries=1, answers=1"));
+        assert!(rendered.contains("example.com: queries=1, answers=1, answer_ips=93.184.216.34"));
         assert!(rendered.contains("proxy-usage:"));
         assert!(rendered.contains("proxied_connect_attempts: 1"));
         assert!(rendered.contains("connect-errors:\n  <none>"));
@@ -899,6 +932,7 @@ mod tests {
                 DnsNameStats {
                     queries: 2,
                     answers: 1,
+                    answer_ips: BTreeSet::from(["93.184.216.34".into()]),
                 },
             )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
@@ -924,7 +958,9 @@ mod tests {
         assert!(rendered.contains(
             "- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0)"
         ));
-        assert!(rendered.contains("- top DNS name: `example.com` (queries=2, answers=1)"));
+        assert!(rendered.contains(
+            "- top DNS name: `example.com` (queries=2, answers=1, answer_ips=93.184.216.34)"
+        ));
         assert!(rendered.contains("- most common policy violation: `proxy_only` (1)"));
         assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
         assert!(rendered.contains("- most common runtime failure: `tap_create_blocked` (1)"));
@@ -932,7 +968,7 @@ mod tests {
         assert!(rendered.contains("| total | 3 |"));
         assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));
-        assert!(rendered.contains("| `example.com` | 2 | 1 |"));
+        assert!(rendered.contains("| `example.com` | 2 | 1 | 93.184.216.34 |"));
         assert!(rendered.contains("| proxy_only | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
@@ -960,6 +996,7 @@ mod tests {
                 DnsNameStats {
                     queries: 2,
                     answers: 1,
+                    answer_ips: BTreeSet::from(["93.184.216.34".into()]),
                 },
             )]),
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
@@ -991,7 +1028,7 @@ mod tests {
         );
         assert_eq!(
             json["top_dns_names"][0],
-            serde_json::json!({"qname":"example.com","queries":2,"answers":1})
+            serde_json::json!({"qname":"example.com","queries":2,"answers":1,"answer_ips":["93.184.216.34"]})
         );
         assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
         assert_eq!(json["policy_violations"]["proxy_only"], 1);
@@ -1075,7 +1112,7 @@ mod tests {
             &path,
             concat!(
                 "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n",
-                "{\"schema_version\":1,\"event\":\"dns_answer\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n",
+                "{\"schema_version\":1,\"event\":\"dns_answer\",\"protocol\":\"udp\",\"qname\":\"example.com\",\"answer_ips\":[\"93.184.216.34\"]}\n",
                 "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"api.example.com\"}\n",
                 "{\"schema_version\":1,\"event\":\"dns_query\",\"protocol\":\"udp\",\"qname\":\"example.com\"}\n"
             ),
@@ -1087,6 +1124,7 @@ mod tests {
             Some(&DnsNameStats {
                 queries: 2,
                 answers: 1,
+                answer_ips: BTreeSet::from(["93.184.216.34".into()]),
             })
         );
         assert_eq!(
@@ -1099,7 +1137,7 @@ mod tests {
         );
         assert_eq!(
             report.render_top_dns_name_compact(),
-            "example.com (queries=2, answers=1)"
+            "example.com (queries=2, answers=1, answer_ips=93.184.216.34)"
         );
 
         let _ = fs::remove_file(path);

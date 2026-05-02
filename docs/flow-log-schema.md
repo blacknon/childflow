@@ -52,11 +52,12 @@ Example:
 | `qtype` | string | Yes | Mirrors the paired query classification |
 | `mode` | string | Yes | Current values are `relayed` or `synthetic_empty` |
 | `bytes` | integer | Yes | Response payload length |
+| `answer_ips` | array of strings | Yes | A / AAAA answer IPs extracted from the response packet |
 
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000001,"event":"dns_answer","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qname":"example.com","qtype":"A","mode":"relayed","bytes":128}
+{"schema_version":1,"ts_ms":1760000000001,"event":"dns_answer","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qname":"example.com","qtype":"A","mode":"relayed","bytes":128,"answer_ips":["93.184.216.34"]}
 ```
 
 ### `connect_attempt`

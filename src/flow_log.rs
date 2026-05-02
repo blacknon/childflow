@@ -97,6 +97,7 @@ impl FlowLogger {
         qtype: Option<&'static str>,
         mode: DnsAnswerMode,
         bytes: usize,
+        answer_ips: &[IpAddr],
     ) -> Result<()> {
         self.write_event(json!({
             "event": "dns_answer",
@@ -108,6 +109,7 @@ impl FlowLogger {
             "qtype": qtype.unwrap_or("unknown"),
             "mode": mode.as_str(),
             "bytes": bytes,
+            "answer_ips": answer_ips.iter().map(IpAddr::to_string).collect::<Vec<_>>(),
         }))
     }
 
@@ -296,6 +298,7 @@ mod tests {
             Some("A"),
             DnsAnswerMode::Relayed,
             128,
+            &["93.184.216.34".parse()?],
         )?;
         drop(logger);
 
@@ -307,6 +310,7 @@ mod tests {
         assert!(contents.contains("\"server_port\":53"));
         assert!(contents.contains("\"qname\":\"example.com\""));
         assert!(contents.contains("\"event\":\"dns_answer\""));
+        assert!(contents.contains("\"answer_ips\":[\"93.184.216.34\"]"));
         assert!(contents.contains("\"mode\":\"relayed\""));
         assert!(contents.contains("\"bytes\":128"));
 
@@ -330,6 +334,7 @@ mod tests {
             Some("AAAA"),
             DnsAnswerMode::SyntheticEmpty,
             0,
+            &[],
         )?;
         drop(logger);
 

@@ -107,6 +107,7 @@ Each element currently includes:
 | `qname` | string | Normalized DNS question name |
 | `queries` | integer | Number of `dns_query` events that carried this name |
 | `answers` | integer | Number of `dns_answer` events that carried this name |
+| `answer_ips` | array of strings | Distinct A / AAAA answer IPs observed for this name |
 
 The array is currently sorted by descending `queries`, then descending `answers`,
 then ascending `qname`.
@@ -118,7 +119,8 @@ Example:
   {
     "qname": "example.com",
     "queries": 2,
-    "answers": 1
+    "answers": 1,
+    "answer_ips": ["93.184.216.34"]
   }
 ]
 ```
@@ -181,7 +183,8 @@ Example:
     {
       "qname": "example.com",
       "queries": 1,
-      "answers": 1
+      "answers": 1,
+      "answer_ips": ["93.184.216.34"]
     }
   ],
   "proxy_usage": {

@@ -30,8 +30,8 @@ use super::packet::{
 use super::state::{FlowKey, TcpSession};
 use super::tap::TapHandle;
 use super::transport::{
-    connect_remote, dns_query_name, dns_query_type, relay_dns_udp, relay_udp_payload,
-    synthesize_empty_dns_response, UdpRelayOutcome, DNS_TYPE_AAAA,
+    connect_remote, dns_answer_ips, dns_query_name, dns_query_type, relay_dns_udp,
+    relay_udp_payload, synthesize_empty_dns_response, UdpRelayOutcome, DNS_TYPE_AAAA,
 };
 
 pub struct EngineConfig {
@@ -567,6 +567,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 dns_qtype,
                 DnsAnswerMode::SyntheticEmpty,
                 response.len(),
+                &[],
             )?;
             return Ok(());
         }
@@ -602,6 +603,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 dns_qtype,
                 DnsAnswerMode::SyntheticEmpty,
                 response.len(),
+                &[],
             )?;
             return Ok(());
         }
@@ -637,6 +639,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
                 dns_qtype,
                 DnsAnswerMode::SyntheticEmpty,
                 response.len(),
+                &[],
             )?;
             return Ok(());
         }
@@ -651,6 +654,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
         let server = SocketAddr::new(upstream_ip, 53);
         log_dns_query(flow_log, server, dns_qname.as_deref(), dns_qtype)?;
         let response = relay_dns_udp(upstream_ip, &udp.payload)?;
+        let resolved_ips = dns_answer_ips(&response);
         let frame = packet::build_udp_frame(
             addr_plan.gateway_mac,
             udp.meta.src_mac,
@@ -674,6 +678,7 @@ fn handle_udp_packet(ctx: UdpPacketContext<'_>, udp: &ParsedUdpPacket) -> Result
             dns_qtype,
             DnsAnswerMode::Relayed,
             response.len(),
+            &resolved_ips,
         )?;
         return Ok(());
     }
@@ -795,9 +800,10 @@ fn log_dns_answer(
     qtype: Option<&'static str>,
     mode: DnsAnswerMode,
     bytes: usize,
+    answer_ips: &[IpAddr],
 ) -> Result<()> {
     if let Some(logger) = flow_log.as_mut() {
-        logger.log_dns_answer(server, qname, qtype, mode, bytes)?;
+        logger.log_dns_answer(server, qname, qtype, mode, bytes, answer_ips)?;
     }
     Ok(())
 }
