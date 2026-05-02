@@ -100,7 +100,7 @@ impl FlowLogReport {
         if self.protocol_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (protocol, count) in &self.protocol_counts {
+            for (protocol, count) in top_count_entries(&self.protocol_counts, usize::MAX) {
                 rendered.push_str(&format!("  {protocol}: {count}\n"));
             }
         }
@@ -115,7 +115,7 @@ impl FlowLogReport {
         if self.policy_reason_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (reason, count) in &self.policy_reason_counts {
+            for (reason, count) in top_count_entries(&self.policy_reason_counts, usize::MAX) {
                 rendered.push_str(&format!("  {reason}: {count}\n"));
             }
         }
@@ -124,7 +124,7 @@ impl FlowLogReport {
         if self.connect_error_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (error, count) in &self.connect_error_counts {
+            for (error, count) in top_count_entries(&self.connect_error_counts, usize::MAX) {
                 rendered.push_str(&format!("  {error}: {count}\n"));
             }
         }
@@ -133,7 +133,8 @@ impl FlowLogReport {
         if self.runtime_failure_reason_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (reason, count) in &self.runtime_failure_reason_counts {
+            for (reason, count) in top_count_entries(&self.runtime_failure_reason_counts, usize::MAX)
+            {
                 rendered.push_str(&format!("  {reason}: {count}\n"));
             }
         }
@@ -142,7 +143,7 @@ impl FlowLogReport {
         if self.runtime_failure_phase_counts.is_empty() {
             rendered.push_str("  <none>\n");
         } else {
-            for (phase, count) in &self.runtime_failure_phase_counts {
+            for (phase, count) in top_count_entries(&self.runtime_failure_phase_counts, usize::MAX) {
                 rendered.push_str(&format!("  {phase}: {count}\n"));
             }
         }
@@ -183,7 +184,7 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Protocol | Count |\n| --- | ---: |\n");
-            for (protocol, count) in &self.protocol_counts {
+            for (protocol, count) in top_count_entries(&self.protocol_counts, usize::MAX) {
                 rendered.push_str(&format!("| {protocol} | {count} |\n"));
             }
         }
@@ -200,7 +201,7 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
-            for (reason, count) in &self.policy_reason_counts {
+            for (reason, count) in top_count_entries(&self.policy_reason_counts, usize::MAX) {
                 rendered.push_str(&format!("| {reason} | {count} |\n"));
             }
         }
@@ -210,7 +211,7 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Error | Count |\n| --- | ---: |\n");
-            for (error, count) in &self.connect_error_counts {
+            for (error, count) in top_count_entries(&self.connect_error_counts, usize::MAX) {
                 rendered.push_str(&format!("| {error} | {count} |\n"));
             }
         }
@@ -220,7 +221,8 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
-            for (reason, count) in &self.runtime_failure_reason_counts {
+            for (reason, count) in top_count_entries(&self.runtime_failure_reason_counts, usize::MAX)
+            {
                 rendered.push_str(&format!("| {reason} | {count} |\n"));
             }
         }
@@ -230,7 +232,7 @@ impl FlowLogReport {
             rendered.push_str("_none_\n");
         } else {
             rendered.push_str("| Phase | Count |\n| --- | ---: |\n");
-            for (phase, count) in &self.runtime_failure_phase_counts {
+            for (phase, count) in top_count_entries(&self.runtime_failure_phase_counts, usize::MAX) {
                 rendered.push_str(&format!("| {phase} | {count} |\n"));
             }
         }
@@ -379,9 +381,8 @@ impl FlowLogReport {
             return "none".to_string();
         }
 
-        self.policy_reason_counts
-            .iter()
-            .take(limit)
+        top_count_entries(&self.policy_reason_counts, limit)
+            .into_iter()
             .map(|(reason, count)| format!("{reason}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
@@ -392,9 +393,8 @@ impl FlowLogReport {
             return "none".to_string();
         }
 
-        self.connect_error_counts
-            .iter()
-            .take(limit)
+        top_count_entries(&self.connect_error_counts, limit)
+            .into_iter()
             .map(|(error, count)| format!("{error}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
@@ -405,9 +405,8 @@ impl FlowLogReport {
             return "none".to_string();
         }
 
-        self.runtime_failure_reason_counts
-            .iter()
-            .take(limit)
+        top_count_entries(&self.runtime_failure_reason_counts, limit)
+            .into_iter()
             .map(|(reason, count)| format!("{reason}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
@@ -418,13 +417,26 @@ impl FlowLogReport {
             return "none".to_string();
         }
 
-        self.runtime_failure_phase_counts
-            .iter()
-            .take(limit)
+        top_count_entries(&self.runtime_failure_phase_counts, limit)
+            .into_iter()
             .map(|(phase, count)| format!("{phase}={count}"))
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+fn top_count_entries<'a>(counts: &'a BTreeMap<String, usize>, limit: usize) -> Vec<(&'a str, usize)> {
+    let mut entries = counts
+        .iter()
+        .map(|(name, count)| (name.as_str(), *count))
+        .collect::<Vec<_>>();
+    entries.sort_by(|(left_name, left_count), (right_name, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_name.cmp(right_name))
+    });
+    entries.truncate(limit);
+    entries
 }
 
 #[derive(Debug, Deserialize)]
