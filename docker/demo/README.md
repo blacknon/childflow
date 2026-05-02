@@ -9,6 +9,7 @@ The demo brings up:
 - `proxy-http`: HTTP proxy with Basic auth
 - `proxy-https`: HTTPS-wrapped proxy with Basic auth and a self-signed certificate
 - `childflow-demo`: privileged runner container that builds `childflow`, runs `cargo test`, and exercises both proxy flows
+- reusable TOML demo profiles under `docker/demo/profiles`
 
 ## Run the demo
 
@@ -23,10 +24,12 @@ The script verifies:
 - HTTP proxy requests fail without credentials
 - HTTPS proxy requests fail without `--proxy-insecure`
 - HTTP proxy authentication works
+- profile-driven HTTP proxy execution works via `extends`
+- `--dump-profile` prints the merged effective TOML
 - HTTPS upstream proxy works with `--proxy-insecure` while keeping hostname verification
 - `childflow` still writes non-empty `pcapng` capture files during the run
 
-The demo runner container defaults to the non-root `childflow` user, then invokes `childflow` itself through `sudo` inside the script so namespace setup stays reliable across CI environments while the demo still exercises the default rootless path.
+The demo runner container defaults to the non-root `childflow` user. The script tries `childflow` without `sudo` first, then falls back to `sudo` only if the rootless namespace bootstrap is blocked by the current host policy (for example Ubuntu 24.04 AppArmor restrictions in CI). Set `CHILDFLOW_SUDO_MODE=never`, `auto`, or `always` to override that behavior.
 
 ## Render a GIF
 
@@ -38,4 +41,8 @@ From the repo root:
 mise run demo:gif
 ```
 
-That runs [docker/demo/render-gif.sh](render-gif.sh), which builds `childflow` inside the demo runner and renders [docker/demo/tapes/proxy-demo.tape](tapes/proxy-demo.tape) to `img/childflow-proxy-demo.gif`.
+That runs [docker/demo/render-gif.sh](render-gif.sh), which builds `childflow` inside the demo runner and renders:
+
+- [docker/demo/tapes/proxy-demo.tape](tapes/proxy-demo.tape) to `img/childflow.gif` and `img/childflow-proxy-demo.gif`
+- [docker/demo/tapes/profile-demo.tape](tapes/profile-demo.tape) to `img/childflow-profile-demo.gif`
+- [docker/demo/tapes/flow-log-demo.tape](tapes/flow-log-demo.tape) to `img/childflow-flow-log-demo.gif`

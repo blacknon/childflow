@@ -26,7 +26,14 @@ on:
 
 jobs:
   rust-ci:
-    runs-on: ubuntu-24.04
+    name: Rust CI (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-22.04
+          - ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -52,7 +59,14 @@ jobs:
         run: cargo test
 
   rootless-smoke:
-    runs-on: ubuntu-24.04
+    name: Rootless Smoke (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-22.04
+          - ubuntu-24.04
 
     steps:
       - name: Checkout

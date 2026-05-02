@@ -20,6 +20,7 @@ pub struct DnsPlan {
     resolv_guard: Option<TempFileGuard>,
     rootful_upstream: Option<IpAddr>,
     rootless_upstream: Option<IpAddr>,
+    resolv_conf_required: bool,
 }
 
 impl DnsPlan {
@@ -60,6 +61,10 @@ impl DnsPlan {
 
     pub fn rootless_upstream(&self) -> Option<IpAddr> {
         self.rootless_upstream
+    }
+
+    pub fn resolv_conf_required(&self) -> bool {
+        self.resolv_conf_required
     }
 }
 
@@ -266,6 +271,7 @@ fn prepare_rootful_dns_plan(
             resolv_guard: maybe_write_resolv_conf(run_id, &content)?,
             rootful_upstream: None,
             rootless_upstream: None,
+            resolv_conf_required: true,
         });
     }
 
@@ -278,6 +284,7 @@ fn prepare_rootful_dns_plan(
         resolv_guard: maybe_write_resolv_conf(run_id, &inherited.resolv_conf)?,
         rootful_upstream: Some(inherited.upstream),
         rootless_upstream: None,
+        resolv_conf_required: true,
     })
 }
 
@@ -311,6 +318,7 @@ fn prepare_rootless_dns_plan(
         resolv_guard: maybe_write_resolv_conf(run_id, &resolv_conf)?,
         rootful_upstream: None,
         rootless_upstream: Some(upstream),
+        resolv_conf_required: dns.is_some(),
     })
 }
 

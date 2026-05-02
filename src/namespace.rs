@@ -62,9 +62,11 @@ pub struct RootlessChildBootstrap {
 pub struct ChildExecParams<'a> {
     pub mode: NamespaceMode,
     pub release_pipe: File,
+    pub namespace_ready_pipe: Option<File>,
     pub ready_pipe: Option<File>,
     pub tap_transfer: Option<UnixStream>,
     pub resolv_conf: Option<&'a Path>,
+    pub resolv_conf_required: bool,
     pub hosts_file: Option<&'a Path>,
     pub network_bootstrap: Option<&'a ChildNetworkBootstrap>,
     pub extra_env: &'a [(String, String)],
@@ -75,9 +77,11 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
     let ChildExecParams {
         mode,
         mut release_pipe,
+        mut namespace_ready_pipe,
         mut ready_pipe,
         tap_transfer,
         resolv_conf,
+        resolv_conf_required,
         hosts_file,
         network_bootstrap,
         extra_env,
@@ -90,29 +94,28 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
 
     unshare(mode.unshare_flags()).map_err(|err| render_unshare_error(mode, err))?;
 
-    mount(
-        None::<&str>,
-        "/",
-        None::<&str>,
-        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
-        None::<&str>,
-    )
-    .context("failed to make mount propagation private")?;
+    if let Some(namespace_ready_pipe) = namespace_ready_pipe.as_mut() {
+        use std::io::Write;
+
+        namespace_ready_pipe
+            .write_all(&[1])
+            .context("failed to notify the parent that child namespace unshare completed")?;
+    }
+
+    // For non-root `rootless-internal`, the parent must finish uid/gid map
+    // setup before the child attempts its first privileged mount operation.
+    // Waiting here also keeps later bind-mount/bootstrap work from masking the
+    // original parent-side failure with follow-on ENOENT noise.
+    wait_for_parent_release(
+        &mut release_pipe,
+        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
+        "parent closed bootstrap pipe before namespace setup completed",
+    )?;
+
+    make_mount_propagation_private()?;
 
     if let Some(resolv_conf) = resolv_conf {
-        mount(
-            Some(resolv_conf),
-            "/etc/resolv.conf",
-            None::<&str>,
-            MsFlags::MS_BIND,
-            None::<&str>,
-        )
-        .with_context(|| {
-            format!(
-                "failed to bind-mount {} over /etc/resolv.conf",
-                resolv_conf.display()
-            )
-        })?;
+        bind_mount_resolv_conf(resolv_conf, resolv_conf_required)?;
     }
 
     if let Some(hosts_file) = hosts_file {
@@ -130,12 +133,6 @@ pub fn child_enter_and_exec(params: ChildExecParams<'_>) -> Result<()> {
             )
         })?;
     }
-
-    wait_for_parent_release(
-        &mut release_pipe,
-        "failed to wait for parent namespace setup. The parent side may have aborted before namespace bootstrap completed",
-        "parent closed bootstrap pipe before namespace setup completed",
-    )?;
 
     let _network_guard = if let Some(bootstrap) = network_bootstrap {
         let guard = apply_child_network_bootstrap(bootstrap)?;
@@ -200,7 +197,128 @@ fn wait_for_parent_release(
     if n == 0 {
         bail!(eof_message.to_string());
     }
+    if ready[0] == 0 {
+        bail!(eof_message.to_string());
+    }
     Ok(())
+}
+
+fn make_mount_propagation_private() -> Result<()> {
+    if let Err(err) = mount(
+        None::<&str>,
+        "/",
+        None::<&str>,
+        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+        None::<&str>,
+    ) {
+        if can_skip_mount_private(err) {
+            crate::util::warn(
+                "AppArmor denied forcing mount propagation to private inside the rootless user namespace, but the root mount already avoids outward propagation. Continuing without the extra remount step.",
+            );
+            return Ok(());
+        }
+        return Err(build_mount_private_error(err));
+    }
+
+    Ok(())
+}
+
+fn bind_mount_resolv_conf(resolv_conf: &Path, required: bool) -> Result<()> {
+    if let Err(err) = mount(
+        Some(resolv_conf),
+        "/etc/resolv.conf",
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    ) {
+        if can_skip_resolv_conf_bind(err, required) {
+            crate::util::warn(
+                "AppArmor denied bind-mounting the generated resolv.conf inside the rootless user namespace. Continuing with the inherited resolv.conf, so hostname resolution may be limited in this environment.",
+            );
+            return Ok(());
+        }
+        return Err(anyhow::Error::new(err).context(format!(
+            "failed to bind-mount {} over /etc/resolv.conf",
+            resolv_conf.display()
+        )));
+    }
+
+    Ok(())
+}
+
+fn can_skip_mount_private(err: nix::errno::Errno) -> bool {
+    matches!(err, nix::errno::Errno::EACCES | nix::errno::Errno::EPERM)
+        && current_apparmor_profile()
+            .as_deref()
+            .is_some_and(|profile| profile.starts_with("unprivileged_userns"))
+        && root_mount_propagates_outward() == Some(false)
+}
+
+fn can_skip_resolv_conf_bind(err: nix::errno::Errno, required: bool) -> bool {
+    !required
+        && matches!(err, nix::errno::Errno::EACCES | nix::errno::Errno::EPERM)
+        && current_apparmor_profile()
+            .as_deref()
+            .is_some_and(|profile| profile.starts_with("unprivileged_userns"))
+}
+
+fn build_mount_private_error(err: nix::errno::Errno) -> anyhow::Error {
+    let mut message = format!("failed to make mount propagation private: {err}\n");
+    let euid = unsafe { nix::libc::geteuid() };
+    let egid = unsafe { nix::libc::getegid() };
+
+    let _ = writeln!(message, "diagnostics:");
+    let _ = writeln!(message, "- effective uid/gid: {euid}/{egid}");
+    let _ = writeln!(
+        message,
+        "- /proc/self/uid_map: {}",
+        format_optional_value(read_trimmed_file("/proc/self/uid_map"))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/self/gid_map: {}",
+        format_optional_value(read_trimmed_file("/proc/self/gid_map"))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/self/setgroups: {}",
+        format_optional_value(read_trimmed_file("/proc/self/setgroups"))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/self/attr/current: {}",
+        format_optional_value(read_trimmed_file("/proc/self/attr/current"))
+    );
+    let _ = writeln!(
+        message,
+        "- root mountinfo entry: {}",
+        format_optional_value(read_root_mountinfo_line())
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/sys/kernel/apparmor_restrict_unprivileged_userns: {}",
+        format_optional_value(read_trimmed_file(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+        ))
+    );
+    let _ = writeln!(
+        message,
+        "- /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined: {}",
+        format_optional_value(read_trimmed_file(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined",
+        ))
+    );
+
+    if read_trimmed_file("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref()
+        == Some("1")
+    {
+        let _ = writeln!(
+            message,
+            "this host has AppArmor's unprivileged user-namespace restriction enabled. On Ubuntu 24.04+, user namespace creation may succeed while CAP_SYS_ADMIN operations inside the transitioned AppArmor profile are still denied."
+        );
+    }
+
+    anyhow!(message)
 }
 
 pub fn configure_user_namespace(child_pid: Pid) -> Result<()> {
@@ -482,6 +600,46 @@ fn render_unshare_error(mode: NamespaceMode, err: nix::errno::Errno) -> anyhow::
     }
 }
 
+fn read_trimmed_file(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().replace('\n', " | "))
+        .filter(|value| !value.is_empty())
+}
+
+fn read_root_mountinfo_line() -> Option<String> {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find(|line| line.contains(" / / "))
+                .map(str::to_string)
+        })
+}
+
+fn current_apparmor_profile() -> Option<String> {
+    read_trimmed_file("/proc/self/attr/current")
+}
+
+fn root_mount_propagates_outward() -> Option<bool> {
+    let line = read_root_mountinfo_line()?;
+    Some(parse_mountinfo_propagates_outward(&line))
+}
+
+fn parse_mountinfo_propagates_outward(line: &str) -> bool {
+    let Some((left, _)) = line.split_once(" - ") else {
+        return true;
+    };
+    left.split_whitespace()
+        .skip(6)
+        .any(|field| field.starts_with("shared:"))
+}
+
+fn format_optional_value(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "<unavailable>".to_string())
+}
+
 fn command_in_path(program: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| {
@@ -672,4 +830,27 @@ fn ifreq_name_to_string(raw_name: &[nix::libc::c_char; nix::libc::IFNAMSIZ]) -> 
         .collect();
     String::from_utf8(bytes)
         .map_err(|err| anyhow!("kernel returned a non-UTF8 tap device name: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mountinfo_propagates_outward;
+
+    #[test]
+    fn parse_mountinfo_marks_private_root_as_not_propagating_outward() {
+        let line = "611 610 0:57 / / rw,relatime - overlay overlay rw";
+        assert!(!parse_mountinfo_propagates_outward(line));
+    }
+
+    #[test]
+    fn parse_mountinfo_marks_slave_root_as_not_propagating_outward() {
+        let line = "842 829 0:325 / / rw,relatime master:128 - overlay overlay rw";
+        assert!(!parse_mountinfo_propagates_outward(line));
+    }
+
+    #[test]
+    fn parse_mountinfo_marks_shared_root_as_propagating_outward() {
+        let line = "61 0 8:2 / / rw,relatime shared:1 - ext4 /dev/sda1 rw";
+        assert!(parse_mountinfo_propagates_outward(line));
+    }
 }

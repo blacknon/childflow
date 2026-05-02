@@ -5,8 +5,10 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum NetworkBackend {
     Rootful,
     RootlessInternal,

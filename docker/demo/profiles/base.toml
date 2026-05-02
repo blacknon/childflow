@@ -1,0 +1,5 @@
+proxy = "http://proxy-http:3128"
+proxy_user = "demo"
+proxy_password = "demo"
+default_policy = "deny"
+allow_cidrs = ["10.243.0.10/32", "10.243.0.20/32"]

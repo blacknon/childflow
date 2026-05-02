@@ -29,6 +29,8 @@ mod network;
 #[cfg(target_os = "linux")]
 mod preflight;
 #[cfg(target_os = "linux")]
+mod profile;
+#[cfg(target_os = "linux")]
 mod proxy;
 #[cfg(target_os = "linux")]
 mod sandbox;
@@ -41,8 +43,6 @@ mod util;
 
 #[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
-use clap::Parser;
 #[cfg(target_os = "linux")]
 use nix::sys::wait::{waitpid, WaitStatus};
 #[cfg(target_os = "linux")]
@@ -69,6 +69,8 @@ use hosts::HostsPlan;
 #[cfg(target_os = "linux")]
 use network::NetworkBackend;
 #[cfg(target_os = "linux")]
+use profile::Profile;
+#[cfg(target_os = "linux")]
 use proxy::{ProxyPlan, TproxyHandle};
 
 #[cfg(target_os = "linux")]
@@ -86,7 +88,12 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn real_main() -> Result<i32> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_effective()?;
+    if cli.dump_profile {
+        print!("{}", Profile::from_cli(&cli).render_toml()?);
+        return Ok(0);
+    }
+
     if cli.doctor {
         return doctor::run(&cli);
     }
@@ -114,6 +121,8 @@ fn real_main() -> Result<i32> {
         .unwrap_or_default();
 
     let (read_fd, write_fd) = pipe().context("failed to create bootstrap pipe")?;
+    let (namespace_ready_read_fd, namespace_ready_write_fd) =
+        pipe().context("failed to create child namespace ready pipe")?;
     let (ready_read_fd, ready_write_fd) =
         pipe().context("failed to create child bootstrap ready pipe")?;
     let (tap_parent, tap_child) =
@@ -122,17 +131,21 @@ fn real_main() -> Result<i32> {
     match unsafe { fork().context("fork failed")? } {
         ForkResult::Child => {
             drop(write_fd);
+            drop(namespace_ready_read_fd);
             drop(ready_read_fd);
             drop(tap_parent);
             let read_file = File::from(read_fd);
+            let namespace_ready_file = File::from(namespace_ready_write_fd);
             let ready_file = File::from(ready_write_fd);
             let child_network_bootstrap = child_bootstrap.namespace_bootstrap();
             if let Err(err) = namespace::child_enter_and_exec(namespace::ChildExecParams {
                 mode: namespace_mode,
                 release_pipe: read_file,
+                namespace_ready_pipe: Some(namespace_ready_file),
                 ready_pipe: child_network_bootstrap.as_ref().map(|_| ready_file),
                 tap_transfer: child_network_bootstrap.as_ref().map(|_| tap_child),
                 resolv_conf: dns_plan.resolv_conf_path(),
+                resolv_conf_required: dns_plan.resolv_conf_required(),
                 hosts_file: hosts_plan.hosts_path(),
                 network_bootstrap: child_network_bootstrap.as_ref(),
                 extra_env: &child_proxy_env,
@@ -146,14 +159,17 @@ fn real_main() -> Result<i32> {
         }
         ForkResult::Parent { child } => {
             drop(read_fd);
+            drop(namespace_ready_write_fd);
             drop(ready_write_fd);
             drop(tap_child);
             let mut release_file = File::from(write_fd);
+            let mut namespace_ready_file = File::from(namespace_ready_read_fd);
             let mut ready_file = File::from(ready_read_fd);
             let mut child_bootstrap = child_bootstrap;
 
             let runtime = match backend {
                 NetworkBackend::Rootful => {
+                    drop(namespace_ready_file);
                     let runtime = ParentRuntime::start(
                         &run_id,
                         child,
@@ -172,6 +188,12 @@ fn real_main() -> Result<i32> {
                     runtime
                 }
                 NetworkBackend::RootlessInternal => {
+                    let mut namespace_ready = [0_u8; 1];
+                    namespace_ready_file
+                        .read_exact(&mut namespace_ready)
+                        .context("failed to wait for the child to finish unsharing the rootless user namespace")?;
+                    drop(namespace_ready_file);
+
                     namespace::configure_user_namespace(child).context(
                         "failed to configure the child user namespace for the `rootless-internal` backend",
                     )?;

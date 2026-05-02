@@ -2,7 +2,7 @@ childflow
 ===
 
 <p align="center">
-<img src="./img/childflow.gif" width="720" />
+<img src="./img/childflow-proxy-demo.gif" width="720" />
 </p>
 
 childflow is a per-command-tree network sandbox for Linux.
@@ -17,11 +17,36 @@ This is useful for tools that do not honor proxy environment variables consisten
 It has two Linux backends: `rootless-internal` for the default day-to-day path, and `rootful` via `--root` when you need host-integrated behavior such as `--iface` or transparent interception.
 
 - affects only the target command tree, not the whole host session
-- can force DNS, `/etc/hosts`, proxying, sandbox policy, packet capture, and structured flow logging per command tree
+- can force DNS, `/etc/hosts`, proxying, sandbox policy, packet capture, structured flow logging, and reusable profiles per command tree
 - can force proxying without depending on `HTTP_PROXY`, `HTTPS_PROXY`, or `LD_PRELOAD` tricks
 - can apply allow / deny CIDR policy and default-deny rules to outbound traffic
 - defaults to `rootless-internal`
 - uses `--root` only for features like `--iface` and transparent interception
+
+## Examples
+
+<table>
+  <tr>
+    <td valign="top" width="32%">
+      <img src="./img/childflow-proxy-demo.gif" alt="childflow proxy and capture example" width="100%" /><br />
+      <strong>Proxy control and capture</strong><br /><br />
+      <pre><code>childflow --profile ./docker/demo/profiles/http-origin.toml</code></pre>
+      Block direct access, force the command tree through a proxy, and inspect only that tree's capture.<br />
+    </td>
+    <td valign="top" width="32%">
+      <img src="./img/childflow-profile-demo.gif" alt="childflow profile example" width="100%" /><br />
+      <strong>Reusable profiles</strong><br /><br />
+      <pre><code>childflow --profile ./profiles/default-deny.toml --dump-profile</code></pre>
+      Keep sandbox settings in TOML, inherit from a base profile, and inspect the merged effective configuration.<br />
+    </td>
+    <td valign="top" width="32%">
+      <img src="./img/childflow-flow-log-demo.gif" alt="childflow flow log example" width="100%" /><br />
+      <strong>Structured flow logs</strong><br /><br />
+      <pre><code>childflow --summary --flow-log ./flow.jsonl -- curl https://example.com</code></pre>
+      Record structured DNS, connect, and policy events for the command tree without dropping down to packet-level inspection first.<br />
+    </td>
+  </tr>
+</table>
 
 ## Install
 
@@ -68,6 +93,10 @@ Arguments:
   [COMMAND]...  Command to execute
 
 Options:
+      --profile <PROFILE>
+          Load effective defaults from a TOML profile file. Explicit CLI flags override the profile
+      --dump-profile
+          Print the effective profile as TOML and exit
   -c, --capture <OUTPUT>
           Write only the target command tree's traffic as pcapng
   -C, --capture-point <OUTPUT_VIEW>
@@ -90,6 +119,8 @@ Options:
           Ignore certificate trust errors for https:// upstream proxies while still validating the hostname
       --summary
           Print a post-run summary to stderr
+      --flow-log <FLOW_LOG>
+          Write structured flow events as JSON Lines. Currently supported only by the default rootless backend
       --offline
           Block all outbound networking for the child tree, including DNS forwarding
       --block-private
@@ -114,35 +145,55 @@ Options:
           Print version
 ```
 
-### example
+### CLI Examples
+
+#### Basic
+
+Run one command tree with the default rootless backend:
 
 ```bash
 childflow -- curl https://example.com
 ```
 
+Capture only that tree's traffic:
+
 ```bash
 childflow -c rootless.pcapng -- curl https://example.com
 ```
+
+Force DNS resolution through a specific resolver:
 
 ```bash
 childflow -d 1.1.1.1 -- curl https://example.com
 ```
 
+Override `/etc/hosts` for just this command tree:
+
 ```bash
 childflow --hosts-file ./hosts.override -- curl http://demo.internal
 ```
+
+#### Policy
+
+Run completely offline:
 
 ```bash
 childflow --offline -- cargo test
 ```
 
+Block common cloud metadata endpoints:
+
 ```bash
 childflow --block-metadata -- ./my-client
 ```
 
+Block private, loopback, and link-local destinations:
+
 ```bash
 childflow --block-private -- curl https://example.com
 ```
+
+Switch to default-deny and allow only one destination:
 
 ```bash
 childflow \
@@ -151,39 +202,29 @@ childflow \
   -- curl http://203.0.113.10/
 ```
 
+Block a destination range explicitly:
+
 ```bash
 childflow --deny-cidr 10.0.0.0/8 -- ./scanner
 ```
 
-```bash
-childflow \
-  --proxy-only \
-  -p http://127.0.0.1:8080 \
-  -- curl https://example.com
-```
+#### Proxy
 
-```bash
-childflow \
-  --proxy-only \
-  --fail-on-leak \
-  -p http://127.0.0.1:8080 \
-  -- ./client
-```
-
-```bash
-childflow \
-  --flow-log ./flow.jsonl \
-  --deny-cidr 10.0.0.0/8 \
-  -- curl https://example.com
-```
+Force a simple HTTP proxy path:
 
 ```bash
 childflow -p http://127.0.0.1:8080 -- curl https://example.com
 ```
 
+Run a tool that would not normally honor proxy environment variables:
+
 ```bash
-childflow -p http://127.0.0.1:8080 -- gobuster dir -u http://target.local/ -w ./wordlist.txt
+childflow \
+  -p http://127.0.0.1:8080 \
+  -- gobuster dir -u http://target.local/ -w ./wordlist.txt
 ```
+
+Use an authenticated HTTPS upstream proxy:
 
 ```bash
 childflow \
@@ -193,14 +234,77 @@ childflow \
   -- curl https://example.com
 ```
 
+Require all outbound TCP to use the configured proxy path:
+
+```bash
+childflow \
+  --proxy-only \
+  -p http://127.0.0.1:8080 \
+  -- curl https://example.com
+```
+
+Treat blocked direct traffic as a failed run:
+
+```bash
+childflow \
+  --proxy-only \
+  --fail-on-leak \
+  -p http://127.0.0.1:8080 \
+  -- ./client
+```
+
+#### Profiles
+
+Run a stored profile as-is:
+
+```bash
+childflow --profile ./profiles/default-deny.toml
+```
+
+Load a profile and still override the command on the CLI:
+
+```bash
+childflow --profile ./profiles/default-deny.toml -- curl https://example.com
+```
+
+Inspect the merged effective profile after CLI overrides:
+
+```bash
+childflow \
+  --profile ./profiles/default-deny.toml \
+  --deny-cidr 198.51.100.0/24 \
+  --dump-profile
+```
+
+#### Observability
+
+Write a structured flow log for later inspection:
+
+```bash
+childflow \
+  --flow-log ./flow.jsonl \
+  --deny-cidr 10.0.0.0/8 \
+  -- curl https://example.com
+```
+
+#### Rootful
+
+Use the rootful backend when you need host-integrated behavior:
+
 ```bash
 sudo childflow --root -c capture.pcapng -- curl https://example.com
 ```
+
+#### ICMP and Traceroute
+
+Run `ping` inside the isolated command tree:
 
 ```bash
 childflow -- ping -c 1 8.8.8.8
 childflow -- ping -6 -c 1 2606:4700:4700::1111
 ```
+
+Run `traceroute` inside the isolated command tree:
 
 ```bash
 childflow -- traceroute -n -q 1 -w 2 8.8.8.8
@@ -260,6 +364,50 @@ Current notes:
 
 - `--proxy-only` is primarily a TCP-focused control; in the rootless backend, direct DNS / UDP / ICMP traffic is also blocked rather than relayed
 - `--fail-on-leak` is currently supported only by `rootless-internal`
+
+### Profiles
+
+`childflow` can load reusable TOML profiles with `--profile`.
+
+```bash
+childflow --profile ./profiles/default-deny.toml
+```
+
+```toml
+extends = "./base.toml"
+capture = "./captures/run.pcapng"
+flow_log = "./logs/run.jsonl"
+dns = "1.1.1.1"
+backend = "rootless-internal"
+block_private = true
+block_metadata = true
+default_policy = "deny"
+allow_cidrs = ["203.0.113.10/32"]
+command = ["curl", "https://203.0.113.10/healthz"]
+```
+
+You can also print the merged effective profile after CLI overrides:
+
+```bash
+childflow \
+  --profile ./profiles/default-deny.toml \
+  --deny-cidr 198.51.100.0/24 \
+  --dump-profile
+```
+
+Current notes:
+
+- profile files currently use TOML
+- profiles can inherit from a shared base with `extends = "./base.toml"`
+- merge order is: parent profile, child profile, then explicit CLI flags
+- CLI flags override profile values when both are present
+- for list-valued settings such as `allow_cidrs` and `deny_cidrs`, explicit CLI flags replace the profile list instead of appending to it
+- an explicit CLI command after `--` replaces the profile `command`
+- `--dump-profile` prints the merged effective TOML and exits without running the command
+- relative paths inside a profile are resolved relative to the profile file itself
+- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
+- `--root` remains a CLI-only convenience flag; use `backend = "rootful"` in profiles when you want the rootful backend
+- the fuller key-by-key schema is documented in [docs/profile-schema.md](docs/profile-schema.md)
 
 ### Flow Log
 
