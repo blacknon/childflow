@@ -474,11 +474,16 @@ struct JsonFlowLogReport<'a> {
     schema_versions: Vec<u32>,
     event_counts: JsonEventCounts,
     protocols: &'a BTreeMap<String, usize>,
+    sorted_protocols: Vec<JsonCountEntry<'a>>,
     proxy_usage: JsonProxyUsage,
     policy_violations: &'a BTreeMap<String, usize>,
+    sorted_policy_violations: Vec<JsonCountEntry<'a>>,
     connect_errors: &'a BTreeMap<String, usize>,
+    sorted_connect_errors: Vec<JsonCountEntry<'a>>,
     runtime_failures: &'a BTreeMap<String, usize>,
+    sorted_runtime_failures: Vec<JsonCountEntry<'a>>,
     runtime_failure_phases: &'a BTreeMap<String, usize>,
+    sorted_runtime_failure_phases: Vec<JsonCountEntry<'a>>,
     top_connection_targets: Vec<JsonConnectionTarget<'a>>,
 }
 
@@ -510,6 +515,12 @@ struct JsonConnectionTarget<'a> {
     flow_end: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct JsonCountEntry<'a> {
+    key: &'a str,
+    count: usize,
+}
+
 impl<'a> JsonFlowLogReport<'a> {
     fn from_report(path: &Path, report: &'a FlowLogReport) -> Self {
         Self {
@@ -527,14 +538,19 @@ impl<'a> JsonFlowLogReport<'a> {
                 unknown_event: report.unknown_event,
             },
             protocols: &report.protocol_counts,
+            sorted_protocols: json_count_entries(&report.protocol_counts),
             proxy_usage: JsonProxyUsage {
                 proxied_connect_attempts: report.proxied_connect_attempts,
                 direct_connect_attempts: report.direct_connect_attempts,
             },
             policy_violations: &report.policy_reason_counts,
+            sorted_policy_violations: json_count_entries(&report.policy_reason_counts),
             connect_errors: &report.connect_error_counts,
+            sorted_connect_errors: json_count_entries(&report.connect_error_counts),
             runtime_failures: &report.runtime_failure_reason_counts,
+            sorted_runtime_failures: json_count_entries(&report.runtime_failure_reason_counts),
             runtime_failure_phases: &report.runtime_failure_phase_counts,
+            sorted_runtime_failure_phases: json_count_entries(&report.runtime_failure_phase_counts),
             top_connection_targets: report
                 .top_connection_targets(10)
                 .into_iter()
@@ -548,6 +564,13 @@ impl<'a> JsonFlowLogReport<'a> {
                 .collect(),
         }
     }
+}
+
+fn json_count_entries<'a>(counts: &'a BTreeMap<String, usize>) -> Vec<JsonCountEntry<'a>> {
+    top_count_entries(counts, usize::MAX)
+        .into_iter()
+        .map(|(key, count)| JsonCountEntry { key, count })
+        .collect()
 }
 
 #[cfg(test)]
@@ -726,11 +749,28 @@ mod tests {
         assert_eq!(json["schema_versions"], serde_json::json!([1]));
         assert_eq!(json["event_counts"]["total"], 3);
         assert_eq!(json["protocols"]["tcp"], 3);
+        assert_eq!(json["sorted_protocols"][0], serde_json::json!({"key":"tcp","count":3}));
         assert_eq!(json["proxy_usage"]["proxied_connect_attempts"], 1);
         assert_eq!(json["policy_violations"]["proxy_only"], 1);
+        assert_eq!(
+            json["sorted_policy_violations"][0],
+            serde_json::json!({"key":"proxy_only","count":1})
+        );
         assert_eq!(json["connect_errors"]["connection refused"], 2);
+        assert_eq!(
+            json["sorted_connect_errors"][0],
+            serde_json::json!({"key":"connection refused","count":2})
+        );
         assert_eq!(json["runtime_failures"]["tap_create_blocked"], 1);
+        assert_eq!(
+            json["sorted_runtime_failures"][0],
+            serde_json::json!({"key":"tap_create_blocked","count":1})
+        );
         assert_eq!(json["runtime_failure_phases"]["child_bootstrap"], 1);
+        assert_eq!(
+            json["sorted_runtime_failure_phases"][0],
+            serde_json::json!({"key":"child_bootstrap","count":1})
+        );
         assert_eq!(
             json["top_connection_targets"][0]["target"],
             "93.184.216.34:443"

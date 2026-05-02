@@ -486,7 +486,7 @@ Current notes:
 - `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, common connect errors, runtime failure reason codes, and runtime failure phases after the run
 - `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
 - `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
-- `--report-format json` emits a machine-readable report that is convenient for CI artifacts or wrapper tooling
+- `--report-format json` emits a machine-readable report that is convenient for CI artifacts or wrapper tooling, including sorted arrays for ranked sections such as policy violations, connect errors, and runtime failures
 - the fuller event-by-event schema is documented in [docs/flow-log-schema.md](docs/flow-log-schema.md)
 
 ### Doctor and Report
