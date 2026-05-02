@@ -21,15 +21,17 @@ fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
         .unwrap_or_else(|| "<none>".to_string());
 
     format!(
-        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\nflow-log events: {}\nflow-log top target: {}\nflow-log connect errors: {}\nflow-log runtime failures: {}\nexit: {exit_code}\n",
+        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\nflow-log events: {}\nflow-log top target: {}\nflow-log policy violations: {}\nflow-log connect errors: {}\nflow-log runtime failures: {}\nflow-log runtime failure phases: {}\nexit: {exit_code}\n",
         backend_name(cli),
         format_controls(&sandbox_policy.active_controls()),
         format_capture(cli),
         format_flow_log(cli),
         format_flow_log_events(cli),
         format_flow_log_top_target(cli),
+        format_flow_log_policy_violations(cli),
         format_flow_log_connect_errors(cli),
-        format_flow_log_runtime_failures(cli)
+        format_flow_log_runtime_failures(cli),
+        format_flow_log_runtime_failure_phases(cli)
     )
 }
 
@@ -116,6 +118,17 @@ fn format_flow_log_connect_errors(cli: &Cli) -> String {
     }
 }
 
+fn format_flow_log_policy_violations(cli: &Cli) -> String {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return "disabled".to_string();
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_policy_violations_compact(3),
+        Err(_) => "unavailable".to_string(),
+    }
+}
+
 fn format_flow_log_runtime_failures(cli: &Cli) -> String {
     let Some(path) = cli.flow_log.as_ref() else {
         return "disabled".to_string();
@@ -123,6 +136,17 @@ fn format_flow_log_runtime_failures(cli: &Cli) -> String {
 
     match FlowLogReport::from_path(path) {
         Ok(report) => report.render_runtime_failures_compact(3),
+        Err(_) => "unavailable".to_string(),
+    }
+}
+
+fn format_flow_log_runtime_failure_phases(cli: &Cli) -> String {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return "disabled".to_string();
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_runtime_failure_phases_compact(3),
         Err(_) => "unavailable".to_string(),
     }
 }
@@ -183,8 +207,10 @@ mod tests {
         assert!(rendered.contains("flow-log: disabled"));
         assert!(rendered.contains("flow-log events: disabled"));
         assert!(rendered.contains("flow-log top target: disabled"));
+        assert!(rendered.contains("flow-log policy violations: disabled"));
         assert!(rendered.contains("flow-log connect errors: disabled"));
         assert!(rendered.contains("flow-log runtime failures: disabled"));
+        assert!(rendered.contains("flow-log runtime failure phases: disabled"));
         assert!(rendered.contains("exit: 7"));
     }
 
@@ -206,8 +232,10 @@ mod tests {
         assert!(rendered.contains("flow-log: /tmp/flow.jsonl"));
         assert!(rendered.contains("flow-log events: unavailable"));
         assert!(rendered.contains("flow-log top target: unavailable"));
+        assert!(rendered.contains("flow-log policy violations: unavailable"));
         assert!(rendered.contains("flow-log connect errors: unavailable"));
         assert!(rendered.contains("flow-log runtime failures: unavailable"));
+        assert!(rendered.contains("flow-log runtime failure phases: unavailable"));
         assert!(rendered.contains("command: curl https://example.com"));
     }
 
@@ -233,7 +261,7 @@ mod tests {
             concat!(
                 "{\"event\":\"connect_attempt\",\"ts_ms\":1}\n",
                 "{\"event\":\"connect_result\",\"status\":\"error\",\"error\":\"connection refused\",\"remote_addr\":\"93.184.216.34:443\",\"ts_ms\":2}\n",
-                "{\"event\":\"policy_violation\",\"ts_ms\":3}\n",
+                "{\"event\":\"policy_violation\",\"reason_code\":\"deny_cidr\",\"ts_ms\":3}\n",
                 "{\"event\":\"flow_end\",\"remote_addr\":\"93.184.216.34:443\",\"ts_ms\":4}\n",
                 "{\"event\":\"runtime_failure\",\"reason_code\":\"tap_create_blocked\",\"phase\":\"child_bootstrap\",\"detail\":\"tap create failed\",\"ts_ms\":5}\n"
             ),
@@ -252,8 +280,12 @@ mod tests {
         assert!(rendered.contains(
             "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1)"
         ));
+        assert!(rendered.contains("flow-log policy violations: deny_cidr=1"));
         assert!(rendered.contains("flow-log connect errors: connection refused=1"));
         assert!(rendered.contains("flow-log runtime failures: tap_create_blocked=1"));
+        assert!(rendered.contains(
+            "flow-log runtime failure phases: child_bootstrap=1"
+        ));
 
         let _ = fs::remove_file(flow_log_path);
     }

@@ -42,6 +42,7 @@ pub struct FlowLogReport {
     pub policy_reason_counts: BTreeMap<String, usize>,
     pub connect_error_counts: BTreeMap<String, usize>,
     pub runtime_failure_reason_counts: BTreeMap<String, usize>,
+    pub runtime_failure_phase_counts: BTreeMap<String, usize>,
     pub connection_targets: BTreeMap<String, ConnectionTargetStats>,
     pub proxied_connect_attempts: usize,
     pub direct_connect_attempts: usize,
@@ -137,6 +138,15 @@ impl FlowLogReport {
             }
         }
 
+        rendered.push_str("runtime-failure-phases:\n");
+        if self.runtime_failure_phase_counts.is_empty() {
+            rendered.push_str("  <none>\n");
+        } else {
+            for (phase, count) in &self.runtime_failure_phase_counts {
+                rendered.push_str(&format!("  {phase}: {count}\n"));
+            }
+        }
+
         rendered.push_str("top-connection-targets:\n");
         if self.connection_targets.is_empty() {
             rendered.push_str("  <none>\n");
@@ -212,6 +222,16 @@ impl FlowLogReport {
             rendered.push_str("| Reason code | Count |\n| --- | ---: |\n");
             for (reason, count) in &self.runtime_failure_reason_counts {
                 rendered.push_str(&format!("| {reason} | {count} |\n"));
+            }
+        }
+
+        rendered.push_str("\n## Runtime failure phases\n\n");
+        if self.runtime_failure_phase_counts.is_empty() {
+            rendered.push_str("_none_\n");
+        } else {
+            rendered.push_str("| Phase | Count |\n| --- | ---: |\n");
+            for (phase, count) in &self.runtime_failure_phase_counts {
+                rendered.push_str(&format!("| {phase} | {count} |\n"));
             }
         }
 
@@ -299,6 +319,9 @@ impl FlowLogReport {
                 if let Some(reason) = event.reason_code {
                     *self.runtime_failure_reason_counts.entry(reason).or_default() += 1;
                 }
+                if let Some(phase) = event.phase {
+                    *self.runtime_failure_phase_counts.entry(phase).or_default() += 1;
+                }
             }
             "flow_end" => {
                 self.flow_end += 1;
@@ -351,6 +374,19 @@ impl FlowLogReport {
         )
     }
 
+    pub fn render_policy_violations_compact(&self, limit: usize) -> String {
+        if self.policy_reason_counts.is_empty() {
+            return "none".to_string();
+        }
+
+        self.policy_reason_counts
+            .iter()
+            .take(limit)
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     pub fn render_connect_errors_compact(&self, limit: usize) -> String {
         if self.connect_error_counts.is_empty() {
             return "none".to_string();
@@ -376,6 +412,19 @@ impl FlowLogReport {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    pub fn render_runtime_failure_phases_compact(&self, limit: usize) -> String {
+        if self.runtime_failure_phase_counts.is_empty() {
+            return "none".to_string();
+        }
+
+        self.runtime_failure_phase_counts
+            .iter()
+            .take(limit)
+            .map(|(phase, count)| format!("{phase}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,6 +446,8 @@ struct FlowLogLine {
     error: Option<String>,
     #[serde(default)]
     reason_code: Option<String>,
+    #[serde(default)]
+    phase: Option<String>,
 }
 
 #[cfg(test)]
@@ -458,6 +509,7 @@ mod tests {
             policy_reason_counts: BTreeMap::new(),
             connect_error_counts: BTreeMap::new(),
             runtime_failure_reason_counts: BTreeMap::new(),
+            runtime_failure_phase_counts: BTreeMap::new(),
             connection_targets: BTreeMap::from([(
                 "93.184.216.34:443".into(),
                 ConnectionTargetStats {
@@ -485,6 +537,7 @@ mod tests {
         assert!(rendered.contains("proxied_connect_attempts: 1"));
         assert!(rendered.contains("connect-errors:\n  <none>"));
         assert!(rendered.contains("runtime-failures:\n  <none>"));
+        assert!(rendered.contains("runtime-failure-phases:\n  <none>"));
         assert!(rendered.contains("top-connection-targets:"));
         assert!(rendered.contains("93.184.216.34:443: attempts=1, ok=1"));
         Ok(())
@@ -507,6 +560,7 @@ mod tests {
             policy_reason_counts: BTreeMap::from([("proxy_only".into(), 1)]),
             connect_error_counts: BTreeMap::from([("connection refused".into(), 2)]),
             runtime_failure_reason_counts: BTreeMap::from([("tap_create_blocked".into(), 1)]),
+            runtime_failure_phase_counts: BTreeMap::from([("child_bootstrap".into(), 1)]),
             connection_targets: BTreeMap::from([(
                 "93.184.216.34:443".into(),
                 ConnectionTargetStats {
@@ -528,6 +582,7 @@ mod tests {
         assert!(rendered.contains("| proxy_only | 1 |"));
         assert!(rendered.contains("| connection refused | 2 |"));
         assert!(rendered.contains("| tap_create_blocked | 1 |"));
+        assert!(rendered.contains("| child_bootstrap | 1 |"));
         assert!(rendered.contains("| `93.184.216.34:443` | 1 | 1 | 0 | 0 |"));
         Ok(())
     }
@@ -623,6 +678,10 @@ mod tests {
     #[test]
     fn flow_log_report_renders_compact_target_and_errors() {
         let report = FlowLogReport {
+            policy_reason_counts: BTreeMap::from([
+                ("deny_cidr".into(), 2),
+                ("proxy_only".into(), 1),
+            ]),
             connect_error_counts: BTreeMap::from([
                 ("connection refused".into(), 2),
                 ("timed out".into(), 1),
@@ -630,6 +689,10 @@ mod tests {
             runtime_failure_reason_counts: BTreeMap::from([
                 ("tap_create_blocked".into(), 1),
                 ("runtime_shutdown_failed".into(), 1),
+            ]),
+            runtime_failure_phase_counts: BTreeMap::from([
+                ("child_bootstrap".into(), 1),
+                ("run".into(), 1),
             ]),
             connection_targets: BTreeMap::from([(
                 "a.example:443".into(),
@@ -648,12 +711,20 @@ mod tests {
             "a.example:443 (attempts=3, ok=1, error=2, flow_end=1)"
         );
         assert_eq!(
+            report.render_policy_violations_compact(2),
+            "deny_cidr=2, proxy_only=1"
+        );
+        assert_eq!(
             report.render_connect_errors_compact(2),
             "connection refused=2, timed out=1"
         );
         assert_eq!(
             report.render_runtime_failures_compact(2),
             "runtime_shutdown_failed=1, tap_create_blocked=1"
+        );
+        assert_eq!(
+            report.render_runtime_failure_phases_compact(2),
+            "child_bootstrap=1, run=1"
         );
     }
 
@@ -678,6 +749,11 @@ mod tests {
             report.runtime_failure_reason_counts.get("runtime_shutdown_failed"),
             Some(&1)
         );
+        assert_eq!(
+            report.runtime_failure_phase_counts.get("child_bootstrap"),
+            Some(&1)
+        );
+        assert_eq!(report.runtime_failure_phase_counts.get("run"), Some(&1));
 
         let _ = fs::remove_file(path);
         Ok(())
