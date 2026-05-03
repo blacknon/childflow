@@ -548,6 +548,7 @@ Current notes:
 - `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
 - `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
 - `--report-format json` emits a machine-readable report that is convenient for CI artifacts or wrapper tooling, including sorted arrays for ranked sections such as policy violations, matched blocked domains, connect errors, and runtime failures
+- the JSON report also includes flattened `dns_policy_rows`, so external tooling can iterate DNS-name / answer-IP / target / matched-domain correlations without unpacking nested sections
 - the fuller JSON report schema is documented in [docs/report-schema.md](docs/report-schema.md)
 - the fuller event-by-event schema is documented in [docs/flow-log-schema.md](docs/flow-log-schema.md)
 

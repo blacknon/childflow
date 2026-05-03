@@ -91,6 +91,21 @@ pub struct DnsPolicyCorrelation {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct DnsPolicyRow {
+    pub qname: String,
+    pub queries: usize,
+    pub answers: usize,
+    pub answer_ips: Vec<String>,
+    pub target: Option<String>,
+    pub target_ip: Option<String>,
+    pub connect_attempts: usize,
+    pub connect_ok: usize,
+    pub connect_error: usize,
+    pub flow_end: usize,
+    pub matched_domains: Vec<RankedStringCount>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct DnsCorrelatedTarget {
     pub target: String,
     pub connect_attempts: usize,
@@ -759,6 +774,56 @@ impl FlowLogReport {
             .collect()
     }
 
+    pub fn top_dns_policy_rows(&self, dns_limit: usize, target_limit: usize) -> Vec<DnsPolicyRow> {
+        let mut rows = Vec::new();
+        for correlation in self.top_dns_policy_correlations(dns_limit, target_limit) {
+            if correlation.targets.is_empty() {
+                rows.push(DnsPolicyRow {
+                    qname: correlation.qname,
+                    queries: correlation.queries,
+                    answers: correlation.answers,
+                    answer_ips: correlation.answer_ips,
+                    target: None,
+                    target_ip: None,
+                    connect_attempts: 0,
+                    connect_ok: 0,
+                    connect_error: 0,
+                    flow_end: 0,
+                    matched_domains: correlation.matched_domains,
+                });
+                continue;
+            }
+
+            for target in correlation.targets {
+                let target_ip = target_ip_string(&target.target);
+                rows.push(DnsPolicyRow {
+                    qname: correlation.qname.clone(),
+                    queries: correlation.queries,
+                    answers: correlation.answers,
+                    answer_ips: correlation.answer_ips.clone(),
+                    target: Some(target.target.clone()),
+                    target_ip,
+                    connect_attempts: target.connect_attempts,
+                    connect_ok: target.connect_ok,
+                    connect_error: target.connect_error,
+                    flow_end: target.flow_end,
+                    matched_domains: target.matched_domains,
+                });
+            }
+        }
+
+        rows.sort_by(|left, right| {
+            right
+                .connect_attempts
+                .cmp(&left.connect_attempts)
+                .then_with(|| right.connect_error.cmp(&left.connect_error))
+                .then_with(|| right.connect_ok.cmp(&left.connect_ok))
+                .then_with(|| left.qname.cmp(&right.qname))
+                .then_with(|| left.target.cmp(&right.target))
+        });
+        rows
+    }
+
     fn render_dns_names_for_target(&self, target: &str) -> String {
         let dns_names = self.dns_names_for_target(target);
         if dns_names.is_empty() {
@@ -992,6 +1057,11 @@ impl FlowLogReport {
             observability_report::DNS_POLICY_CORRELATIONS.to_string(),
             serde_json::to_value(self.top_dns_policy_correlations(10, 3))
                 .expect("dns_policy_correlations should serialize"),
+        );
+        root.insert(
+            observability_report::DNS_POLICY_ROWS.to_string(),
+            serde_json::to_value(self.top_dns_policy_rows(10, 3))
+                .expect("dns_policy_rows should serialize"),
         );
         root.insert(
             observability_report::PROXY_USAGE.to_string(),
@@ -1533,6 +1603,13 @@ mod tests {
             json["dns_policy_correlations"][0]["matched_domains"][0],
             serde_json::json!({"key":"blocked.test","count":1})
         );
+        assert_eq!(json["dns_policy_rows"][0]["qname"], "example.com");
+        assert_eq!(json["dns_policy_rows"][0]["target"], "93.184.216.34:443");
+        assert_eq!(json["dns_policy_rows"][0]["target_ip"], "93.184.216.34");
+        assert_eq!(
+            json["dns_policy_rows"][0]["matched_domains"][0],
+            serde_json::json!({"key":"blocked.test","count":1})
+        );
         assert_eq!(
             json["top_connection_targets"][0]["dns_names"],
             serde_json::json!(["example.com"])
@@ -1807,6 +1884,46 @@ mod tests {
         assert_eq!(
             report.render_runtime_failure_phases_compact(2),
             "child_bootstrap=1, run=1"
+        );
+    }
+
+    #[test]
+    fn flow_log_report_flattens_dns_policy_rows_without_target() {
+        let report = FlowLogReport {
+            dns_name_counts: BTreeMap::from([(
+                "example.com".into(),
+                DnsNameStats {
+                    queries: 1,
+                    answers: 1,
+                    answer_ips: BTreeSet::from(["93.184.216.34".into()]),
+                },
+            )]),
+            policy_matched_domain_counts: BTreeMap::from([("blocked.test".into(), 1)]),
+            policy_matched_domains_by_ip: BTreeMap::from([(
+                "93.184.216.34".into(),
+                BTreeMap::from([("blocked.test".into(), 1)]),
+            )]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            report.top_dns_policy_rows(10, 3),
+            vec![DnsPolicyRow {
+                qname: "example.com".to_string(),
+                queries: 1,
+                answers: 1,
+                answer_ips: vec!["93.184.216.34".to_string()],
+                target: None,
+                target_ip: None,
+                connect_attempts: 0,
+                connect_ok: 0,
+                connect_error: 0,
+                flow_end: 0,
+                matched_domains: vec![RankedStringCount {
+                    key: "blocked.test".to_string(),
+                    count: 1,
+                }],
+            }]
         );
     }
 

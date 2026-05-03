@@ -23,6 +23,7 @@ This document describes the current JSON shape of that report.
 | `top_dns_names` | array | Ranked DNS names with query / answer counts |
 | `dns_target_correlations` | array | Ranked DNS-name to target-IP correlations derived from observed `answer_ips` |
 | `dns_policy_correlations` | array | Ranked DNS-name correlations that also summarize matched blocked domains per resolved answer IP set |
+| `dns_policy_rows` | array | Flattened DNS policy correlation rows for CI tooling and simple consumers |
 | `proxy_usage` | object | Counts for proxied vs direct connect attempts |
 | `policy_violations` | object | Map of `reason_code` to count |
 | `sorted_policy_violations` | array | Ranked policy violation counts |
@@ -229,6 +230,57 @@ Example:
 ]
 ```
 
+## `dns_policy_rows`
+
+`dns_policy_rows` is a flattened companion to `dns_policy_correlations`. It is
+intended for consumers that prefer one row per correlation instead of nested
+arrays.
+
+Each element currently includes:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `qname` | string | Normalized DNS question name |
+| `queries` | integer | Number of `dns_query` events that carried this name |
+| `answers` | integer | Number of `dns_answer` events that carried this name |
+| `answer_ips` | array of strings | Distinct A / AAAA answer IPs observed for this name |
+| `target` | string or null | Correlated `host:port` remote target when one was observed |
+| `target_ip` | string or null | Parsed IP portion of `target` when available |
+| `connect_attempts` | integer | Number of `connect_attempt` events for this row's target |
+| `connect_ok` | integer | Number of successful `connect_result` events for this row's target |
+| `connect_error` | integer | Number of error `connect_result` events for this row's target |
+| `flow_end` | integer | Number of `flow_end` events for this row's target |
+| `matched_domains` | array | Ranked blocked domains correlated to this row |
+
+Rows are currently sorted by descending `connect_attempts`, then descending
+`connect_error`, then descending `connect_ok`, then ascending `qname`, then
+ascending `target`.
+
+When a DNS name has matched blocked domains but no correlated remote target,
+`target` and `target_ip` are `null` and the connect counters are `0`.
+
+Example:
+
+```json
+"dns_policy_rows": [
+  {
+    "qname": "example.com",
+    "queries": 2,
+    "answers": 1,
+    "answer_ips": ["93.184.216.34"],
+    "target": "93.184.216.34:443",
+    "target_ip": "93.184.216.34",
+    "connect_attempts": 2,
+    "connect_ok": 1,
+    "connect_error": 1,
+    "flow_end": 1,
+    "matched_domains": [
+      { "key": "blocked.test", "count": 1 }
+    ]
+  }
+]
+```
+
 ## `top_connection_targets`
 
 Each element currently includes:
@@ -337,6 +389,23 @@ Example:
             { "key": "blocked.test", "count": 1 }
           ]
         }
+      ]
+    }
+  ],
+  "dns_policy_rows": [
+    {
+      "qname": "example.com",
+      "queries": 1,
+      "answers": 1,
+      "answer_ips": ["93.184.216.34"],
+      "target": "93.184.216.34:443",
+      "target_ip": "93.184.216.34",
+      "connect_attempts": 0,
+      "connect_ok": 0,
+      "connect_error": 1,
+      "flow_end": 1,
+      "matched_domains": [
+        { "key": "blocked.test", "count": 1 }
       ]
     }
   ],
