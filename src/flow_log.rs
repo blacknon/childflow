@@ -2,7 +2,7 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
@@ -55,7 +55,14 @@ pub struct PolicyViolationEvent<'a> {
     pub reason_code: &'static str,
     pub control: &'static str,
     pub matched_cidr: Option<&'a str>,
+    pub matched_domain: Option<&'a str>,
     pub reason: &'a str,
+}
+
+pub struct RuntimeFailureEvent<'a> {
+    pub phase: &'a str,
+    pub reason_code: &'a str,
+    pub detail: &'a str,
 }
 
 impl FlowLogger {
@@ -67,13 +74,19 @@ impl FlowLogger {
         })
     }
 
-    pub fn log_dns_query(&mut self, server: SocketAddr, qtype: Option<&'static str>) -> Result<()> {
+    pub fn log_dns_query(
+        &mut self,
+        server: SocketAddr,
+        qname: Option<&str>,
+        qtype: Option<&'static str>,
+    ) -> Result<()> {
         self.write_event(json!({
             "event": "dns_query",
             "protocol": "udp",
             "server": server.to_string(),
             "server_ip": server.ip().to_string(),
             "server_port": server.port(),
+            "qname": qname,
             "qtype": qtype.unwrap_or("unknown"),
         }))
     }
@@ -81,9 +94,11 @@ impl FlowLogger {
     pub fn log_dns_answer(
         &mut self,
         server: SocketAddr,
+        qname: Option<&str>,
         qtype: Option<&'static str>,
         mode: DnsAnswerMode,
         bytes: usize,
+        answer_ips: &[IpAddr],
     ) -> Result<()> {
         self.write_event(json!({
             "event": "dns_answer",
@@ -91,9 +106,11 @@ impl FlowLogger {
             "server": server.to_string(),
             "server_ip": server.ip().to_string(),
             "server_port": server.port(),
+            "qname": qname,
             "qtype": qtype.unwrap_or("unknown"),
             "mode": mode.as_str(),
             "bytes": bytes,
+            "answer_ips": answer_ips.iter().map(IpAddr::to_string).collect::<Vec<_>>(),
         }))
     }
 
@@ -138,6 +155,7 @@ impl FlowLogger {
             "reason_code": violation.reason_code,
             "control": violation.control,
             "matched_cidr": violation.matched_cidr,
+            "matched_domain": violation.matched_domain,
             "reason": violation.reason,
         }))
     }
@@ -153,18 +171,37 @@ impl FlowLogger {
     }
 
     fn write_event(&mut self, mut value: Value) -> Result<()> {
-        if let Value::Object(ref mut map) = value {
-            map.insert("schema_version".into(), json!(FLOW_LOG_SCHEMA_VERSION));
-            map.insert("ts_ms".into(), json!(timestamp_millis()));
-        }
-        serde_json::to_writer(&mut self.writer, &value)
-            .context("failed to serialize flow log event")?;
-        self.writer
-            .write_all(b"\n")
-            .context("failed to write flow log newline")?;
-        self.writer.flush().context("failed to flush flow log")?;
-        Ok(())
+        write_event_line(&mut self.writer, &mut value)
     }
+}
+
+pub fn append_runtime_failure(path: &Path, failure: RuntimeFailureEvent<'_>) -> Result<()> {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open flow log for append at {}", path.display()))?;
+    let mut writer = BufWriter::new(file);
+    let mut value = json!({
+        "event": "runtime_failure",
+        "phase": failure.phase,
+        "reason_code": failure.reason_code,
+        "detail": failure.detail,
+    });
+    write_event_line(&mut writer, &mut value)
+}
+
+fn write_event_line(writer: &mut BufWriter<File>, value: &mut Value) -> Result<()> {
+    if let Value::Object(map) = value {
+        map.insert("schema_version".into(), json!(FLOW_LOG_SCHEMA_VERSION));
+        map.insert("ts_ms".into(), json!(timestamp_millis()));
+    }
+    serde_json::to_writer(&mut *writer, value).context("failed to serialize flow log event")?;
+    writer
+        .write_all(b"\n")
+        .context("failed to write flow log newline")?;
+    writer.flush().context("failed to flush flow log")?;
+    Ok(())
 }
 
 fn timestamp_millis() -> u128 {
@@ -183,8 +220,8 @@ mod tests {
     use anyhow::{Context, Result};
 
     use super::{
-        ConnectResultStatus, DnsAnswerMode, FlowLogger, PolicyViolationEvent,
-        FLOW_LOG_SCHEMA_VERSION,
+        append_runtime_failure, ConnectResultStatus, DnsAnswerMode, FlowLogger,
+        PolicyViolationEvent, RuntimeFailureEvent, FLOW_LOG_SCHEMA_VERSION,
     };
 
     #[test]
@@ -232,6 +269,7 @@ mod tests {
             reason_code: "deny_cidr",
             control: "--deny-cidr",
             matched_cidr: Some("10.0.0.0/8"),
+            matched_domain: None,
             reason: "--deny-cidr matched",
         })?;
         drop(logger);
@@ -246,6 +284,7 @@ mod tests {
         assert!(contents.contains("\"reason_code\":\"deny_cidr\""));
         assert!(contents.contains("\"control\":\"--deny-cidr\""));
         assert!(contents.contains("\"matched_cidr\":\"10.0.0.0/8\""));
+        assert!(contents.contains("\"matched_domain\":null"));
         assert!(contents.contains("\"reason\":\"--deny-cidr matched\""));
 
         let _ = fs::remove_file(&path);
@@ -256,12 +295,14 @@ mod tests {
     fn flow_logger_writes_dns_events_with_structured_server_fields() -> Result<()> {
         let path = unique_temp_flow_log_path("flow-log-dns");
         let mut logger = FlowLogger::open(&path)?;
-        logger.log_dns_query("1.1.1.1:53".parse()?, Some("A"))?;
+        logger.log_dns_query("1.1.1.1:53".parse()?, Some("example.com"), Some("A"))?;
         logger.log_dns_answer(
             "1.1.1.1:53".parse()?,
+            Some("example.com"),
             Some("A"),
             DnsAnswerMode::Relayed,
             128,
+            &["93.184.216.34".parse()?],
         )?;
         drop(logger);
 
@@ -271,7 +312,9 @@ mod tests {
         assert!(contents.contains("\"protocol\":\"udp\""));
         assert!(contents.contains("\"server_ip\":\"1.1.1.1\""));
         assert!(contents.contains("\"server_port\":53"));
+        assert!(contents.contains("\"qname\":\"example.com\""));
         assert!(contents.contains("\"event\":\"dns_answer\""));
+        assert!(contents.contains("\"answer_ips\":[\"93.184.216.34\"]"));
         assert!(contents.contains("\"mode\":\"relayed\""));
         assert!(contents.contains("\"bytes\":128"));
 
@@ -291,9 +334,11 @@ mod tests {
         )?;
         logger.log_dns_answer(
             "1.1.1.1:53".parse()?,
+            Some("example.com"),
             Some("AAAA"),
             DnsAnswerMode::SyntheticEmpty,
             0,
+            &[],
         )?;
         drop(logger);
 
@@ -301,6 +346,29 @@ mod tests {
             .with_context(|| format!("failed to read {}", path.display()))?;
         assert!(contents.contains("\"status\":\"error\""));
         assert!(contents.contains("\"mode\":\"synthetic_empty\""));
+
+        let _ = fs::remove_file(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn append_runtime_failure_writes_structured_event() -> Result<()> {
+        let path = unique_temp_flow_log_path("flow-log-runtime-failure");
+        append_runtime_failure(
+            &path,
+            RuntimeFailureEvent {
+                phase: "child_bootstrap",
+                reason_code: "tap_create_blocked",
+                detail: "failed to create tap device `tap0`",
+            },
+        )?;
+
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        assert!(contents.contains("\"event\":\"runtime_failure\""));
+        assert!(contents.contains("\"phase\":\"child_bootstrap\""));
+        assert!(contents.contains("\"reason_code\":\"tap_create_blocked\""));
+        assert!(contents.contains("\"detail\":\"failed to create tap device `tap0`\""));
 
         let _ = fs::remove_file(&path);
         Ok(())

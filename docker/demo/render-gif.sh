@@ -22,7 +22,9 @@ prepare_demo_artifact_dirs() {
 
   sudo rm -f \
     "$capture_dir/http-origin.pcapng" \
-    "$log_dir/http-origin.jsonl"
+    "$log_dir/http-origin.jsonl" \
+    "$log_dir/domain-deny-origin.jsonl" \
+    "$log_dir/domain-deny-origin-exact.jsonl"
 }
 
 ./docker/demo/wait-for-port.sh proxy-http 3128
@@ -54,3 +56,5 @@ render_tape "$repo_root/docker/demo/tapes/profile-demo.tape" \
   "$repo_root/img/childflow-profile-demo.gif"
 render_tape "$repo_root/docker/demo/tapes/flow-log-demo.tape" \
   "$repo_root/img/childflow-flow-log-demo.gif"
+render_tape "$repo_root/docker/demo/tapes/domain-policy-demo.tape" \
+  "$repo_root/img/childflow-domain-policy-demo.gif"

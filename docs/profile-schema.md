@@ -49,13 +49,20 @@ The following profile keys are resolved relative to the directory containing the
 | `proxy_password` | string | Upstream proxy password |
 | `proxy_insecure` | bool | Equivalent to `--proxy-insecure` |
 | `summary` | bool | Equivalent to `--summary` |
+| `doctor_format` | string | One of `text`, `json`; equivalent to `--doctor-format` when `--doctor` is used |
+| `report_format` | string | One of `text`, `markdown`, `json`; equivalent to `--report-format` when `--report` is used |
+| `summary_format` | string | One of `text`, `json`; equivalent to `--summary-format` |
 | `flow_log` | string | Path written by `--flow-log` |
 | `offline` | bool | Equivalent to `--offline` |
 | `block_private` | bool | Equivalent to `--block-private` |
 | `block_metadata` | bool | Equivalent to `--block-metadata` |
 | `default_policy` | string | One of `allow`, `deny` |
 | `allow_cidrs` | array of strings | IPv4 or IPv6 CIDRs |
+| `allow_domains_exact` | array of strings | Exact domains that should match only a single hostname; currently rootless-only |
+| `allow_domains` | array of strings | Exact domains or parent domains whose subdomains should also match; currently rootless-only |
 | `deny_cidrs` | array of strings | IPv4 or IPv6 CIDRs |
+| `deny_domains_exact` | array of strings | Exact domains that should match only a single hostname; currently rootless-only |
+| `deny_domains` | array of strings | Exact domains or parent domains whose subdomains should also match; currently rootless-only |
 | `proxy_only` | bool | Equivalent to `--proxy-only` |
 | `fail_on_leak` | bool | Equivalent to `--fail-on-leak` |
 | `iface` | string | Host egress interface; useful with `backend = "rootful"` |
@@ -68,12 +75,20 @@ extends = "./base.toml"
 capture = "./captures/run.pcapng"
 capture_point = "both"
 flow_log = "./logs/run.jsonl"
+summary = true
+doctor_format = "json"
+report_format = "json"
+summary_format = "json"
 dns = "1.1.1.1"
 backend = "rootless-internal"
 block_private = true
 block_metadata = true
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains_exact = ["auth.example.com"]
+allow_domains = ["example.com"]
+deny_domains_exact = ["login.blocked.example.com"]
+deny_domains = ["blocked.example.com"]
 command = ["curl", "https://203.0.113.10/healthz"]
 ```
 
@@ -85,7 +100,11 @@ command = ["curl", "https://203.0.113.10/healthz"]
 - parent profile paths are resolved relative to the child profile file
 - inheritance cycles are rejected
 - explicit CLI list flags replace inherited/profile lists rather than appending
+- the same replacement behavior applies to `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact`
 - an explicit CLI command after `--` replaces the profile `command`
 - `--root` is intentionally CLI-only; use `backend = "rootful"` inside profiles instead
 - `--fail-on-leak` and `--flow-log` keep their current backend limitations even when configured via profile
+- `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact` currently follow the same rootless-only limitation as the runtime flags
+- `doctor_format` only affects runs where `--doctor` is active
+- `report_format` only affects runs where `--report <flow.jsonl>` is active
 - `--dump-profile` emits the effective values after profile loading, CLI override application, and relative path resolution

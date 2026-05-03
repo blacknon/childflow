@@ -25,28 +25,35 @@ It has two Linux backends: `rootless-internal` for the default day-to-day path, 
 
 ## Examples
 
-<table>
+<table width="100%">
+  <colgroup>
+    <col width="33%" />
+    <col width="33%" />
+    <col width="33%" />
+  </colgroup>
   <tr>
-    <td valign="top" width="32%">
-      <img src="./img/childflow-proxy-demo.gif" alt="childflow proxy and capture example" width="100%" /><br />
+    <td valign="top" width="33%">
+      <img src="./img/childflow-proxy-demo.gif" alt="childflow proxy and capture example" width="360" height="228" /><br />
       <strong>Proxy control and capture</strong><br /><br />
-      <pre><code>childflow --profile ./docker/demo/profiles/http-origin.toml</code></pre>
-      Block direct access, force the command tree through a proxy, and inspect only that tree's capture.<br />
+      <code>childflow --profile<br />./docker/demo/profiles/http-origin.toml</code><br /><br />
+      Block direct access, force the command tree through a proxy, and inspect only that tree's capture.
     </td>
-    <td valign="top" width="32%">
-      <img src="./img/childflow-profile-demo.gif" alt="childflow profile example" width="100%" /><br />
+    <td valign="top" width="33%">
+      <img src="./img/childflow-profile-demo.gif" alt="childflow profile example" width="360" height="228" /><br />
       <strong>Reusable profiles</strong><br /><br />
-      <pre><code>childflow --profile ./profiles/default-deny.toml --dump-profile</code></pre>
-      Keep sandbox settings in TOML, inherit from a base profile, and inspect the merged effective configuration.<br />
+      <code>childflow --profile<br />./profiles/default-deny.toml<br />--dump-profile</code><br /><br />
+Keep sandbox settings in TOML, inherit from a base profile, and inspect the merged effective configuration.
     </td>
-    <td valign="top" width="32%">
-      <img src="./img/childflow-flow-log-demo.gif" alt="childflow flow log example" width="100%" /><br />
+    <td valign="top" width="33%">
+      <img src="./img/childflow-flow-log-demo.gif" alt="childflow flow log example" width="360" height="228" /><br />
       <strong>Structured flow logs</strong><br /><br />
-      <pre><code>childflow --summary --flow-log ./flow.jsonl -- curl https://example.com</code></pre>
-      Record structured DNS, connect, and policy events for the command tree without dropping down to packet-level inspection first.<br />
+      <code>childflow --summary<br />--flow-log ./flow.jsonl<br />-- curl https://example.com</code><br /><br />
+      Record structured DNS, connect, and policy events for the command tree without dropping down to packet-level inspection first.
     </td>
   </tr>
 </table>
+
+The Docker demo also includes reusable domain-policy profiles under `docker/demo/profiles`, including allow-domain / allow-domain-exact samples and deny-by-domain examples that intentionally fail, emit `policy_violation` flow-log entries with `matched_domain`, and can be summarized again with `childflow --report`.
 
 ## Install
 
@@ -105,6 +112,12 @@ Options:
           Use the rootful backend. Without this flag, childflow uses the default rootless backend
       --doctor
           Diagnose whether the current host is ready for the selected backend
+      --doctor-format <DOCTOR_FORMAT>
+          Select the output format for `--doctor` [default: text] [possible values: text, json]
+      --report <REPORT>
+          Read a structured flow log and print a report instead of running a command
+      --report-format <REPORT_FORMAT>
+          Select the output format for `--report` [possible values: text, markdown, json]
   -d, --dns <DNS>
           Force DNS traffic for the child tree to this IPv4 or IPv6 resolver
       --hosts-file <HOSTS_FILE>
@@ -119,6 +132,8 @@ Options:
           Ignore certificate trust errors for https:// upstream proxies while still validating the hostname
       --summary
           Print a post-run summary to stderr
+      --summary-format <SUMMARY_FORMAT>
+          Select the output format for `--summary` [default: text] [possible values: text, json]
       --flow-log <FLOW_LOG>
           Write structured flow events as JSON Lines. Currently supported only by the default rootless backend
       --offline
@@ -131,8 +146,16 @@ Options:
           Choose whether unmatched outbound destinations are allowed or denied [default: allow] [possible values: allow, deny]
       --allow-cidr <ALLOW_CIDRS>
           Allow outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --allow-domain-exact <ALLOW_DOMAINS_EXACT>
+          Allow outbound destinations whose resolved DNS names exactly match this domain. Currently supported only by the default rootless backend
+      --allow-domain <ALLOW_DOMAINS>
+          Allow outbound destinations whose resolved DNS names match this domain rule. Currently supported only by the default rootless backend
       --deny-cidr <DENY_CIDRS>
           Deny outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --deny-domain-exact <DENY_DOMAINS_EXACT>
+          Deny outbound destinations whose resolved DNS names exactly match this domain. Currently supported only by the default rootless backend
+      --deny-domain <DENY_DOMAINS>
+          Deny outbound destinations whose resolved DNS names match this domain rule. Currently supported only by the default rootless backend
       --proxy-only
           Require outbound traffic to use the configured upstream proxy path
       --fail-on-leak
@@ -206,6 +229,30 @@ Block a destination range explicitly:
 
 ```bash
 childflow --deny-cidr 10.0.0.0/8 -- ./scanner
+```
+
+Allow only traffic that resolves from a specific domain:
+
+```bash
+childflow \
+  --default-policy deny \
+  --allow-domain example.com \
+  -- curl https://example.com
+```
+
+Block a domain and its subdomains:
+
+```bash
+childflow --deny-domain example.com -- curl https://api.example.com
+```
+
+Allow only one exact hostname while still denying unmatched subdomains:
+
+```bash
+childflow \
+  --default-policy deny \
+  --allow-domain-exact auth.example.com \
+  -- curl https://auth.example.com
 ```
 
 #### Proxy
@@ -287,6 +334,56 @@ childflow \
   -- curl https://example.com
 ```
 
+Print a post-run summary with top targets and common failure reasons:
+
+```bash
+childflow \
+  --summary \
+  --flow-log ./flow.jsonl \
+  --deny-cidr 10.0.0.0/8 \
+  -- curl https://example.com
+```
+
+Emit the post-run summary as JSON for CI or wrapper tooling:
+
+```bash
+childflow \
+  --summary \
+  --summary-format json \
+  --flow-log ./flow.jsonl \
+  -- curl https://example.com
+```
+
+Render a text or Markdown report from a saved flow log:
+
+```bash
+childflow --report ./flow.jsonl
+childflow --report ./flow.jsonl --report-format markdown
+childflow --report ./flow.jsonl --report-format json
+```
+
+Markdown reports start with a compact highlight block, so CI artifacts and issue
+comments surface the main target and failure modes first:
+
+```md
+## Highlights
+
+- proxy usage: proxied connect attempts=1, direct connect attempts=0
+- top connection target: `93.184.216.34:443` (attempts=1, ok=1, error=0, flow_end=0, dns_names=example.com)
+- most common policy violation: `proxy_only` (1)
+- most common connect error: `connection refused` (2)
+- most common runtime failure: `tap_create_blocked` (1)
+- most common runtime failure phase: `child_bootstrap` (1)
+```
+
+Check what the current host can support before running:
+
+```bash
+childflow --doctor
+childflow --doctor --doctor-format json
+childflow --root --doctor
+```
+
 #### Rootful
 
 Use the rootful backend when you need host-integrated behavior:
@@ -353,8 +450,16 @@ Use `--root` when you specifically need host-integrated behavior that the rootle
   deny destinations unless they match an explicit allow rule
 - `--allow-cidr`
   allow IPv4 or IPv6 CIDRs
+- `--allow-domain`
+  allow destinations whose resolved DNS names match an exact domain or one of its subdomains
+- `--allow-domain-exact`
+  allow destinations whose resolved DNS names exactly match a single hostname
 - `--deny-cidr`
   deny IPv4 or IPv6 CIDRs
+- `--deny-domain`
+  deny destinations whose resolved DNS names match an exact domain or one of its subdomains
+- `--deny-domain-exact`
+  deny destinations whose resolved DNS names exactly match a single hostname
 - `--proxy-only`
   require outbound traffic to use the configured proxy path
 - `--fail-on-leak`
@@ -364,6 +469,9 @@ Current notes:
 
 - `--proxy-only` is primarily a TCP-focused control; in the rootless backend, direct DNS / UDP / ICMP traffic is also blocked rather than relayed
 - `--fail-on-leak` is currently supported only by `rootless-internal`
+- `--allow-domain`, `--allow-domain-exact`, `--deny-domain`, and `--deny-domain-exact` are currently supported only by `rootless-internal`
+- domain rules are normalized to lowercase and also match subdomains, so `example.com` matches both `example.com` and `api.example.com`
+- exact rules are also normalized to lowercase, but only match the single requested hostname
 
 ### Profiles
 
@@ -377,12 +485,18 @@ childflow --profile ./profiles/default-deny.toml
 extends = "./base.toml"
 capture = "./captures/run.pcapng"
 flow_log = "./logs/run.jsonl"
+summary = true
+doctor_format = "json"
+report_format = "json"
+summary_format = "json"
 dns = "1.1.1.1"
 backend = "rootless-internal"
 block_private = true
 block_metadata = true
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains_exact = ["auth.example.com"]
+allow_domains = ["example.com"]
 command = ["curl", "https://203.0.113.10/healthz"]
 ```
 
@@ -402,10 +516,14 @@ Current notes:
 - merge order is: parent profile, child profile, then explicit CLI flags
 - CLI flags override profile values when both are present
 - for list-valued settings such as `allow_cidrs` and `deny_cidrs`, explicit CLI flags replace the profile list instead of appending to it
+- the same replacement behavior applies to `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact`
 - an explicit CLI command after `--` replaces the profile `command`
 - `--dump-profile` prints the merged effective TOML and exits without running the command
 - relative paths inside a profile are resolved relative to the profile file itself
-- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
+- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `doctor_format`, `report_format`, `summary_format`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
+- profile keys also support `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact` for rootless domain policy
+- `doctor_format` is used when you run `childflow --doctor` with that profile loaded
+- `report_format` is used when you run `childflow --report <flow.jsonl>` with that profile loaded
 - `--root` remains a CLI-only convenience flag; use `backend = "rootful"` in profiles when you want the rootful backend
 - the fuller key-by-key schema is documented in [docs/profile-schema.md](docs/profile-schema.md)
 
@@ -429,6 +547,7 @@ Current event types:
 - `connect_result`
 - `policy_violation`
 - `flow_end`
+- `runtime_failure`
 
 Current schema notes:
 
@@ -438,14 +557,64 @@ Current schema notes:
 - `dns_query` and `dns_answer` include stable `server_ip` / `server_port` fields
 - `dns_answer.mode` is currently one of `relayed` or `synthetic_empty`
 - `policy_violation` includes structured fields such as `action`, `reason_code`, `control`, and `matched_cidr` when applicable
+- `dns_answer.answer_ips` carries the resolved A / AAAA addresses observed for a DNS name
+- `policy_violation.matched_domain` is set when a `--deny-domain` rule blocked the query or the resolved destination
 
 Current notes:
 
 - `--flow-log` is currently supported only by `rootless-internal`
 - each line is standalone JSON, so it is easy to inspect with tools such as `jq`
 - flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
-- `--summary` will also show aggregate flow-log event counts after the run
+- `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
+- `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, commonly matched blocked domains, common connect errors, runtime failure reason codes, and runtime failure phases after the run
+- `--summary --summary-format json` also includes lightweight `dns_policy_rows`, so post-run tooling can inspect DNS name / answer IP / matched blocked domain / target correlations without reading the fuller report
+- `--summary` also surfaces the top DNS policy correlation so it is easier to spot the most important DNS-name / matched-domain / target grouping at a glance
+- top connection targets in `--summary` / `--report` also include correlated `dns_names` when `childflow` observed DNS answers for the target IP
+- DNS-oriented report views also surface correlated `matched_domains`, so it is easier to connect a queried name, its resolved IPs, the observed target socket, and the domain rule that blocked it
+- the shared machine-readable surfaces are indexed in [docs/observability-schema.md](docs/observability-schema.md)
+- the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)
+- `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
+- `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
+- `--report-format json` emits a machine-readable report that is convenient for CI artifacts or wrapper tooling, including sorted arrays for ranked sections such as policy violations, matched blocked domains, connect errors, and runtime failures
+- the JSON report also includes flattened `dns_policy_rows`, so external tooling can iterate DNS-name / answer-IP / target / matched-domain correlations without unpacking nested sections
+- the fuller JSON report schema is documented in [docs/report-schema.md](docs/report-schema.md)
 - the fuller event-by-event schema is documented in [docs/flow-log-schema.md](docs/flow-log-schema.md)
+
+### Doctor and Report
+
+`childflow --doctor` is the quickest way to see whether the current host can support the selected backend.
+
+- for `rootless-internal`, it checks capability-oriented items such as user namespaces, uidmap helpers, `/dev/net/tun`, AF_PACKET capture, and Ubuntu-style AppArmor userns restrictions
+- for `rootful`, it checks root privileges, forwarding sysctls, required external commands, and AF_PACKET capture
+- `--doctor-format json` emits the same diagnosis in a machine-readable form for CI logs or wrapper tooling
+- the fuller JSON doctor schema is documented in [docs/doctor-schema.md](docs/doctor-schema.md)
+
+After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a text, Markdown, or JSON summary with:
+
+- event counts
+- protocol counts
+- proxy usage
+- policy violation reason counts
+- matched blocked domain counts
+- connect error counts
+- runtime failure reason counts
+- runtime failure phase counts
+- top connection targets
+- DNS target / policy correlations
+
+The Docker demo also includes reusable domain-policy profiles such as `docker/demo/profiles/domain-allow-origin.toml`, `docker/demo/profiles/domain-allow-origin-exact.toml`, and `docker/demo/profiles/domain-deny-origin.toml` that show how to persist `allow_domains`, `allow_domains_exact`, and `deny_domains` rules alongside the rest of a sandbox definition.
+
+Example: run a reusable deny-domain profile, then summarize the saved flow log:
+
+```bash
+childflow --profile ./docker/demo/profiles/domain-deny-origin.toml || true
+childflow \
+  --report ./docker/demo/profiles/logs/domain-deny-origin.jsonl \
+  --report-format markdown
+```
+
+That report will surface the blocked DNS name, matched domain rule, correlated
+answer IPs, and any observed target socket in one artifact.
 
 ### Capture Modes
 

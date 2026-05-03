@@ -19,6 +19,8 @@ mod dns;
 #[cfg(target_os = "linux")]
 mod doctor;
 #[cfg(target_os = "linux")]
+mod domain;
+#[cfg(target_os = "linux")]
 mod flow_log;
 #[cfg(target_os = "linux")]
 mod hosts;
@@ -27,11 +29,17 @@ mod namespace;
 #[cfg(target_os = "linux")]
 mod network;
 #[cfg(target_os = "linux")]
+mod observability;
+#[cfg(target_os = "linux")]
 mod preflight;
 #[cfg(target_os = "linux")]
 mod profile;
 #[cfg(target_os = "linux")]
 mod proxy;
+#[cfg(target_os = "linux")]
+mod report;
+#[cfg(target_os = "linux")]
+mod runtime_failure;
 #[cfg(target_os = "linux")]
 mod sandbox;
 #[cfg(target_os = "linux")]
@@ -42,7 +50,7 @@ mod tproxy;
 mod util;
 
 #[cfg(target_os = "linux")]
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 #[cfg(target_os = "linux")]
 use nix::sys::wait::{waitpid, WaitStatus};
 #[cfg(target_os = "linux")]
@@ -79,6 +87,9 @@ fn main() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("childflow: {err:#}");
+            if let Some(code) = runtime_failure::classify_error(&err) {
+                eprintln!("childflow: reason_code: {}", code.as_str());
+            }
             1
         }
     };
@@ -98,14 +109,34 @@ fn real_main() -> Result<i32> {
         return doctor::run(&cli);
     }
 
-    cli.validate()?;
-    preflight::run(&cli)?;
+    if cli.report.is_some() {
+        return report::run(&cli);
+    }
+
+    if let Err(err) = cli.validate() {
+        log_runtime_failure_event(&cli, "cli_validate", &err);
+        return Err(err);
+    }
+    if let Err(err) = preflight::run(&cli) {
+        log_runtime_failure_event(&cli, "preflight", &err);
+        return Err(err);
+    }
+    match run_command_tree(&cli) {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            log_runtime_failure_event(&cli, "run", &err);
+            Err(err)
+        }
+    }
+}
+
+fn run_command_tree(cli: &Cli) -> Result<i32> {
     let backend = cli.selected_backend();
 
     let namespace_mode = network::namespace_mode(backend);
     let run_id = util::unique_run_id();
     let network_plan = network::NetworkPlan::new();
-    let child_bootstrap = network::prepare_child_bootstrap(&cli, &network_plan)?;
+    let child_bootstrap = network::prepare_child_bootstrap(cli, &network_plan)?;
     let dns_plan = DnsPlan::prepare(
         &run_id,
         backend,
@@ -114,7 +145,7 @@ fn real_main() -> Result<i32> {
         network_plan.host_ipv6(),
     )?;
     let hosts_plan = HostsPlan::prepare(&run_id, cli.hosts_file.as_deref())?;
-    let proxy_plan = ProxyPlan::from_cli(&cli)?;
+    let proxy_plan = ProxyPlan::from_cli(cli)?;
     let child_proxy_env = proxy_plan
         .as_ref()
         .map(ProxyPlan::child_env)
@@ -151,7 +182,11 @@ fn real_main() -> Result<i32> {
                 extra_env: &child_proxy_env,
                 command: &cli.command,
             }) {
+                log_runtime_failure_event(cli, "child_bootstrap", &err);
                 eprintln!("childflow: child bootstrap failed: {err:#}");
+                if let Some(code) = runtime_failure::classify_error(&err) {
+                    eprintln!("childflow: child bootstrap reason_code: {}", code.as_str());
+                }
                 process::exit(127);
             }
 
@@ -173,7 +208,7 @@ fn real_main() -> Result<i32> {
                     let runtime = ParentRuntime::start(
                         &run_id,
                         child,
-                        &cli,
+                        cli,
                         &network_plan,
                         &dns_plan,
                         proxy_plan.as_ref(),
@@ -225,7 +260,7 @@ fn real_main() -> Result<i32> {
                     let runtime = ParentRuntime::start(
                         &run_id,
                         child,
-                        &cli,
+                        cli,
                         &network_plan,
                         &dns_plan,
                         proxy_plan.as_ref(),
@@ -252,11 +287,33 @@ fn real_main() -> Result<i32> {
                 exit_code = 1;
             }
             if cli.summary {
-                summary::print_run_summary(&cli, exit_code);
+                summary::print_run_summary(cli, exit_code);
             }
 
             Ok(exit_code)
         }
+    }
+}
+
+fn log_runtime_failure_event(cli: &Cli, phase: &str, err: &Error) {
+    let Some(path) = cli.flow_log.as_deref() else {
+        return;
+    };
+
+    let reason_code = runtime_failure::classify_or_unknown(err);
+    let detail = format!("{err:#}");
+    if let Err(log_err) = flow_log::append_runtime_failure(
+        path,
+        flow_log::RuntimeFailureEvent {
+            phase,
+            reason_code: reason_code.as_str(),
+            detail: &detail,
+        },
+    ) {
+        util::debug(format!(
+            "failed to append runtime failure event to {}: {log_err:#}",
+            path.display()
+        ));
     }
 }
 

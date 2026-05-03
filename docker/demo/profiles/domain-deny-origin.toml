@@ -1,0 +1,13 @@
+backend = "rootless-internal"
+default_policy = "allow"
+flow_log = "./logs/domain-deny-origin.jsonl"
+deny_domains = ["demo.invalid"]
+command = [
+  "curl",
+  "--connect-timeout",
+  "5",
+  "--max-time",
+  "15",
+  "-fsS",
+  "http://origin-http.demo.invalid:8080/",
+]

@@ -421,6 +421,22 @@ pub fn derive_output_paths(base: &Path, output_view: OutputView) -> Result<(Path
     }
 }
 
+pub fn requested_view_name(output_view: OutputView) -> &'static str {
+    match output_view {
+        OutputView::Child => "child",
+        OutputView::Egress => "egress",
+        OutputView::WireEgress => "wire-egress",
+        OutputView::Both => "both",
+    }
+}
+
+pub fn effective_view_name(output_view: OutputView) -> &'static str {
+    match output_view {
+        OutputView::Both => "child+egress",
+        _ => requested_view_name(output_view),
+    }
+}
+
 fn rewrite_rootful_egress_frame(
     frame: &[u8],
     rewrite: RootfulEgressRewrite,
@@ -573,6 +589,14 @@ mod tests {
 
         assert_eq!(child, PathBuf::from("/tmp/capture.child.pcapng"));
         assert_eq!(egress, PathBuf::from("/tmp/capture.egress.pcapng"));
+    }
+
+    #[test]
+    fn effective_view_name_expands_both_to_child_and_egress() {
+        assert_eq!(requested_view_name(OutputView::Child), "child");
+        assert_eq!(requested_view_name(OutputView::WireEgress), "wire-egress");
+        assert_eq!(effective_view_name(OutputView::Child), "child");
+        assert_eq!(effective_view_name(OutputView::Both), "child+egress");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use std::io::ErrorKind;
 use std::mem::{size_of, zeroed};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -18,6 +18,8 @@ use super::engine::{ConnectionCommand, RemoteEvent};
 use super::state::FlowKey;
 
 pub(super) const DNS_TYPE_AAAA: u16 = 28;
+const DNS_TYPE_A: u16 = 1;
+const DNS_CLASS_IN: u16 = 1;
 const DNS_HEADER_LEN: usize = 12;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -342,6 +344,101 @@ pub(super) fn dns_query_type(payload: &[u8]) -> Option<u16> {
     ]))
 }
 
+pub(super) fn dns_query_name(payload: &[u8]) -> Option<String> {
+    if payload.len() < DNS_HEADER_LEN {
+        return None;
+    }
+    let qdcount = u16::from_be_bytes([payload[4], payload[5]]);
+    if qdcount != 1 {
+        return None;
+    }
+
+    let mut offset = DNS_HEADER_LEN;
+    let mut labels = Vec::new();
+    while offset < payload.len() {
+        let label_len = payload[offset] as usize;
+        offset += 1;
+        if label_len == 0 {
+            return (!labels.is_empty()).then(|| labels.join(".").to_ascii_lowercase());
+        }
+        let end = offset.checked_add(label_len)?;
+        let label = std::str::from_utf8(payload.get(offset..end)?).ok()?;
+        labels.push(label.to_string());
+        offset = end;
+    }
+    None
+}
+
+pub(super) fn dns_answer_ips(payload: &[u8]) -> Vec<IpAddr> {
+    if payload.len() < DNS_HEADER_LEN {
+        return Vec::new();
+    }
+
+    let qdcount = u16::from_be_bytes([payload[4], payload[5]]) as usize;
+    let ancount = u16::from_be_bytes([payload[6], payload[7]]) as usize;
+
+    let mut offset = DNS_HEADER_LEN;
+    for _ in 0..qdcount {
+        let Some(next) = dns_name_end(payload, offset) else {
+            return Vec::new();
+        };
+        let Some(question_end) = next.checked_add(4) else {
+            return Vec::new();
+        };
+        if question_end > payload.len() {
+            return Vec::new();
+        }
+        offset = question_end;
+    }
+
+    let mut ips = Vec::new();
+    for _ in 0..ancount {
+        let Some(next) = dns_name_end(payload, offset) else {
+            break;
+        };
+        let Some(header_end) = next.checked_add(10) else {
+            break;
+        };
+        if header_end > payload.len() {
+            break;
+        }
+
+        let rr_type = u16::from_be_bytes([payload[next], payload[next + 1]]);
+        let rr_class = u16::from_be_bytes([payload[next + 2], payload[next + 3]]);
+        let rdlength = u16::from_be_bytes([payload[next + 8], payload[next + 9]]) as usize;
+        let rdata_start = header_end;
+        let Some(rdata_end) = rdata_start.checked_add(rdlength) else {
+            break;
+        };
+        if rdata_end > payload.len() {
+            break;
+        }
+
+        if rr_class == DNS_CLASS_IN {
+            match (rr_type, rdlength) {
+                (DNS_TYPE_A, 4) => {
+                    ips.push(IpAddr::V4(Ipv4Addr::new(
+                        payload[rdata_start],
+                        payload[rdata_start + 1],
+                        payload[rdata_start + 2],
+                        payload[rdata_start + 3],
+                    )));
+                }
+                (DNS_TYPE_AAAA, 16) => {
+                    let mut octets = [0_u8; 16];
+                    octets.copy_from_slice(&payload[rdata_start..rdata_end]);
+                    ips.push(IpAddr::V6(Ipv6Addr::from(octets)));
+                }
+                _ => {}
+            }
+        }
+
+        offset = rdata_end;
+    }
+
+    ips
+}
+
 fn dns_question_end(payload: &[u8]) -> Option<usize> {
     let mut offset = DNS_HEADER_LEN;
     while offset < payload.len() {
@@ -351,6 +448,22 @@ fn dns_question_end(payload: &[u8]) -> Option<usize> {
             return offset.checked_add(4).filter(|end| *end <= payload.len());
         }
         offset = offset.checked_add(label_len)?;
+    }
+    None
+}
+
+fn dns_name_end(payload: &[u8], start: usize) -> Option<usize> {
+    let mut offset = start;
+    while offset < payload.len() {
+        let len = payload[offset];
+        if len & 0xC0 == 0xC0 {
+            return offset.checked_add(2).filter(|end| *end <= payload.len());
+        }
+        offset += 1;
+        if len == 0 {
+            return Some(offset);
+        }
+        offset = offset.checked_add(len as usize)?;
     }
     None
 }
@@ -449,6 +562,38 @@ mod tests {
             0x01,
         ];
         assert_eq!(dns_query_type(&query), Some(DNS_TYPE_AAAA));
+    }
+
+    #[test]
+    fn dns_query_name_extracts_normalized_qname() {
+        let query = [
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'E',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'C', b'O', b'M', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+
+        assert_eq!(dns_query_name(&query).as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn dns_answer_ips_extracts_a_and_aaaa_records() {
+        let response = [
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01, 0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x04, 93, 184,
+            216, 34, 0xC0, 0x0C, 0x00, 0x1C, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3C, 0x00, 0x10, 0x20,
+            0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ];
+
+        assert_eq!(
+            dns_answer_ips(&response),
+            vec![
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                IpAddr::V6(Ipv6Addr::from([
+                    0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+                ])),
+            ]
+        );
     }
 
     #[test]

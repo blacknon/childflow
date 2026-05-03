@@ -63,7 +63,7 @@ fn render_scheme(scheme: ProxyScheme) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, DefaultPolicy};
+    use crate::cli::{Cli, DefaultPolicy, DoctorFormat};
     use crate::network::NetworkBackend;
 
     fn base_cli() -> Cli {
@@ -73,6 +73,9 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            doctor_format: DoctorFormat::Text,
+            report: None,
+            report_format: crate::cli::ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,
@@ -81,6 +84,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: false,
+            summary_format: crate::cli::SummaryFormat::Text,
             flow_log: None,
             offline: false,
             block_private: false,
@@ -88,6 +92,10 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
             iface: None,

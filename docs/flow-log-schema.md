@@ -30,12 +30,13 @@ Every event currently includes these fields:
 | `server` | string | Yes | Socket string such as `1.1.1.1:53` |
 | `server_ip` | string | Yes | IP-only server field |
 | `server_port` | integer | Yes | Current value is `53` |
+| `qname` | string or null | Yes | Normalized DNS question name when it can be extracted from the packet |
 | `qtype` | string | Yes | Current values are `A`, `AAAA`, `other`, or `unknown` |
 
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000000,"event":"dns_query","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qtype":"A"}
+{"schema_version":1,"ts_ms":1760000000000,"event":"dns_query","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qname":"example.com","qtype":"A"}
 ```
 
 ### `dns_answer`
@@ -47,14 +48,16 @@ Example:
 | `server` | string | Yes | Socket string such as `1.1.1.1:53` |
 | `server_ip` | string | Yes | IP-only server field |
 | `server_port` | integer | Yes | Current value is `53` |
+| `qname` | string or null | Yes | Mirrors the paired query name when available |
 | `qtype` | string | Yes | Mirrors the paired query classification |
 | `mode` | string | Yes | Current values are `relayed` or `synthetic_empty` |
 | `bytes` | integer | Yes | Response payload length |
+| `answer_ips` | array of strings | Yes | A / AAAA answer IPs extracted from the response packet |
 
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000001,"event":"dns_answer","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qtype":"A","mode":"relayed","bytes":128}
+{"schema_version":1,"ts_ms":1760000000001,"event":"dns_answer","protocol":"udp","server":"1.1.1.1:53","server_ip":"1.1.1.1","server_port":53,"qname":"example.com","qtype":"A","mode":"relayed","bytes":128,"answer_ips":["93.184.216.34"]}
 ```
 
 ### `connect_attempt`
@@ -103,15 +106,16 @@ Example:
 | `remote_ip` | string or null | Yes | Present when the violation has a concrete remote IP |
 | `remote_port` | integer or null | Yes | Present when the violation has a concrete port |
 | `action` | string | Yes | Current value is `deny` |
-| `reason_code` | string | Yes | Current values include `offline`, `metadata`, `private`, `deny_cidr`, `default_deny`, `proxy_only` |
-| `control` | string | Yes | Current values include `--offline`, `--block-metadata`, `--block-private`, `--deny-cidr`, `--default-policy`, `--proxy-only` |
+| `reason_code` | string | Yes | Current values include `offline`, `metadata`, `private`, `deny_cidr`, `deny_domain`, `deny_domain_exact`, `default_deny`, `proxy_only` |
+| `control` | string | Yes | Current values include `--offline`, `--block-metadata`, `--block-private`, `--deny-cidr`, `--deny-domain`, `--deny-domain-exact`, `--default-policy`, `--proxy-only` |
 | `matched_cidr` | string or null | Yes | Set for CIDR-based deny rules |
+| `matched_domain` | string or null | Yes | Set for domain-based deny rules |
 | `reason` | string | Yes | Human-readable explanation |
 
 Example:
 
 ```json
-{"schema_version":1,"ts_ms":1760000000004,"event":"policy_violation","protocol":"tcp","remote":"10.0.0.1:443","remote_ip":"10.0.0.1","remote_port":443,"action":"deny","reason_code":"deny_cidr","control":"--deny-cidr","matched_cidr":"10.0.0.0/8","reason":"blocked by `--deny-cidr 10.0.0.0/8`"}
+{"schema_version":1,"ts_ms":1760000000004,"event":"policy_violation","protocol":"tcp","remote":"10.0.0.1:443","remote_ip":"10.0.0.1","remote_port":443,"action":"deny","reason_code":"deny_cidr","control":"--deny-cidr","matched_cidr":"10.0.0.0/8","matched_domain":null,"reason":"blocked by `--deny-cidr 10.0.0.0/8`"}
 ```
 
 ### `flow_end`
@@ -129,6 +133,26 @@ Example:
 ```json
 {"schema_version":1,"ts_ms":1760000000005,"event":"flow_end","protocol":"tcp","remote_addr":"93.184.216.34:443","remote_ip":"93.184.216.34","remote_port":443}
 ```
+
+### `runtime_failure`
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `event` | string | Yes | Always `runtime_failure` |
+| `phase` | string | Yes | Failure phase such as `child_bootstrap`, `run`, `cli_validate`, or `preflight` |
+| `reason_code` | string | Yes | Stable runtime failure code such as `tap_create_blocked`, `packet_capture_blocked`, or `runtime_shutdown_failed` |
+| `detail` | string | Yes | Human-readable error detail captured at the failure site |
+
+Example:
+
+```json
+{"schema_version":1,"ts_ms":1760000000006,"event":"runtime_failure","phase":"child_bootstrap","reason_code":"tap_create_blocked","detail":"failed to create tap device `tap0` inside the rootless-internal child namespace using TUNSETIFF"}
+```
+
+Current notes:
+
+- `childflow --summary` surfaces compact `runtime_failure` reason and phase aggregates after a run when `--flow-log` is enabled.
+- `childflow --report <flow.jsonl>` uses `reason_code` and `phase` to build post-run failure summaries for saved artifacts.
 
 ## Compatibility Notes
 

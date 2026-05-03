@@ -25,6 +25,10 @@ The script verifies:
 - HTTPS proxy requests fail without `--proxy-insecure`
 - HTTP proxy authentication works
 - profile-driven HTTP proxy execution works via `extends`
+- reusable `allow-domain` and `allow-domain-exact` demo profiles are available under `docker/demo/profiles`
+- reusable `deny-domain` and `deny-domain-exact` demo profiles are available under `docker/demo/profiles`
+- those deny-domain demo profiles fail at runtime as expected and write flow-log artifacts with matched policy domains
+- `childflow --report --report-format markdown` can summarize those deny-domain flow logs
 - `--dump-profile` prints the merged effective TOML
 - HTTPS upstream proxy works with `--proxy-insecure` while keeping hostname verification
 - `childflow` still writes non-empty `pcapng` capture files during the run
@@ -46,3 +50,4 @@ That runs [docker/demo/render-gif.sh](render-gif.sh), which builds `childflow` i
 - [docker/demo/tapes/proxy-demo.tape](tapes/proxy-demo.tape) to `img/childflow.gif` and `img/childflow-proxy-demo.gif`
 - [docker/demo/tapes/profile-demo.tape](tapes/profile-demo.tape) to `img/childflow-profile-demo.gif`
 - [docker/demo/tapes/flow-log-demo.tape](tapes/flow-log-demo.tape) to `img/childflow-flow-log-demo.gif`
+- [docker/demo/tapes/domain-policy-demo.tape](tapes/domain-policy-demo.tape) to `img/childflow-domain-policy-demo.gif`

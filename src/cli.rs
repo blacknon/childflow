@@ -11,6 +11,7 @@ use clap::{Parser, ValueEnum};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::normalize_domain_rule;
 use crate::network::NetworkBackend;
 use crate::profile::Profile;
 
@@ -46,6 +47,18 @@ struct RawCli {
     #[arg(long = "doctor")]
     doctor: bool,
 
+    /// Select the output format for `--doctor`.
+    #[arg(long = "doctor-format", value_enum)]
+    doctor_format: Option<DoctorFormat>,
+
+    /// Read a structured flow log and print a text report.
+    #[arg(long = "report")]
+    report: Option<PathBuf>,
+
+    /// Select the output format for `--report`.
+    #[arg(long = "report-format", value_enum)]
+    report_format: Option<ReportFormat>,
+
     /// Select the networking backend. This is kept as a hidden compatibility escape hatch; use `--root` for the public CLI.
     #[arg(long = "network-backend", value_enum, hide = true)]
     network_backend: Option<NetworkBackend>,
@@ -78,6 +91,10 @@ struct RawCli {
     #[arg(long = "summary")]
     summary: bool,
 
+    /// Select the output format for `--summary`.
+    #[arg(long = "summary-format", value_enum)]
+    summary_format: Option<SummaryFormat>,
+
     /// Write structured flow events as JSON Lines. Currently supported only by the default rootless backend.
     #[arg(long = "flow-log")]
     flow_log: Option<PathBuf>,
@@ -106,6 +123,22 @@ struct RawCli {
     #[arg(long = "deny-cidr")]
     deny_cidrs: Vec<IpNetwork>,
 
+    /// Allow outbound destinations that were resolved from this DNS name or one of its subdomains.
+    #[arg(long = "allow-domain", value_parser = parse_domain_rule)]
+    allow_domains: Vec<String>,
+
+    /// Allow outbound destinations that were resolved from exactly this DNS name.
+    #[arg(long = "allow-domain-exact", value_parser = parse_domain_rule)]
+    allow_domains_exact: Vec<String>,
+
+    /// Deny outbound destinations that were resolved from this DNS name or one of its subdomains.
+    #[arg(long = "deny-domain", value_parser = parse_domain_rule)]
+    deny_domains: Vec<String>,
+
+    /// Deny outbound destinations that were resolved from exactly this DNS name.
+    #[arg(long = "deny-domain-exact", value_parser = parse_domain_rule)]
+    deny_domains_exact: Vec<String>,
+
     /// Require outbound traffic to use the configured upstream proxy path.
     #[arg(long = "proxy-only")]
     proxy_only: bool,
@@ -129,6 +162,9 @@ pub struct Cli {
     pub output_view: OutputView,
     pub root: bool,
     pub doctor: bool,
+    pub doctor_format: DoctorFormat,
+    pub report: Option<PathBuf>,
+    pub report_format: ReportFormat,
     pub network_backend: NetworkBackend,
     pub dns: Option<IpAddr>,
     pub hosts_file: Option<PathBuf>,
@@ -137,6 +173,7 @@ pub struct Cli {
     pub proxy_password: Option<String>,
     pub proxy_insecure: bool,
     pub summary: bool,
+    pub summary_format: SummaryFormat,
     pub flow_log: Option<PathBuf>,
     pub offline: bool,
     pub block_private: bool,
@@ -144,6 +181,10 @@ pub struct Cli {
     pub default_policy: DefaultPolicy,
     pub allow_cidrs: Vec<IpNetwork>,
     pub deny_cidrs: Vec<IpNetwork>,
+    pub allow_domains_exact: Vec<String>,
+    pub allow_domains: Vec<String>,
+    pub deny_domains_exact: Vec<String>,
+    pub deny_domains: Vec<String>,
     pub proxy_only: bool,
     pub fail_on_leak: bool,
     pub iface: Option<String>,
@@ -165,6 +206,13 @@ impl Cli {
 
     pub fn validate(&self) -> Result<()> {
         if self.doctor {
+            return Ok(());
+        }
+
+        if self.report.is_some() {
+            if !self.command.is_empty() {
+                bail!("`--report` does not accept a command to execute");
+            }
             return Ok(());
         }
 
@@ -219,6 +267,17 @@ impl Cli {
             bail!("`--flow-log` is currently supported only by the `rootless-internal` backend");
         }
 
+        if (!self.allow_domains.is_empty()
+            || !self.deny_domains.is_empty()
+            || !self.allow_domains_exact.is_empty()
+            || !self.deny_domains_exact.is_empty())
+            && matches!(self.selected_backend(), NetworkBackend::Rootful)
+        {
+            bail!(
+                "`--allow-domain`, `--allow-domain-exact`, `--deny-domain`, and `--deny-domain-exact` are currently supported only by the `rootless-internal` backend"
+            );
+        }
+
         Ok(())
     }
 
@@ -236,6 +295,13 @@ impl Cli {
                 .unwrap_or(OutputView::Child),
             root: false,
             doctor: raw.doctor,
+            doctor_format: profile
+                .and_then(|value| value.doctor_format)
+                .unwrap_or(DoctorFormat::Text),
+            report: raw.report,
+            report_format: profile
+                .and_then(|value| value.report_format)
+                .unwrap_or(ReportFormat::Text),
             network_backend: profile
                 .and_then(|value| value.backend)
                 .unwrap_or(NetworkBackend::RootlessInternal),
@@ -248,6 +314,9 @@ impl Cli {
                 .and_then(|value| value.proxy_insecure)
                 .unwrap_or(false),
             summary: profile.and_then(|value| value.summary).unwrap_or(false),
+            summary_format: profile
+                .and_then(|value| value.summary_format)
+                .unwrap_or(SummaryFormat::Text),
             flow_log: profile.and_then(|value| value.flow_log.clone()),
             offline: profile.and_then(|value| value.offline).unwrap_or(false),
             block_private: profile
@@ -264,6 +333,18 @@ impl Cli {
                 .unwrap_or_default(),
             deny_cidrs: profile
                 .and_then(|value| value.deny_cidrs.clone())
+                .unwrap_or_default(),
+            allow_domains_exact: profile
+                .and_then(|value| value.allow_domains_exact.clone())
+                .unwrap_or_default(),
+            allow_domains: profile
+                .and_then(|value| value.allow_domains.clone())
+                .unwrap_or_default(),
+            deny_domains_exact: profile
+                .and_then(|value| value.deny_domains_exact.clone())
+                .unwrap_or_default(),
+            deny_domains: profile
+                .and_then(|value| value.deny_domains.clone())
                 .unwrap_or_default(),
             proxy_only: profile.and_then(|value| value.proxy_only).unwrap_or(false),
             fail_on_leak: profile
@@ -287,6 +368,12 @@ impl Cli {
         if let Some(value) = raw.network_backend {
             cli.network_backend = value;
         }
+        if let Some(value) = raw.doctor_format {
+            cli.doctor_format = value;
+        }
+        if let Some(value) = raw.report_format {
+            cli.report_format = value;
+        }
         if let Some(value) = raw.dns {
             cli.dns = Some(value);
         }
@@ -308,6 +395,9 @@ impl Cli {
         if raw.summary {
             cli.summary = true;
         }
+        if let Some(value) = raw.summary_format {
+            cli.summary_format = value;
+        }
         if let Some(value) = raw.flow_log {
             cli.flow_log = Some(value);
         }
@@ -328,6 +418,18 @@ impl Cli {
         }
         if !raw.deny_cidrs.is_empty() {
             cli.deny_cidrs = raw.deny_cidrs;
+        }
+        if !raw.allow_domains_exact.is_empty() {
+            cli.allow_domains_exact = raw.allow_domains_exact;
+        }
+        if !raw.allow_domains.is_empty() {
+            cli.allow_domains = raw.allow_domains;
+        }
+        if !raw.deny_domains_exact.is_empty() {
+            cli.deny_domains_exact = raw.deny_domains_exact;
+        }
+        if !raw.deny_domains.is_empty() {
+            cli.deny_domains = raw.deny_domains;
         }
         if raw.proxy_only {
             cli.proxy_only = true;
@@ -443,6 +545,10 @@ fn parse_host_port(input: &str) -> std::result::Result<(String, u16), String> {
     Ok((host.to_string(), port))
 }
 
+fn parse_domain_rule(input: &str) -> std::result::Result<String, String> {
+    normalize_domain_rule(input)
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ProxyType {
     Http,
@@ -474,6 +580,31 @@ pub enum DefaultPolicy {
     Deny,
 }
 
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ReportFormat {
+    #[default]
+    Text,
+    Markdown,
+    Json,
+}
+
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum DoctorFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum SummaryFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -488,6 +619,9 @@ mod tests {
             output_view: OutputView::Child,
             root: false,
             doctor: false,
+            doctor_format: DoctorFormat::Text,
+            report: None,
+            report_format: ReportFormat::Text,
             network_backend: NetworkBackend::RootlessInternal,
             dns: None,
             hosts_file: None,
@@ -496,6 +630,7 @@ mod tests {
             proxy_password: None,
             proxy_insecure: false,
             summary: false,
+            summary_format: SummaryFormat::Text,
             flow_log: None,
             offline: false,
             block_private: false,
@@ -503,6 +638,10 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
+            deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
             iface: None,
@@ -586,6 +725,28 @@ mod tests {
         let cli = Cli {
             root: true,
             flow_log: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_domain_policy_for_rootful_backend() {
+        let cli = Cli {
+            root: true,
+            allow_domains: vec!["example.com".into()],
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_exact_domain_policy_for_rootful_backend() {
+        let cli = Cli {
+            root: true,
+            deny_domains_exact: vec!["auth.example.com".into()],
             ..make_cli()
         };
 
@@ -789,6 +950,59 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_report_flag() {
+        let cli = Cli::parse_from(["childflow", "--report", "/tmp/childflow-flow.jsonl"]);
+
+        assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert_eq!(cli.report_format, ReportFormat::Text);
+        assert!(cli.command.is_empty());
+    }
+
+    #[test]
+    fn parse_accepts_report_format_flag() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+            "--report-format",
+            "markdown",
+        ]);
+
+        assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert_eq!(cli.report_format, ReportFormat::Markdown);
+    }
+
+    #[test]
+    fn parse_accepts_report_json_format_flag() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+            "--report-format",
+            "json",
+        ]);
+
+        assert_eq!(cli.report, Some(PathBuf::from("/tmp/childflow-flow.jsonl")));
+        assert_eq!(cli.report_format, ReportFormat::Json);
+    }
+
+    #[test]
+    fn parse_accepts_summary_format_flag() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--summary",
+            "--summary-format",
+            "json",
+            "--",
+            "curl",
+            "https://example.com",
+        ]);
+
+        assert!(cli.summary);
+        assert_eq!(cli.summary_format, SummaryFormat::Json);
+    }
+
+    #[test]
     fn parse_accepts_cidr_policy_flags() {
         let cli = Cli::parse_from([
             "childflow",
@@ -810,6 +1024,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_domain_policy_flags() {
+        let cli = Cli::parse_from([
+            "childflow",
+            "--allow-domain-exact",
+            "Auth.Example.com.",
+            "--allow-domain",
+            "Example.com.",
+            "--deny-domain-exact",
+            "login.blocked.example.com",
+            "--deny-domain",
+            "blocked.example.com",
+            "--",
+            "curl",
+        ]);
+
+        assert_eq!(cli.allow_domains_exact, vec!["auth.example.com"]);
+        assert_eq!(cli.allow_domains, vec!["example.com"]);
+        assert_eq!(cli.deny_domains_exact, vec!["login.blocked.example.com"]);
+        assert_eq!(cli.deny_domains, vec!["blocked.example.com"]);
+    }
+
+    #[test]
     fn parse_profile_supplies_command_and_relative_paths() {
         let temp_dir = unique_temp_profile_dir("cli-profile-relative");
         let profile_path = temp_dir.join("sandbox.toml");
@@ -821,6 +1057,10 @@ capture = "captures/run.pcapng"
 capture_point = "both"
 hosts_file = "fixtures/hosts.override"
 flow_log = "logs/flow.jsonl"
+summary = true
+doctor_format = "json"
+report_format = "markdown"
+summary_format = "json"
 command = ["curl", "https://example.com"]
 "#,
         )
@@ -838,6 +1078,10 @@ command = ["curl", "https://example.com"]
             Some(temp_dir.join("fixtures").join("hosts.override"))
         );
         assert_eq!(cli.flow_log, Some(temp_dir.join("logs").join("flow.jsonl")));
+        assert!(cli.summary);
+        assert_eq!(cli.doctor_format, DoctorFormat::Json);
+        assert_eq!(cli.report_format, ReportFormat::Markdown);
+        assert_eq!(cli.summary_format, SummaryFormat::Json);
         assert_eq!(cli.command, vec!["curl", "https://example.com"]);
 
         let _ = fs::remove_file(&profile_path);
@@ -853,8 +1097,13 @@ command = ["curl", "https://example.com"]
             &profile_path,
             r#"
 summary = true
+doctor_format = "json"
+report_format = "markdown"
+summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains_exact = ["auth.example.com"]
+allow_domains = ["example.com"]
 command = ["curl", "https://example.com"]
 "#,
         )
@@ -866,6 +1115,8 @@ command = ["curl", "https://example.com"]
             profile_path.to_str().unwrap(),
             "--default-policy",
             "allow",
+            "--summary-format",
+            "text",
             "--deny-cidr",
             "198.51.100.0/24",
             "--",
@@ -876,9 +1127,14 @@ command = ["curl", "https://example.com"]
         ]);
 
         assert!(cli.summary);
+        assert_eq!(cli.doctor_format, DoctorFormat::Json);
+        assert_eq!(cli.report_format, ReportFormat::Markdown);
+        assert_eq!(cli.summary_format, SummaryFormat::Text);
         assert_eq!(cli.default_policy, DefaultPolicy::Allow);
         assert_eq!(cli.allow_cidrs.len(), 1);
         assert_eq!(cli.deny_cidrs.len(), 1);
+        assert_eq!(cli.allow_domains_exact, vec!["auth.example.com"]);
+        assert_eq!(cli.allow_domains, vec!["example.com"]);
         assert_eq!(cli.command, vec!["ping", "-c", "1", "1.1.1.1"]);
 
         let _ = fs::remove_file(&profile_path);
@@ -895,6 +1151,84 @@ command = ["curl", "https://example.com"]
 
         cli.validate().unwrap();
         assert_eq!(cli.selected_backend(), NetworkBackend::RootlessInternal);
+    }
+
+    #[test]
+    fn report_flag_allows_empty_command() {
+        let cli = Cli {
+            report: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
+            command: Vec::new(),
+            ..make_cli()
+        };
+
+        cli.validate().unwrap();
+    }
+
+    #[test]
+    fn report_flag_rejects_command() {
+        let cli = Cli {
+            report: Some(PathBuf::from("/tmp/childflow-flow.jsonl")),
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn parse_accepts_doctor_format_flag() {
+        let cli = Cli::parse_from(["childflow", "--doctor", "--doctor-format", "json"]);
+
+        assert!(cli.doctor);
+        assert_eq!(cli.doctor_format, DoctorFormat::Json);
+        assert!(cli.command.is_empty());
+    }
+
+    #[test]
+    fn parse_profile_supplies_doctor_and_report_formats() {
+        let temp_dir = unique_temp_profile_dir("cli-profile-observability-formats");
+        let profile_path = temp_dir.join("sandbox.toml");
+
+        fs::write(
+            &profile_path,
+            r#"
+doctor_format = "json"
+report_format = "markdown"
+command = ["curl", "https://example.com"]
+"#,
+        )
+        .unwrap();
+
+        let doctor_cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--doctor",
+        ]);
+        assert!(doctor_cli.doctor);
+        assert_eq!(doctor_cli.doctor_format, DoctorFormat::Json);
+
+        let report_cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+        ]);
+        assert_eq!(report_cli.report_format, ReportFormat::Markdown);
+
+        let override_cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+            "--report-format",
+            "json",
+        ]);
+        assert_eq!(override_cli.report_format, ReportFormat::Json);
+
+        let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     fn unique_temp_profile_dir(prefix: &str) -> PathBuf {

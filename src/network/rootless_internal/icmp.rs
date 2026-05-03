@@ -20,7 +20,7 @@ use crate::sandbox::SandboxPolicy;
 use crate::util;
 
 use super::addr::AddressPlan;
-use super::engine::RemoteEvent;
+use super::engine::{RemoteEvent, ResolvedDomainIndex};
 use super::packet::{
     self, Icmpv4EchoFrame, Icmpv4ErrorFrame, Icmpv6EchoFrame, Icmpv6ErrorFrame, ParsedIcmpv4Packet,
     ParsedIcmpv6Packet,
@@ -81,6 +81,7 @@ pub(super) fn handle_icmpv4_packet(
     sandbox_policy: &SandboxPolicy,
     flow_log: &mut Option<FlowLogger>,
     leak_detected: &Arc<AtomicBool>,
+    resolved_domains: &ResolvedDomainIndex,
     icmp: &ParsedIcmpv4Packet,
 ) -> Result<()> {
     let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
@@ -89,7 +90,10 @@ pub(super) fn handle_icmpv4_packet(
     };
 
     let is_gateway_target = dst_ip == addr_plan.gateway_ipv4;
-    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(IpAddr::V4(dst_ip)) {
+    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip_with_domains(
+        IpAddr::V4(dst_ip),
+        resolved_domains.domains_for_ip(IpAddr::V4(dst_ip)),
+    ) {
         if let Some(logger) = flow_log.as_mut() {
             let matched_cidr = reason.matched_cidr().map(|cidr| cidr.to_string());
             logger.log_policy_violation(PolicyViolationEvent {
@@ -100,6 +104,7 @@ pub(super) fn handle_icmpv4_packet(
                 reason_code: reason.code(),
                 control: reason.control(),
                 matched_cidr: matched_cidr.as_deref(),
+                matched_domain: reason.matched_domain(),
                 reason: &reason.describe(),
             })?;
         }
@@ -160,6 +165,7 @@ pub(super) fn handle_icmpv6_packet(
     sandbox_policy: &SandboxPolicy,
     flow_log: &mut Option<FlowLogger>,
     leak_detected: &Arc<AtomicBool>,
+    resolved_domains: &ResolvedDomainIndex,
     icmp: &ParsedIcmpv6Packet,
 ) -> Result<()> {
     let (src_ip, dst_ip) = match (icmp.meta.src_ip, icmp.meta.dst_ip) {
@@ -168,7 +174,10 @@ pub(super) fn handle_icmpv6_packet(
     };
 
     let is_gateway_target = dst_ip == addr_plan.gateway_ipv6;
-    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip(IpAddr::V6(dst_ip)) {
+    if let Some(reason) = sandbox_policy.block_reason_for_remote_ip_with_domains(
+        IpAddr::V6(dst_ip),
+        resolved_domains.domains_for_ip(IpAddr::V6(dst_ip)),
+    ) {
         if let Some(logger) = flow_log.as_mut() {
             let matched_cidr = reason.matched_cidr().map(|cidr| cidr.to_string());
             logger.log_policy_violation(PolicyViolationEvent {
@@ -179,6 +188,7 @@ pub(super) fn handle_icmpv6_packet(
                 reason_code: reason.code(),
                 control: reason.control(),
                 matched_cidr: matched_cidr.as_deref(),
+                matched_domain: reason.matched_domain(),
                 reason: &reason.describe(),
             })?;
         }
