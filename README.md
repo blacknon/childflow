@@ -53,7 +53,7 @@ Keep sandbox settings in TOML, inherit from a base profile, and inspect the merg
   </tr>
 </table>
 
-The Docker demo also includes reusable domain-policy profiles under `docker/demo/profiles`, including deny-by-domain examples that intentionally fail, emit `policy_violation` flow-log entries with `matched_domain`, and can be summarized again with `childflow --report`.
+The Docker demo also includes reusable domain-policy profiles under `docker/demo/profiles`, including allow-domain / allow-domain-exact samples and deny-by-domain examples that intentionally fail, emit `policy_violation` flow-log entries with `matched_domain`, and can be summarized again with `childflow --report`.
 
 ## Install
 
@@ -597,7 +597,7 @@ After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a t
 - top connection targets
 - DNS target / policy correlations
 
-The Docker demo also includes a reusable domain-policy profile at `docker/demo/profiles/domain-deny-origin.toml` that shows how to persist a `deny_domains` rule alongside the rest of a sandbox definition.
+The Docker demo also includes reusable domain-policy profiles such as `docker/demo/profiles/domain-allow-origin.toml`, `docker/demo/profiles/domain-allow-origin-exact.toml`, and `docker/demo/profiles/domain-deny-origin.toml` that show how to persist `allow_domains`, `allow_domains_exact`, and `deny_domains` rules alongside the rest of a sandbox definition.
 
 ### Capture Modes
 

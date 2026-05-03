@@ -1,0 +1,13 @@
+backend = "rootless-internal"
+default_policy = "deny"
+allow_domains_exact = ["origin-http.exact.invalid"]
+flow_log = "./logs/domain-allow-origin-exact.jsonl"
+command = [
+  "curl",
+  "--connect-timeout",
+  "5",
+  "--max-time",
+  "15",
+  "-fsS",
+  "http://origin-http.exact.invalid:8080/",
+]

@@ -25,6 +25,7 @@ The script verifies:
 - HTTPS proxy requests fail without `--proxy-insecure`
 - HTTP proxy authentication works
 - profile-driven HTTP proxy execution works via `extends`
+- reusable `allow-domain` and `allow-domain-exact` demo profiles are available under `docker/demo/profiles`
 - reusable `deny-domain` and `deny-domain-exact` demo profiles are available under `docker/demo/profiles`
 - those deny-domain demo profiles fail at runtime as expected and write flow-log artifacts with matched policy domains
 - `childflow --report --report-format markdown` can summarize those deny-domain flow logs

@@ -58,6 +58,7 @@ Example:
 | `top_dns_policy_correlation` | object or null | Most important DNS policy correlation, including matched blocked domains and correlated targets |
 | `top_target` | object or null | Most active connection target |
 | `policy_violations` | array | Ranked policy violation counts |
+| `policy_controls` | array | Ranked blocking control counts |
 | `policy_matched_domains` | array | Ranked matched blocked domain counts |
 | `connect_errors` | array | Ranked connect error counts |
 | `runtime_failures` | array | Ranked runtime failure counts |
@@ -98,8 +99,8 @@ Example:
 
 ## Ranked entries
 
-`policy_violations`, `policy_matched_domains`, `connect_errors`, `runtime_failures`, and
-`runtime_failure_phases` use a common ranked entry shape:
+`policy_violations`, `policy_controls`, `policy_matched_domains`, `connect_errors`,
+`runtime_failures`, and `runtime_failure_phases` use a common ranked entry shape:
 
 | Field | Type | Notes |
 | --- | --- | --- |

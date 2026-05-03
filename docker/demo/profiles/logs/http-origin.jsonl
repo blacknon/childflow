@@ -1,4 +1,4 @@
-{"action":"deny","control":"--default-policy","event":"policy_violation","matched_cidr":null,"matched_domain":null,"protocol":"icmpv6","reason":"blocked by `--default-policy deny`","reason_code":"default_deny","remote":"ff02::16","remote_ip":"ff02::16","remote_port":null,"schema_version":1,"ts_ms":1777793184462}
-{"event":"connect_attempt","protocol":"tcp","remote_addr":"10.243.0.10:8080","remote_ip":"10.243.0.10","remote_port":8080,"schema_version":1,"ts_ms":1777793184472,"via_proxy":true}
-{"error":null,"event":"connect_result","protocol":"tcp","remote_addr":"10.243.0.10:8080","remote_ip":"10.243.0.10","remote_port":8080,"schema_version":1,"status":"ok","ts_ms":1777793184474,"via_proxy":true}
-{"event":"flow_end","protocol":"tcp","remote_addr":"10.243.0.10:8080","remote_ip":"10.243.0.10","remote_port":8080,"schema_version":1,"ts_ms":1777793184486}
+{"action":"deny","control":"--default-policy","event":"policy_violation","matched_cidr":null,"matched_domain":null,"protocol":"icmpv6","reason":"blocked by `--default-policy deny`","reason_code":"default_deny","remote":"ff02::16","remote_ip":"ff02::16","remote_port":null,"schema_version":1,"ts_ms":1777793868155}
+{"event":"connect_attempt","protocol":"tcp","remote_addr":"10.243.0.10:8080","remote_ip":"10.243.0.10","remote_port":8080,"schema_version":1,"ts_ms":1777793868166,"via_proxy":true}
+{"error":null,"event":"connect_result","protocol":"tcp","remote_addr":"10.243.0.10:8080","remote_ip":"10.243.0.10","remote_port":8080,"schema_version":1,"status":"ok","ts_ms":1777793868168,"via_proxy":true}
+{"event":"flow_end","protocol":"tcp","remote_addr":"10.243.0.10:8080","remote_ip":"10.243.0.10","remote_port":8080,"schema_version":1,"ts_ms":1777793868179}

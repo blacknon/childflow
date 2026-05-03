@@ -857,6 +857,48 @@ fn rootless_internal_default_deny_allows_explicit_domain() -> Result<()> {
 }
 
 #[test]
+fn rootless_internal_default_deny_allows_subdomain_of_explicit_domain() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-allow-domain-subdomain-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let dns_bind_ip = unique_loopback_dns_ip();
+    let _dns_server = LocalDnsServer::spawn(&dns_bind_ip, "api.allowed.test", host_ip)?;
+
+    let output = run_childflow_command(&[
+        "--default-policy",
+        "deny",
+        "--allow-domain",
+        "allowed.test",
+        "-d",
+        &dns_bind_ip,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://api.allowed.test:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal allow-domain subdomain smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "expected allow-domain subdomain childflow run to succeed, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-allow-domain-subdomain-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("allow-domain subdomain local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn rootless_internal_default_deny_allows_explicit_exact_domain() -> Result<()> {
     let (server_addr, requests) = spawn_local_http_server("childflow-allow-domain-exact-ok")?;
     let host_ip = discover_reachable_host_ipv4()?;

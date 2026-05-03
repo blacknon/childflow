@@ -92,6 +92,8 @@ profile_http_output="$tmpdir/profile-http.txt"
 profile_dump_output="$tmpdir/profile-dump.toml"
 domain_deny_dump_output="$tmpdir/domain-deny-dump.toml"
 domain_deny_exact_dump_output="$tmpdir/domain-deny-exact-dump.toml"
+domain_allow_dump_output="$tmpdir/domain-allow-dump.toml"
+domain_allow_exact_dump_output="$tmpdir/domain-allow-exact-dump.toml"
 domain_deny_report_output="$tmpdir/domain-deny-report.md"
 domain_deny_exact_report_output="$tmpdir/domain-deny-exact-report.md"
 
@@ -179,6 +181,26 @@ run_childflow \
 
 grep -q 'deny_domains_exact = \[' "$domain_deny_exact_dump_output"
 grep -q 'origin-http.exact.invalid' "$domain_deny_exact_dump_output"
+
+echo "[demo] verifying reusable allow-domain profile definition"
+run_childflow \
+  --profile "$repo_root/docker/demo/profiles/domain-allow-origin.toml" \
+  --dump-profile \
+  >"$domain_allow_dump_output"
+
+grep -q 'default_policy = "deny"' "$domain_allow_dump_output"
+grep -q 'allow_domains = \[' "$domain_allow_dump_output"
+grep -q 'demo.invalid' "$domain_allow_dump_output"
+
+echo "[demo] verifying reusable exact allow-domain profile definition"
+run_childflow \
+  --profile "$repo_root/docker/demo/profiles/domain-allow-origin-exact.toml" \
+  --dump-profile \
+  >"$domain_allow_exact_dump_output"
+
+grep -q 'default_policy = "deny"' "$domain_allow_exact_dump_output"
+grep -q 'allow_domains_exact = \[' "$domain_allow_exact_dump_output"
+grep -q 'origin-http.exact.invalid' "$domain_allow_exact_dump_output"
 
 echo "[demo] verifying deny-domain runtime policy violation"
 if run_childflow \

@@ -27,6 +27,8 @@ This document describes the current JSON shape of that report.
 | `proxy_usage` | object | Counts for proxied vs direct connect attempts |
 | `policy_violations` | object | Map of `reason_code` to count |
 | `sorted_policy_violations` | array | Ranked policy violation counts |
+| `policy_controls` | object | Map of blocking control flags such as `--deny-domain` to count |
+| `sorted_policy_controls` | array | Ranked policy control counts |
 | `policy_matched_domains` | object | Map of matched blocked domain name to count |
 | `sorted_policy_matched_domains` | array | Ranked matched blocked domain counts |
 | `connect_errors` | object | Map of connect error string to count |
@@ -87,7 +89,8 @@ Example:
 ]
 ```
 
-The same ranked-entry shape is also used by `sorted_policy_matched_domains`.
+The same ranked-entry shape is also used by `sorted_policy_controls` and
+`sorted_policy_matched_domains`.
 
 ## `proxy_usage`
 
