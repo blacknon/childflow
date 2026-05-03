@@ -127,9 +127,17 @@ struct RawCli {
     #[arg(long = "allow-domain", value_parser = parse_domain_rule)]
     allow_domains: Vec<String>,
 
+    /// Allow outbound destinations that were resolved from exactly this DNS name.
+    #[arg(long = "allow-domain-exact", value_parser = parse_domain_rule)]
+    allow_domains_exact: Vec<String>,
+
     /// Deny outbound destinations that were resolved from this DNS name or one of its subdomains.
     #[arg(long = "deny-domain", value_parser = parse_domain_rule)]
     deny_domains: Vec<String>,
+
+    /// Deny outbound destinations that were resolved from exactly this DNS name.
+    #[arg(long = "deny-domain-exact", value_parser = parse_domain_rule)]
+    deny_domains_exact: Vec<String>,
 
     /// Require outbound traffic to use the configured upstream proxy path.
     #[arg(long = "proxy-only")]
@@ -173,7 +181,9 @@ pub struct Cli {
     pub default_policy: DefaultPolicy,
     pub allow_cidrs: Vec<IpNetwork>,
     pub deny_cidrs: Vec<IpNetwork>,
+    pub allow_domains_exact: Vec<String>,
     pub allow_domains: Vec<String>,
+    pub deny_domains_exact: Vec<String>,
     pub deny_domains: Vec<String>,
     pub proxy_only: bool,
     pub fail_on_leak: bool,
@@ -257,11 +267,14 @@ impl Cli {
             bail!("`--flow-log` is currently supported only by the `rootless-internal` backend");
         }
 
-        if (!self.allow_domains.is_empty() || !self.deny_domains.is_empty())
+        if (!self.allow_domains.is_empty()
+            || !self.deny_domains.is_empty()
+            || !self.allow_domains_exact.is_empty()
+            || !self.deny_domains_exact.is_empty())
             && matches!(self.selected_backend(), NetworkBackend::Rootful)
         {
             bail!(
-                "`--allow-domain` and `--deny-domain` are currently supported only by the `rootless-internal` backend"
+                "`--allow-domain`, `--allow-domain-exact`, `--deny-domain`, and `--deny-domain-exact` are currently supported only by the `rootless-internal` backend"
             );
         }
 
@@ -317,8 +330,14 @@ impl Cli {
             deny_cidrs: profile
                 .and_then(|value| value.deny_cidrs.clone())
                 .unwrap_or_default(),
+            allow_domains_exact: profile
+                .and_then(|value| value.allow_domains_exact.clone())
+                .unwrap_or_default(),
             allow_domains: profile
                 .and_then(|value| value.allow_domains.clone())
+                .unwrap_or_default(),
+            deny_domains_exact: profile
+                .and_then(|value| value.deny_domains_exact.clone())
                 .unwrap_or_default(),
             deny_domains: profile
                 .and_then(|value| value.deny_domains.clone())
@@ -396,8 +415,14 @@ impl Cli {
         if !raw.deny_cidrs.is_empty() {
             cli.deny_cidrs = raw.deny_cidrs;
         }
+        if !raw.allow_domains_exact.is_empty() {
+            cli.allow_domains_exact = raw.allow_domains_exact;
+        }
         if !raw.allow_domains.is_empty() {
             cli.allow_domains = raw.allow_domains;
+        }
+        if !raw.deny_domains_exact.is_empty() {
+            cli.deny_domains_exact = raw.deny_domains_exact;
         }
         if !raw.deny_domains.is_empty() {
             cli.deny_domains = raw.deny_domains;
@@ -607,7 +632,9 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -703,6 +730,17 @@ mod tests {
         let cli = Cli {
             root: true,
             allow_domains: vec!["example.com".into()],
+            ..make_cli()
+        };
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_exact_domain_policy_for_rootful_backend() {
+        let cli = Cli {
+            root: true,
+            deny_domains_exact: vec!["auth.example.com".into()],
             ..make_cli()
         };
 
@@ -983,15 +1021,21 @@ mod tests {
     fn parse_accepts_domain_policy_flags() {
         let cli = Cli::parse_from([
             "childflow",
+            "--allow-domain-exact",
+            "Auth.Example.com.",
             "--allow-domain",
             "Example.com.",
+            "--deny-domain-exact",
+            "login.blocked.example.com",
             "--deny-domain",
             "blocked.example.com",
             "--",
             "curl",
         ]);
 
+        assert_eq!(cli.allow_domains_exact, vec!["auth.example.com"]);
         assert_eq!(cli.allow_domains, vec!["example.com"]);
+        assert_eq!(cli.deny_domains_exact, vec!["login.blocked.example.com"]);
         assert_eq!(cli.deny_domains, vec!["blocked.example.com"]);
     }
 
@@ -1046,6 +1090,7 @@ summary = true
 summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains_exact = ["auth.example.com"]
 allow_domains = ["example.com"]
 command = ["curl", "https://example.com"]
 "#,
@@ -1074,6 +1119,7 @@ command = ["curl", "https://example.com"]
         assert_eq!(cli.default_policy, DefaultPolicy::Allow);
         assert_eq!(cli.allow_cidrs.len(), 1);
         assert_eq!(cli.deny_cidrs.len(), 1);
+        assert_eq!(cli.allow_domains_exact, vec!["auth.example.com"]);
         assert_eq!(cli.allow_domains, vec!["example.com"]);
         assert_eq!(cli.command, vec!["ping", "-c", "1", "1.1.1.1"]);
 

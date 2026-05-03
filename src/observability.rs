@@ -44,6 +44,7 @@ pub mod summary {
     pub const FLOW_LOG_EVENTS: &str = "flow-log events";
     pub const FLOW_LOG_DNS_NAMES: &str = "flow-log dns names";
     pub const FLOW_LOG_DNS_POLICY_ROWS: &str = "flow-log dns policy rows";
+    pub const FLOW_LOG_TOP_DNS_POLICY_CORRELATION: &str = "flow-log top dns policy correlation";
     pub const FLOW_LOG_TOP_TARGET: &str = "flow-log top target";
     pub const FLOW_LOG_POLICY_VIOLATIONS: &str = "flow-log policy violations";
     pub const FLOW_LOG_POLICY_MATCHED_DOMAINS: &str = "flow-log policy matched domains";

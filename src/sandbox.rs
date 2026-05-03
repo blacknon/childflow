@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use ipnetwork::IpNetwork;
 
 use crate::cli::{Cli, DefaultPolicy};
-use crate::domain::matches_domain_rule;
+use crate::domain::{matches_domain_rule, matches_exact_domain_rule};
 
 pub const PRIVATE_IPV4_CIDRS: &[&str] = &[
     "10.0.0.0/8",
@@ -33,7 +33,9 @@ pub struct SandboxPolicy {
     pub default_policy: DefaultPolicy,
     pub allow_cidrs: Vec<IpNetwork>,
     pub deny_cidrs: Vec<IpNetwork>,
+    pub allow_domains_exact: Vec<String>,
     pub allow_domains: Vec<String>,
+    pub deny_domains_exact: Vec<String>,
     pub deny_domains: Vec<String>,
     pub proxy_only: bool,
     pub fail_on_leak: bool,
@@ -48,7 +50,9 @@ impl SandboxPolicy {
             default_policy: cli.default_policy,
             allow_cidrs: cli.allow_cidrs.clone(),
             deny_cidrs: cli.deny_cidrs.clone(),
+            allow_domains_exact: cli.allow_domains_exact.clone(),
             allow_domains: cli.allow_domains.clone(),
+            deny_domains_exact: cli.deny_domains_exact.clone(),
             deny_domains: cli.deny_domains.clone(),
             proxy_only: cli.proxy_only,
             fail_on_leak: cli.fail_on_leak,
@@ -75,8 +79,14 @@ impl SandboxPolicy {
         for cidr in &self.deny_cidrs {
             controls.push(format!("deny-cidr={cidr}"));
         }
+        for domain in &self.allow_domains_exact {
+            controls.push(format!("allow-domain-exact={domain}"));
+        }
         for domain in &self.allow_domains {
             controls.push(format!("allow-domain={domain}"));
+        }
+        for domain in &self.deny_domains_exact {
+            controls.push(format!("deny-domain-exact={domain}"));
         }
         for domain in &self.deny_domains {
             controls.push(format!("deny-domain={domain}"));
@@ -104,11 +114,14 @@ impl SandboxPolicy {
     }
 
     pub fn block_reason_for_dns_name(&self, qname: &str) -> Option<BlockReason> {
+        if let Some(domain) = self.matching_denied_exact_domain_name(qname) {
+            return Some(BlockReason::DeniedExactDomain(domain.to_string()));
+        }
         if let Some(domain) = self.matching_denied_domain_name(qname) {
             return Some(BlockReason::DeniedDomain(domain.to_string()));
         }
         if matches!(self.default_policy, DefaultPolicy::Deny)
-            && !self.allow_domains.is_empty()
+            && (!self.allow_domains_exact.is_empty() || !self.allow_domains.is_empty())
             && !self.matches_allowed_domain_name(qname)
         {
             return Some(BlockReason::DefaultDeny);
@@ -152,6 +165,9 @@ impl SandboxPolicy {
         if let Some(cidr) = self.deny_cidrs.iter().find(|cidr| cidr.contains(ip)) {
             return Some(BlockReason::DeniedCidr(*cidr));
         }
+        if let Some(domain) = self.matching_denied_exact_domain(resolved_domains) {
+            return Some(BlockReason::DeniedExactDomain(domain.to_string()));
+        }
         if let Some(domain) = self.matching_denied_domain(resolved_domains) {
             return Some(BlockReason::DeniedDomain(domain.to_string()));
         }
@@ -170,6 +186,19 @@ impl SandboxPolicy {
         None
     }
 
+    fn matching_denied_exact_domain(
+        &self,
+        resolved_domains: Option<&BTreeSet<String>>,
+    ) -> Option<&str> {
+        let domains = resolved_domains?;
+        self.deny_domains_exact.iter().find_map(|rule| {
+            domains
+                .iter()
+                .any(|qname| matches_exact_domain_rule(qname, rule))
+                .then_some(rule.as_str())
+        })
+    }
+
     fn matching_denied_domain(&self, resolved_domains: Option<&BTreeSet<String>>) -> Option<&str> {
         let domains = resolved_domains?;
         self.deny_domains.iter().find_map(|rule| {
@@ -178,6 +207,12 @@ impl SandboxPolicy {
                 .any(|qname| matches_domain_rule(qname, rule))
                 .then_some(rule.as_str())
         })
+    }
+
+    fn matching_denied_exact_domain_name<'a>(&'a self, qname: &str) -> Option<&'a str> {
+        self.deny_domains_exact
+            .iter()
+            .find_map(|rule| matches_exact_domain_rule(qname, rule).then_some(rule.as_str()))
     }
 
     fn matching_denied_domain_name<'a>(&'a self, qname: &str) -> Option<&'a str> {
@@ -190,15 +225,24 @@ impl SandboxPolicy {
         let Some(domains) = resolved_domains else {
             return false;
         };
-        self.allow_domains
+        self.allow_domains_exact.iter().any(|rule| {
+            domains
+                .iter()
+                .any(|qname| matches_exact_domain_rule(qname, rule))
+        }) || self
+            .allow_domains
             .iter()
             .any(|rule| domains.iter().any(|qname| matches_domain_rule(qname, rule)))
     }
 
     fn matches_allowed_domain_name(&self, qname: &str) -> bool {
-        self.allow_domains
+        self.allow_domains_exact
             .iter()
-            .any(|rule| matches_domain_rule(qname, rule))
+            .any(|rule| matches_exact_domain_rule(qname, rule))
+            || self
+                .allow_domains
+                .iter()
+                .any(|rule| matches_domain_rule(qname, rule))
     }
 }
 
@@ -208,6 +252,7 @@ pub enum BlockReason {
     Metadata,
     Private,
     DeniedCidr(IpNetwork),
+    DeniedExactDomain(String),
     DeniedDomain(String),
     DefaultDeny,
     ProxyOnly,
@@ -220,6 +265,7 @@ impl BlockReason {
             Self::Metadata => "metadata",
             Self::Private => "private",
             Self::DeniedCidr(_) => "deny_cidr",
+            Self::DeniedExactDomain(_) => "deny_domain_exact",
             Self::DeniedDomain(_) => "deny_domain",
             Self::DefaultDeny => "default_deny",
             Self::ProxyOnly => "proxy_only",
@@ -232,6 +278,7 @@ impl BlockReason {
             Self::Metadata => "--block-metadata",
             Self::Private => "--block-private",
             Self::DeniedCidr(_) => "--deny-cidr",
+            Self::DeniedExactDomain(_) => "--deny-domain-exact",
             Self::DeniedDomain(_) => "--deny-domain",
             Self::DefaultDeny => "--default-policy",
             Self::ProxyOnly => "--proxy-only",
@@ -247,7 +294,7 @@ impl BlockReason {
 
     pub fn matched_domain(&self) -> Option<&str> {
         match self {
-            Self::DeniedDomain(domain) => Some(domain.as_str()),
+            Self::DeniedExactDomain(domain) | Self::DeniedDomain(domain) => Some(domain.as_str()),
             _ => None,
         }
     }
@@ -258,6 +305,9 @@ impl BlockReason {
             Self::Metadata => Cow::Borrowed("blocked by `--block-metadata`"),
             Self::Private => Cow::Borrowed("blocked by `--block-private`"),
             Self::DeniedCidr(cidr) => Cow::Owned(format!("blocked by `--deny-cidr {cidr}`")),
+            Self::DeniedExactDomain(domain) => {
+                Cow::Owned(format!("blocked by `--deny-domain-exact {domain}`"))
+            }
             Self::DeniedDomain(domain) => {
                 Cow::Owned(format!("blocked by `--deny-domain {domain}`"))
             }
@@ -311,7 +361,9 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["169.254.169.254/32".parse().unwrap()],
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -348,7 +400,9 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["192.0.2.0/24".parse().unwrap()],
             deny_cidrs: vec!["198.51.100.0/24".parse().unwrap()],
+            allow_domains_exact: vec!["auth.example.com".into()],
             allow_domains: vec!["example.com".into()],
+            deny_domains_exact: vec!["blocked.auth.example.com".into()],
             deny_domains: vec!["blocked.example.com".into()],
             proxy_only: true,
             fail_on_leak: true,
@@ -363,7 +417,9 @@ mod tests {
                 "default-policy=deny".to_string(),
                 "allow-cidr=192.0.2.0/24".to_string(),
                 "deny-cidr=198.51.100.0/24".to_string(),
+                "allow-domain-exact=auth.example.com".to_string(),
                 "allow-domain=example.com".to_string(),
+                "deny-domain-exact=blocked.auth.example.com".to_string(),
                 "deny-domain=blocked.example.com".to_string(),
                 "proxy-only".to_string(),
                 "fail-on-leak".to_string(),
@@ -380,7 +436,9 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -401,7 +459,9 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: vec!["203.0.113.0/24".parse().unwrap()],
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -422,7 +482,9 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["203.0.113.0/24".parse().unwrap()],
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -447,7 +509,9 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: vec!["203.0.113.0/24".parse().unwrap()],
             deny_cidrs: vec!["203.0.113.128/25".parse().unwrap()],
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -468,7 +532,9 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: true,
             fail_on_leak: false,
@@ -507,7 +573,9 @@ mod tests {
             default_policy: DefaultPolicy::Allow,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
             deny_domains: vec!["example.com".into()],
             proxy_only: false,
             fail_on_leak: false,
@@ -528,6 +596,37 @@ mod tests {
     }
 
     #[test]
+    fn deny_domain_exact_blocks_only_exact_resolved_name() {
+        let policy = SandboxPolicy {
+            offline: false,
+            block_private: false,
+            block_metadata: false,
+            default_policy: DefaultPolicy::Allow,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains_exact: vec!["auth.example.com".into()],
+            deny_domains: vec!["example.com".into()],
+            proxy_only: false,
+            fail_on_leak: false,
+        };
+        let resolved = BTreeSet::from(["auth.example.com".to_string()]);
+
+        let reason = policy
+            .block_reason_for_tcp_remote_ip_with_domains(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                false,
+                Some(&resolved),
+            )
+            .unwrap();
+
+        assert_eq!(reason.code(), "deny_domain_exact");
+        assert_eq!(reason.control(), "--deny-domain-exact");
+        assert_eq!(reason.matched_domain(), Some("auth.example.com"));
+    }
+
+    #[test]
     fn default_deny_allows_matching_allow_domain() {
         let policy = SandboxPolicy {
             offline: false,
@@ -536,7 +635,9 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: vec!["example.com".into()],
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,
@@ -554,6 +655,38 @@ mod tests {
     }
 
     #[test]
+    fn default_deny_allows_matching_allow_domain_exact() {
+        let policy = SandboxPolicy {
+            offline: false,
+            block_private: false,
+            block_metadata: false,
+            default_policy: DefaultPolicy::Deny,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            allow_domains_exact: vec!["auth.example.com".into()],
+            allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
+            deny_domains: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
+        };
+        let resolved = BTreeSet::from(["auth.example.com".to_string()]);
+
+        assert_eq!(
+            policy.block_reason_for_remote_ip_with_domains(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                Some(&resolved),
+            ),
+            None
+        );
+        assert_eq!(policy.block_reason_for_dns_name("auth.example.com"), None);
+        assert_eq!(
+            policy.block_reason_for_dns_name("api.auth.example.com"),
+            Some(BlockReason::DefaultDeny)
+        );
+    }
+
+    #[test]
     fn default_deny_blocks_unmatched_dns_name_when_allow_domains_exist() {
         let policy = SandboxPolicy {
             offline: false,
@@ -562,7 +695,9 @@ mod tests {
             default_policy: DefaultPolicy::Deny,
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
             allow_domains: vec!["example.com".into()],
+            deny_domains_exact: Vec::new(),
             deny_domains: Vec::new(),
             proxy_only: false,
             fail_on_leak: false,

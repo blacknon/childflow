@@ -144,10 +144,14 @@ Options:
           Choose whether unmatched outbound destinations are allowed or denied [default: allow] [possible values: allow, deny]
       --allow-cidr <ALLOW_CIDRS>
           Allow outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --allow-domain-exact <ALLOW_DOMAINS_EXACT>
+          Allow outbound destinations whose resolved DNS names exactly match this domain. Currently supported only by the default rootless backend
       --allow-domain <ALLOW_DOMAINS>
           Allow outbound destinations whose resolved DNS names match this domain rule. Currently supported only by the default rootless backend
       --deny-cidr <DENY_CIDRS>
           Deny outbound destinations that fall within this IPv4 or IPv6 CIDR
+      --deny-domain-exact <DENY_DOMAINS_EXACT>
+          Deny outbound destinations whose resolved DNS names exactly match this domain. Currently supported only by the default rootless backend
       --deny-domain <DENY_DOMAINS>
           Deny outbound destinations whose resolved DNS names match this domain rule. Currently supported only by the default rootless backend
       --proxy-only
@@ -238,6 +242,15 @@ Block a domain and its subdomains:
 
 ```bash
 childflow --deny-domain example.com -- curl https://api.example.com
+```
+
+Allow only one exact hostname while still denying unmatched subdomains:
+
+```bash
+childflow \
+  --default-policy deny \
+  --allow-domain-exact auth.example.com \
+  -- curl https://auth.example.com
 ```
 
 #### Proxy
@@ -437,10 +450,14 @@ Use `--root` when you specifically need host-integrated behavior that the rootle
   allow IPv4 or IPv6 CIDRs
 - `--allow-domain`
   allow destinations whose resolved DNS names match an exact domain or one of its subdomains
+- `--allow-domain-exact`
+  allow destinations whose resolved DNS names exactly match a single hostname
 - `--deny-cidr`
   deny IPv4 or IPv6 CIDRs
 - `--deny-domain`
   deny destinations whose resolved DNS names match an exact domain or one of its subdomains
+- `--deny-domain-exact`
+  deny destinations whose resolved DNS names exactly match a single hostname
 - `--proxy-only`
   require outbound traffic to use the configured proxy path
 - `--fail-on-leak`
@@ -450,8 +467,9 @@ Current notes:
 
 - `--proxy-only` is primarily a TCP-focused control; in the rootless backend, direct DNS / UDP / ICMP traffic is also blocked rather than relayed
 - `--fail-on-leak` is currently supported only by `rootless-internal`
-- `--allow-domain` and `--deny-domain` are currently supported only by `rootless-internal`
+- `--allow-domain`, `--allow-domain-exact`, `--deny-domain`, and `--deny-domain-exact` are currently supported only by `rootless-internal`
 - domain rules are normalized to lowercase and also match subdomains, so `example.com` matches both `example.com` and `api.example.com`
+- exact rules are also normalized to lowercase, but only match the single requested hostname
 
 ### Profiles
 
@@ -473,6 +491,7 @@ block_private = true
 block_metadata = true
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains_exact = ["auth.example.com"]
 allow_domains = ["example.com"]
 command = ["curl", "https://203.0.113.10/healthz"]
 ```
@@ -493,12 +512,12 @@ Current notes:
 - merge order is: parent profile, child profile, then explicit CLI flags
 - CLI flags override profile values when both are present
 - for list-valued settings such as `allow_cidrs` and `deny_cidrs`, explicit CLI flags replace the profile list instead of appending to it
-- the same replacement behavior applies to `allow_domains` and `deny_domains`
+- the same replacement behavior applies to `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact`
 - an explicit CLI command after `--` replaces the profile `command`
 - `--dump-profile` prints the merged effective TOML and exits without running the command
 - relative paths inside a profile are resolved relative to the profile file itself
 - profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `summary_format`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
-- profile keys also support `allow_domains` and `deny_domains` for rootless domain policy
+- profile keys also support `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact` for rootless domain policy
 - `--root` remains a CLI-only convenience flag; use `backend = "rootful"` in profiles when you want the rootful backend
 - the fuller key-by-key schema is documented in [docs/profile-schema.md](docs/profile-schema.md)
 
@@ -543,6 +562,7 @@ Current notes:
 - `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
 - `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, commonly matched blocked domains, common connect errors, runtime failure reason codes, and runtime failure phases after the run
 - `--summary --summary-format json` also includes lightweight `dns_policy_rows`, so post-run tooling can inspect DNS name / answer IP / matched blocked domain / target correlations without reading the fuller report
+- `--summary` also surfaces the top DNS policy correlation so it is easier to spot the most important DNS-name / matched-domain / target grouping at a glance
 - top connection targets in `--summary` / `--report` also include correlated `dns_names` when `childflow` observed DNS answers for the target IP
 - DNS-oriented report views also surface correlated `matched_domains`, so it is easier to connect a queried name, its resolved IPs, the observed target socket, and the domain rule that blocked it
 - the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)

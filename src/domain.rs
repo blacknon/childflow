@@ -40,6 +40,10 @@ pub fn matches_domain_rule(qname: &str, rule: &str) -> bool {
             && qname.as_bytes()[qname.len() - rule.len() - 1] == b'.')
 }
 
+pub fn matches_exact_domain_rule(qname: &str, rule: &str) -> bool {
+    qname == rule
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +68,11 @@ mod tests {
         assert!(matches_domain_rule("example.com", "example.com"));
         assert!(matches_domain_rule("api.example.com", "example.com"));
         assert!(!matches_domain_rule("badexample.com", "example.com"));
+    }
+
+    #[test]
+    fn matches_exact_domain_rule_accepts_only_exact_matches() {
+        assert!(matches_exact_domain_rule("example.com", "example.com"));
+        assert!(!matches_exact_domain_rule("api.example.com", "example.com"));
     }
 }

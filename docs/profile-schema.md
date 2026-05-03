@@ -56,8 +56,10 @@ The following profile keys are resolved relative to the directory containing the
 | `block_metadata` | bool | Equivalent to `--block-metadata` |
 | `default_policy` | string | One of `allow`, `deny` |
 | `allow_cidrs` | array of strings | IPv4 or IPv6 CIDRs |
+| `allow_domains_exact` | array of strings | Exact domains that should match only a single hostname; currently rootless-only |
 | `allow_domains` | array of strings | Exact domains or parent domains whose subdomains should also match; currently rootless-only |
 | `deny_cidrs` | array of strings | IPv4 or IPv6 CIDRs |
+| `deny_domains_exact` | array of strings | Exact domains that should match only a single hostname; currently rootless-only |
 | `deny_domains` | array of strings | Exact domains or parent domains whose subdomains should also match; currently rootless-only |
 | `proxy_only` | bool | Equivalent to `--proxy-only` |
 | `fail_on_leak` | bool | Equivalent to `--fail-on-leak` |
@@ -79,7 +81,9 @@ block_private = true
 block_metadata = true
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
+allow_domains_exact = ["auth.example.com"]
 allow_domains = ["example.com"]
+deny_domains_exact = ["login.blocked.example.com"]
 deny_domains = ["blocked.example.com"]
 command = ["curl", "https://203.0.113.10/healthz"]
 ```
@@ -92,9 +96,9 @@ command = ["curl", "https://203.0.113.10/healthz"]
 - parent profile paths are resolved relative to the child profile file
 - inheritance cycles are rejected
 - explicit CLI list flags replace inherited/profile lists rather than appending
-- the same replacement behavior applies to `allow_domains` and `deny_domains`
+- the same replacement behavior applies to `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact`
 - an explicit CLI command after `--` replaces the profile `command`
 - `--root` is intentionally CLI-only; use `backend = "rootful"` inside profiles instead
 - `--fail-on-leak` and `--flow-log` keep their current backend limitations even when configured via profile
-- `allow_domains` and `deny_domains` currently follow the same rootless-only limitation as the runtime flags
+- `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact` currently follow the same rootless-only limitation as the runtime flags
 - `--dump-profile` emits the effective values after profile loading, CLI override application, and relative path resolution

@@ -653,6 +653,24 @@ impl FlowLogReport {
         )
     }
 
+    pub fn render_top_dns_policy_correlation_compact(&self) -> String {
+        let Some(correlation) = self.top_dns_policy_correlations(1, 1).into_iter().next() else {
+            return "none".to_string();
+        };
+
+        format!(
+            "{} (answer_ips={}, matched_domains={}, targets={})",
+            correlation.qname,
+            if correlation.answer_ips.is_empty() {
+                "none".to_string()
+            } else {
+                correlation.answer_ips.join(", ")
+            },
+            render_ranked_string_counts(&correlation.matched_domains),
+            self.render_dns_target_list(&correlation.targets)
+        )
+    }
+
     fn render_dns_answer_ips(stats: &DnsNameStats) -> String {
         if stats.answer_ips.is_empty() {
             "none".to_string()
