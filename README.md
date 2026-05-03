@@ -486,6 +486,8 @@ extends = "./base.toml"
 capture = "./captures/run.pcapng"
 flow_log = "./logs/run.jsonl"
 summary = true
+doctor_format = "json"
+report_format = "json"
 summary_format = "json"
 dns = "1.1.1.1"
 backend = "rootless-internal"
@@ -518,8 +520,10 @@ Current notes:
 - an explicit CLI command after `--` replaces the profile `command`
 - `--dump-profile` prints the merged effective TOML and exits without running the command
 - relative paths inside a profile are resolved relative to the profile file itself
-- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `summary_format`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
+- profile keys use command-oriented names such as `capture`, `capture_point`, `backend`, `flow_log`, `doctor_format`, `report_format`, `summary_format`, `default_policy`, `allow_cidrs`, and `deny_cidrs`
 - profile keys also support `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact` for rootless domain policy
+- `doctor_format` is used when you run `childflow --doctor` with that profile loaded
+- `report_format` is used when you run `childflow --report <flow.jsonl>` with that profile loaded
 - `--root` remains a CLI-only convenience flag; use `backend = "rootful"` in profiles when you want the rootful backend
 - the fuller key-by-key schema is documented in [docs/profile-schema.md](docs/profile-schema.md)
 

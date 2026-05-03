@@ -10,7 +10,9 @@ use anyhow::{bail, Context, Result};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::{Cli, DefaultPolicy, OutputView, ProxySpec, SummaryFormat};
+use crate::cli::{
+    Cli, DefaultPolicy, DoctorFormat, OutputView, ProxySpec, ReportFormat, SummaryFormat,
+};
 use crate::network::NetworkBackend;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -43,6 +45,10 @@ pub struct Profile {
     pub proxy_insecure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doctor_format: Option<DoctorFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_format: Option<ReportFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_format: Option<SummaryFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +102,8 @@ impl Profile {
             proxy_password: cli.proxy_password.clone(),
             proxy_insecure: cli.proxy_insecure.then_some(true),
             summary: cli.summary.then_some(true),
+            doctor_format: cli.doctor.then_some(cli.doctor_format),
+            report_format: cli.report.as_ref().map(|_| cli.report_format),
             summary_format: cli.summary.then_some(cli.summary_format),
             flow_log: cli.flow_log.clone(),
             offline: cli.offline.then_some(true),
@@ -149,6 +157,8 @@ impl Profile {
             proxy_password: child.proxy_password.or(self.proxy_password),
             proxy_insecure: child.proxy_insecure.or(self.proxy_insecure),
             summary: child.summary.or(self.summary),
+            doctor_format: child.doctor_format.or(self.doctor_format),
+            report_format: child.report_format.or(self.report_format),
             summary_format: child.summary_format.or(self.summary_format),
             flow_log: child.flow_log.or(self.flow_log),
             offline: child.offline.or(self.offline),
@@ -339,6 +349,8 @@ flow_log = "./logs/flow.jsonl"
             &base_profile_path,
             r#"
 summary = true
+doctor_format = "json"
+report_format = "json"
 summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
@@ -364,6 +376,8 @@ command = ["ping", "-c", "1", "1.1.1.1"]
 
         assert_eq!(profile.extends, None);
         assert_eq!(profile.summary, Some(true));
+        assert_eq!(profile.doctor_format, Some(DoctorFormat::Json));
+        assert_eq!(profile.report_format, Some(ReportFormat::Json));
         assert_eq!(profile.summary_format, Some(SummaryFormat::Json));
         assert_eq!(profile.default_policy, Some(DefaultPolicy::Deny));
         assert_eq!(
@@ -472,5 +486,48 @@ command = ["ping", "-c", "1", "1.1.1.1"]
         assert!(rendered.contains("command = ["));
         assert!(rendered.contains("\"curl\""));
         assert!(rendered.contains("\"https://example.com\""));
+    }
+
+    #[test]
+    fn render_profile_as_toml_includes_doctor_and_report_formats_when_active() {
+        let cli = Cli {
+            dump_profile: false,
+            output: None,
+            output_view: OutputView::Child,
+            root: false,
+            doctor: true,
+            doctor_format: crate::cli::DoctorFormat::Json,
+            report: Some(PathBuf::from("/tmp/flow.jsonl")),
+            report_format: crate::cli::ReportFormat::Markdown,
+            network_backend: NetworkBackend::RootlessInternal,
+            dns: None,
+            hosts_file: None,
+            proxy: None,
+            proxy_user: None,
+            proxy_password: None,
+            proxy_insecure: false,
+            summary: false,
+            summary_format: crate::cli::SummaryFormat::Text,
+            flow_log: None,
+            offline: false,
+            block_private: false,
+            block_metadata: false,
+            default_policy: DefaultPolicy::Allow,
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            allow_domains_exact: Vec::new(),
+            allow_domains: Vec::new(),
+            deny_domains_exact: Vec::new(),
+            deny_domains: Vec::new(),
+            proxy_only: false,
+            fail_on_leak: false,
+            iface: None,
+            command: Vec::new(),
+        };
+
+        let rendered = Profile::from_cli(&cli).render_toml().unwrap();
+
+        assert!(rendered.contains("doctor_format = \"json\""));
+        assert!(rendered.contains("report_format = \"markdown\""));
     }
 }

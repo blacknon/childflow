@@ -49,6 +49,8 @@ The following profile keys are resolved relative to the directory containing the
 | `proxy_password` | string | Upstream proxy password |
 | `proxy_insecure` | bool | Equivalent to `--proxy-insecure` |
 | `summary` | bool | Equivalent to `--summary` |
+| `doctor_format` | string | One of `text`, `json`; equivalent to `--doctor-format` when `--doctor` is used |
+| `report_format` | string | One of `text`, `markdown`, `json`; equivalent to `--report-format` when `--report` is used |
 | `summary_format` | string | One of `text`, `json`; equivalent to `--summary-format` |
 | `flow_log` | string | Path written by `--flow-log` |
 | `offline` | bool | Equivalent to `--offline` |
@@ -74,6 +76,8 @@ capture = "./captures/run.pcapng"
 capture_point = "both"
 flow_log = "./logs/run.jsonl"
 summary = true
+doctor_format = "json"
+report_format = "json"
 summary_format = "json"
 dns = "1.1.1.1"
 backend = "rootless-internal"
@@ -101,4 +105,6 @@ command = ["curl", "https://203.0.113.10/healthz"]
 - `--root` is intentionally CLI-only; use `backend = "rootful"` inside profiles instead
 - `--fail-on-leak` and `--flow-log` keep their current backend limitations even when configured via profile
 - `allow_domains`, `allow_domains_exact`, `deny_domains`, and `deny_domains_exact` currently follow the same rootless-only limitation as the runtime flags
+- `doctor_format` only affects runs where `--doctor` is active
+- `report_format` only affects runs where `--report <flow.jsonl>` is active
 - `--dump-profile` emits the effective values after profile loading, CLI override application, and relative path resolution

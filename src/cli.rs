@@ -295,9 +295,13 @@ impl Cli {
                 .unwrap_or(OutputView::Child),
             root: false,
             doctor: raw.doctor,
-            doctor_format: DoctorFormat::Text,
+            doctor_format: profile
+                .and_then(|value| value.doctor_format)
+                .unwrap_or(DoctorFormat::Text),
             report: raw.report,
-            report_format: ReportFormat::Text,
+            report_format: profile
+                .and_then(|value| value.report_format)
+                .unwrap_or(ReportFormat::Text),
             network_backend: profile
                 .and_then(|value| value.backend)
                 .unwrap_or(NetworkBackend::RootlessInternal),
@@ -576,7 +580,8 @@ pub enum DefaultPolicy {
     Deny,
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum ReportFormat {
     #[default]
     Text,
@@ -584,7 +589,8 @@ pub enum ReportFormat {
     Json,
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum DoctorFormat {
     #[default]
     Text,
@@ -1052,6 +1058,8 @@ capture_point = "both"
 hosts_file = "fixtures/hosts.override"
 flow_log = "logs/flow.jsonl"
 summary = true
+doctor_format = "json"
+report_format = "markdown"
 summary_format = "json"
 command = ["curl", "https://example.com"]
 "#,
@@ -1071,6 +1079,8 @@ command = ["curl", "https://example.com"]
         );
         assert_eq!(cli.flow_log, Some(temp_dir.join("logs").join("flow.jsonl")));
         assert!(cli.summary);
+        assert_eq!(cli.doctor_format, DoctorFormat::Json);
+        assert_eq!(cli.report_format, ReportFormat::Markdown);
         assert_eq!(cli.summary_format, SummaryFormat::Json);
         assert_eq!(cli.command, vec!["curl", "https://example.com"]);
 
@@ -1087,6 +1097,8 @@ command = ["curl", "https://example.com"]
             &profile_path,
             r#"
 summary = true
+doctor_format = "json"
+report_format = "markdown"
 summary_format = "json"
 default_policy = "deny"
 allow_cidrs = ["203.0.113.10/32"]
@@ -1115,6 +1127,8 @@ command = ["curl", "https://example.com"]
         ]);
 
         assert!(cli.summary);
+        assert_eq!(cli.doctor_format, DoctorFormat::Json);
+        assert_eq!(cli.report_format, ReportFormat::Markdown);
         assert_eq!(cli.summary_format, SummaryFormat::Text);
         assert_eq!(cli.default_policy, DefaultPolicy::Allow);
         assert_eq!(cli.allow_cidrs.len(), 1);
@@ -1167,6 +1181,54 @@ command = ["curl", "https://example.com"]
         assert!(cli.doctor);
         assert_eq!(cli.doctor_format, DoctorFormat::Json);
         assert!(cli.command.is_empty());
+    }
+
+    #[test]
+    fn parse_profile_supplies_doctor_and_report_formats() {
+        let temp_dir = unique_temp_profile_dir("cli-profile-observability-formats");
+        let profile_path = temp_dir.join("sandbox.toml");
+
+        fs::write(
+            &profile_path,
+            r#"
+doctor_format = "json"
+report_format = "markdown"
+command = ["curl", "https://example.com"]
+"#,
+        )
+        .unwrap();
+
+        let doctor_cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--doctor",
+        ]);
+        assert!(doctor_cli.doctor);
+        assert_eq!(doctor_cli.doctor_format, DoctorFormat::Json);
+
+        let report_cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+        ]);
+        assert_eq!(report_cli.report_format, ReportFormat::Markdown);
+
+        let override_cli = Cli::parse_from([
+            "childflow",
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--report",
+            "/tmp/childflow-flow.jsonl",
+            "--report-format",
+            "json",
+        ]);
+        assert_eq!(override_cli.report_format, ReportFormat::Json);
+
+        let _ = fs::remove_file(&profile_path);
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     fn unique_temp_profile_dir(prefix: &str) -> PathBuf {
