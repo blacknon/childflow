@@ -567,6 +567,7 @@ Current notes:
 - `--summary` also surfaces the top DNS policy correlation so it is easier to spot the most important DNS-name / matched-domain / target grouping at a glance
 - top connection targets in `--summary` / `--report` also include correlated `dns_names` when `childflow` observed DNS answers for the target IP
 - DNS-oriented report views also surface correlated `matched_domains`, so it is easier to connect a queried name, its resolved IPs, the observed target socket, and the domain rule that blocked it
+- the shared machine-readable surfaces are indexed in [docs/observability-schema.md](docs/observability-schema.md)
 - the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)
 - `--report ./flow.jsonl` renders a fuller post-run report from the saved flow log
 - `--report-format markdown` emits a Markdown report that is convenient for artifacts or issue comments
@@ -598,6 +599,18 @@ After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a t
 - DNS target / policy correlations
 
 The Docker demo also includes reusable domain-policy profiles such as `docker/demo/profiles/domain-allow-origin.toml`, `docker/demo/profiles/domain-allow-origin-exact.toml`, and `docker/demo/profiles/domain-deny-origin.toml` that show how to persist `allow_domains`, `allow_domains_exact`, and `deny_domains` rules alongside the rest of a sandbox definition.
+
+Example: run a reusable deny-domain profile, then summarize the saved flow log:
+
+```bash
+childflow --profile ./docker/demo/profiles/domain-deny-origin.toml || true
+childflow \
+  --report ./docker/demo/profiles/logs/domain-deny-origin.jsonl \
+  --report-format markdown
+```
+
+That report will surface the blocked DNS name, matched domain rule, correlated
+answer IPs, and any observed target socket in one artifact.
 
 ### Capture Modes
 

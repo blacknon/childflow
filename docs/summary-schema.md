@@ -5,6 +5,9 @@ summary to stderr.
 
 This document describes the current JSON shape of that summary.
 
+For the cross-surface overview, see
+[observability-schema.md](observability-schema.md).
+
 ## Status
 
 - current output format: one JSON object

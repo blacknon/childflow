@@ -329,6 +329,30 @@ impl FlowLogReport {
             self.unknown_event
         );
 
+        rendered.push_str("\n## DNS overview\n\n");
+        rendered.push_str(&format!(
+            "- top DNS name: {}\n- top DNS target correlation: {}\n- top DNS policy correlation: {}\n",
+            self.render_top_dns_name_compact(),
+            self.render_top_dns_target_correlation_compact(),
+            self.render_top_dns_policy_correlation_compact()
+        ));
+
+        rendered.push_str("\n## Policy overview\n\n");
+        rendered.push_str(&format!(
+            "- policy violations: {}\n- policy controls: {}\n- matched domains: {}\n",
+            self.render_policy_violations_compact(5),
+            self.render_policy_controls_compact(5),
+            self.render_policy_matched_domains_compact(5)
+        ));
+
+        rendered.push_str("\n## Runtime overview\n\n");
+        rendered.push_str(&format!(
+            "- connect errors: {}\n- runtime failures: {}\n- runtime failure phases: {}\n",
+            self.render_connect_errors_compact(5),
+            self.render_runtime_failures_compact(5),
+            self.render_runtime_failure_phases_compact(5)
+        ));
+
         rendered.push_str("\n## Protocols\n\n");
         if self.protocol_counts.is_empty() {
             rendered.push_str("_none_\n");
@@ -692,6 +716,19 @@ impl FlowLogReport {
             render_ranked_string_counts(&correlation.matched_domains),
             self.render_dns_target_list(&correlation.targets)
         )
+    }
+
+    pub fn render_top_dns_target_correlation_compact(&self) -> String {
+        let Some(correlation) = self.top_dns_target_correlations(1, 1).into_iter().next() else {
+            return "none".to_string();
+        };
+        let target = correlation
+            .targets
+            .first()
+            .map(|target| self.render_dns_correlated_target(target))
+            .unwrap_or_else(|| "none".to_string());
+
+        format!("{} -> {}", correlation.qname, target)
     }
 
     fn render_dns_answer_ips(stats: &DnsNameStats) -> String {
@@ -1629,6 +1666,18 @@ mod tests {
         assert!(rendered.contains("- most common connect error: `connection refused` (2)"));
         assert!(rendered.contains("- most common runtime failure: `tap_create_blocked` (1)"));
         assert!(rendered.contains("- most common runtime failure phase: `child_bootstrap` (1)"));
+        assert!(rendered.contains("## DNS overview"));
+        assert!(rendered.contains(
+            "- top DNS target correlation: example.com -> 93.184.216.34:443 (attempts=1, ok=1, error=0, flow_end=0, matched_domains=blocked.test=1)"
+        ));
+        assert!(rendered.contains("## Policy overview"));
+        assert!(rendered.contains("- policy violations: proxy_only=1"));
+        assert!(rendered.contains("- policy controls: --proxy-only=1"));
+        assert!(rendered.contains("- matched domains: blocked.test=1"));
+        assert!(rendered.contains("## Runtime overview"));
+        assert!(rendered.contains("- connect errors: connection refused=2"));
+        assert!(rendered.contains("- runtime failures: tap_create_blocked=1"));
+        assert!(rendered.contains("- runtime failure phases: child_bootstrap=1"));
         assert!(rendered.contains("| total | 3 |"));
         assert!(rendered.contains("| runtime_failure | 1 |"));
         assert!(rendered.contains("| tcp | 3 |"));

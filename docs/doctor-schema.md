@@ -5,6 +5,9 @@ the selected backend.
 
 This document describes the current JSON shape of that report.
 
+For the cross-surface overview, see
+[observability-schema.md](observability-schema.md).
+
 ## Status
 
 - current output format: one JSON object
