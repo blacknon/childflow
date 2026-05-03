@@ -42,7 +42,7 @@ It has two Linux backends: `rootless-internal` for the default day-to-day path, 
       <img src="./img/childflow-profile-demo.gif" alt="childflow profile example" width="360" height="228" /><br />
       <strong>Reusable profiles</strong><br /><br />
       <code>childflow --profile<br />./profiles/default-deny.toml<br />--dump-profile</code><br /><br />
-      Keep sandbox settings in TOML, inherit from a base profile, and inspect the merged effective configuration.
+Keep sandbox settings in TOML, inherit from a base profile, and inspect the merged effective configuration.
     </td>
     <td valign="top" width="33%">
       <img src="./img/childflow-flow-log-demo.gif" alt="childflow flow log example" width="360" height="228" /><br />
@@ -52,6 +52,8 @@ It has two Linux backends: `rootless-internal` for the default day-to-day path, 
     </td>
   </tr>
 </table>
+
+The Docker demo also includes reusable domain-policy profiles under `docker/demo/profiles`, including deny-by-domain examples that intentionally fail, emit `policy_violation` flow-log entries with `matched_domain`, and can be summarized again with `childflow --report`.
 
 ## Install
 

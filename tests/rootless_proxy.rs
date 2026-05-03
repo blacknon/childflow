@@ -857,6 +857,48 @@ fn rootless_internal_default_deny_allows_explicit_domain() -> Result<()> {
 }
 
 #[test]
+fn rootless_internal_default_deny_allows_explicit_exact_domain() -> Result<()> {
+    let (server_addr, requests) = spawn_local_http_server("childflow-allow-domain-exact-ok")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+    let dns_bind_ip = unique_loopback_dns_ip();
+    let _dns_server = LocalDnsServer::spawn(&dns_bind_ip, "allowed.test", host_ip)?;
+
+    let output = run_childflow_command(&[
+        "--default-policy",
+        "deny",
+        "--allow-domain-exact",
+        "allowed.test",
+        "-d",
+        &dns_bind_ip,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())",
+        &format!("http://allowed.test:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal allow-domain-exact smoke test")?;
+
+    assert!(
+        output.status.success(),
+        "expected allow-domain-exact childflow run to succeed, but it failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "childflow-allow-domain-exact-ok"
+    );
+    assert_eq!(
+        requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .context("allow-domain-exact local HTTP server did not receive a request")?,
+        "GET /hello HTTP/1.1"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn rootless_internal_default_deny_blocks_subdomain_when_only_exact_domain_allowed() -> Result<()> {
     let (server_addr, requests) =
         spawn_local_http_server("childflow-allow-domain-exact-should-not-connect")?;
@@ -903,6 +945,55 @@ fn rootless_internal_default_deny_blocks_subdomain_when_only_exact_domain_allowe
     assert!(flow_log.contains("\"reason_code\":\"default_deny\""));
     assert!(flow_log.contains("\"control\":\"--default-policy\""));
     assert!(flow_log.contains("\"remote\":\"api.allowed.test\""));
+
+    let _ = std::fs::remove_file(&flow_log_path);
+    Ok(())
+}
+
+#[test]
+fn rootless_internal_deny_domain_blocks_subdomain_via_dns_resolution() -> Result<()> {
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-deny-domain-subdomain-should-not-connect")?;
+    let flow_log_path = unique_temp_flow_log_path("rootless-deny-domain-subdomain");
+    let dns_bind_ip = unique_loopback_dns_ip();
+
+    let output = run_childflow_command(&[
+        "--flow-log",
+        flow_log_path.to_str().unwrap(),
+        "--deny-domain",
+        "blocked.test",
+        "-d",
+        &dns_bind_ip,
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://api.blocked.test:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootless-internal deny-domain subdomain smoke test")?;
+
+    assert!(
+        !output.status.success(),
+        "expected deny-domain childflow run to fail for subdomain, but it succeeded:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        requests
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "deny-domain sandbox unexpectedly reached the local HTTP server through a subdomain"
+    );
+
+    let flow_log = std::fs::read_to_string(&flow_log_path)
+        .with_context(|| format!("failed to read {}", flow_log_path.display()))?;
+    assert!(flow_log.contains("\"event\":\"policy_violation\""));
+    assert!(flow_log.contains("\"protocol\":\"dns\""));
+    assert!(flow_log.contains("\"reason_code\":\"deny_domain\""));
+    assert!(flow_log.contains("\"control\":\"--deny-domain\""));
+    assert!(flow_log.contains("\"matched_domain\":\"blocked.test\""));
+    assert!(flow_log.contains("\"remote\":\"api.blocked.test\""));
 
     let _ = std::fs::remove_file(&flow_log_path);
     Ok(())

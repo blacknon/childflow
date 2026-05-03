@@ -25,7 +25,8 @@ prepare_demo_artifact_dirs() {
   sudo rm -f \
     "$capture_dir/http-origin.pcapng" \
     "$log_dir/http-origin.jsonl" \
-    "$log_dir/domain-deny-origin.jsonl"
+    "$log_dir/domain-deny-origin.jsonl" \
+    "$log_dir/domain-deny-origin-exact.jsonl"
 }
 
 prepare_demo_artifact_dirs
@@ -90,6 +91,9 @@ https_proxy_output="$tmpdir/https-proxy.txt"
 profile_http_output="$tmpdir/profile-http.txt"
 profile_dump_output="$tmpdir/profile-dump.toml"
 domain_deny_dump_output="$tmpdir/domain-deny-dump.toml"
+domain_deny_exact_dump_output="$tmpdir/domain-deny-exact-dump.toml"
+domain_deny_report_output="$tmpdir/domain-deny-report.md"
+domain_deny_exact_report_output="$tmpdir/domain-deny-exact-report.md"
 
 if curl --connect-timeout 3 --max-time 5 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
   echo "direct HTTP access unexpectedly succeeded" >&2
@@ -165,7 +169,62 @@ run_childflow \
   >"$domain_deny_dump_output"
 
 grep -q 'deny_domains = \[' "$domain_deny_dump_output"
-grep -q 'origin-http.demo' "$domain_deny_dump_output"
+grep -q 'demo.invalid' "$domain_deny_dump_output"
+
+echo "[demo] verifying reusable exact deny-domain profile definition"
+run_childflow \
+  --profile "$repo_root/docker/demo/profiles/domain-deny-origin-exact.toml" \
+  --dump-profile \
+  >"$domain_deny_exact_dump_output"
+
+grep -q 'deny_domains_exact = \[' "$domain_deny_exact_dump_output"
+grep -q 'origin-http.exact.invalid' "$domain_deny_exact_dump_output"
+
+echo "[demo] verifying deny-domain runtime policy violation"
+if run_childflow \
+  --profile "$repo_root/docker/demo/profiles/domain-deny-origin.toml" \
+  >/dev/null 2>&1; then
+  echo "deny-domain profile unexpectedly succeeded" >&2
+  exit 1
+fi
+
+test -s "$repo_root/docker/demo/profiles/logs/domain-deny-origin.jsonl"
+grep -q '"event":"policy_violation"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin.jsonl"
+grep -q '"reason_code":"deny_domain"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin.jsonl"
+grep -q '"control":"--deny-domain"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin.jsonl"
+grep -q '"matched_domain":"demo.invalid"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin.jsonl"
+
+echo "[demo] verifying deny-domain report output"
+"$bin_path" \
+  --report "$repo_root/docker/demo/profiles/logs/domain-deny-origin.jsonl" \
+  --report-format markdown \
+  >"$domain_deny_report_output"
+
+grep -q 'most common policy violation' "$domain_deny_report_output"
+grep -q 'demo.invalid' "$domain_deny_report_output"
+
+echo "[demo] verifying exact deny-domain runtime policy violation"
+if run_childflow \
+  --profile "$repo_root/docker/demo/profiles/domain-deny-origin-exact.toml" \
+  >/dev/null 2>&1; then
+  echo "deny-domain-exact profile unexpectedly succeeded" >&2
+  exit 1
+fi
+
+test -s "$repo_root/docker/demo/profiles/logs/domain-deny-origin-exact.jsonl"
+grep -q '"event":"policy_violation"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin-exact.jsonl"
+grep -q '"reason_code":"deny_domain_exact"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin-exact.jsonl"
+grep -q '"control":"--deny-domain-exact"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin-exact.jsonl"
+grep -q '"matched_domain":"origin-http.exact.invalid"' "$repo_root/docker/demo/profiles/logs/domain-deny-origin-exact.jsonl"
+
+echo "[demo] verifying exact deny-domain report output"
+"$bin_path" \
+  --report "$repo_root/docker/demo/profiles/logs/domain-deny-origin-exact.jsonl" \
+  --report-format markdown \
+  >"$domain_deny_exact_report_output"
+
+grep -q 'most common policy violation' "$domain_deny_exact_report_output"
+grep -q 'origin-http.exact.invalid' "$domain_deny_exact_report_output"
 
 echo "[demo] verifying authenticated HTTPS proxy flow"
 run_childflow \
