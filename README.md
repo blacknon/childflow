@@ -542,6 +542,7 @@ Current notes:
 - flow logs complement `--capture`; use `--capture` for packet-level inspection and `--flow-log` for higher-level execution tracing
 - `runtime_failure` records stable `reason_code` values such as `tap_create_blocked` or `packet_capture_blocked` when setup or runtime fails
 - `--summary` will also show aggregate flow-log event counts, the top connection target, common policy violations, commonly matched blocked domains, common connect errors, runtime failure reason codes, and runtime failure phases after the run
+- `--summary --summary-format json` also includes lightweight `dns_policy_rows`, so post-run tooling can inspect DNS name / answer IP / matched blocked domain / target correlations without reading the fuller report
 - top connection targets in `--summary` / `--report` also include correlated `dns_names` when `childflow` observed DNS answers for the target IP
 - DNS-oriented report views also surface correlated `matched_domains`, so it is easier to connect a queried name, its resolved IPs, the observed target socket, and the domain rule that blocked it
 - the fuller JSON summary schema is documented in [docs/summary-schema.md](docs/summary-schema.md)
@@ -573,6 +574,8 @@ After a run, `childflow --report ./flow.jsonl` turns the saved flow log into a t
 - runtime failure phase counts
 - top connection targets
 - DNS target / policy correlations
+
+The Docker demo also includes a reusable domain-policy profile at `docker/demo/profiles/domain-deny-origin.toml` that shows how to persist a `deny_domains` rule alongside the rest of a sandbox definition.
 
 ### Capture Modes
 

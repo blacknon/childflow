@@ -849,6 +849,42 @@ impl FlowLogReport {
         )
     }
 
+    pub fn render_dns_policy_rows_compact(&self, limit: usize) -> String {
+        let rows = self.top_dns_policy_rows(limit, 1);
+        if rows.is_empty() {
+            return "none".to_string();
+        }
+
+        rows.into_iter()
+            .map(|row| {
+                let answer_ips = if row.answer_ips.is_empty() {
+                    "none".to_string()
+                } else {
+                    row.answer_ips.join(", ")
+                };
+                let matched_domains = render_ranked_string_counts(&row.matched_domains);
+                match row.target {
+                    Some(target) => format!(
+                        "{} -> {} (answer_ips={}, matched_domains={}, attempts={}, ok={}, error={}, flow_end={})",
+                        row.qname,
+                        target,
+                        answer_ips,
+                        matched_domains,
+                        row.connect_attempts,
+                        row.connect_ok,
+                        row.connect_error,
+                        row.flow_end
+                    ),
+                    None => format!(
+                        "{} -> no-target (answer_ips={}, matched_domains={})",
+                        row.qname, answer_ips, matched_domains
+                    ),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     fn render_top_targets_for_dns_name(&self, qname: &str, limit: usize) -> String {
         self.render_dns_target_list(&self.correlated_targets_for_dns_name(qname, limit))
     }

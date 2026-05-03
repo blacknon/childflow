@@ -27,7 +27,7 @@ fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
         .unwrap_or_else(|| "<none>".to_string());
 
     format!(
-        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\nexit: {exit_code}\n",
+        "childflow summary\nbackend: {}\ncommand: {command}\nsandbox controls: {}\ncapture: {}\nflow-log: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\nexit: {exit_code}\n",
         backend_name(cli),
         format_controls(&sandbox_policy.active_controls()),
         format_capture(cli),
@@ -36,6 +36,8 @@ fn render_run_summary(cli: &Cli, exit_code: i32) -> String {
         format_flow_log_events(cli),
         observability_summary::FLOW_LOG_DNS_NAMES,
         format_flow_log_dns_names(cli),
+        observability_summary::FLOW_LOG_DNS_POLICY_ROWS,
+        format_flow_log_dns_policy_rows(cli),
         observability_summary::FLOW_LOG_TOP_TARGET,
         format_flow_log_top_target(cli),
         observability_summary::FLOW_LOG_POLICY_VIOLATIONS,
@@ -130,6 +132,17 @@ fn format_flow_log_dns_names(cli: &Cli) -> String {
 
     match FlowLogReport::from_path(path) {
         Ok(report) => report.render_top_dns_name_compact(),
+        Err(_) => "unavailable".to_string(),
+    }
+}
+
+fn format_flow_log_dns_policy_rows(cli: &Cli) -> String {
+    let Some(path) = cli.flow_log.as_ref() else {
+        return "disabled".to_string();
+    };
+
+    match FlowLogReport::from_path(path) {
+        Ok(report) => report.render_dns_policy_rows_compact(2),
         Err(_) => "unavailable".to_string(),
     }
 }
@@ -261,6 +274,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
             path: None,
             event_counts: None,
             top_dns_name: None,
+            dns_policy_rows: Vec::new(),
             top_target: None,
             policy_violations: Vec::new(),
             policy_matched_domains: Vec::new(),
@@ -296,6 +310,23 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
                     answer_ips: stats.answer_ips.iter().cloned().collect(),
                     targets: report.correlated_targets_for_dns_name(qname, 3),
                 }),
+            dns_policy_rows: report
+                .top_dns_policy_rows(3, 1)
+                .into_iter()
+                .map(|row| SummaryDnsPolicyRow {
+                    qname: row.qname,
+                    queries: row.queries,
+                    answers: row.answers,
+                    answer_ips: row.answer_ips,
+                    target: row.target,
+                    target_ip: row.target_ip,
+                    connect_attempts: row.connect_attempts,
+                    connect_ok: row.connect_ok,
+                    connect_error: row.connect_error,
+                    flow_end: row.flow_end,
+                    matched_domains: ranked_counts_to_json(row.matched_domains),
+                })
+                .collect(),
             top_target: report.top_connection_targets(1).into_iter().next().map(
                 |(target, stats)| SummaryTopTarget {
                     target: target.to_string(),
@@ -320,6 +351,7 @@ fn build_flow_log_summary(cli: &Cli) -> SummaryFlowLogReport {
             path: Some(path.display().to_string()),
             event_counts: None,
             top_dns_name: None,
+            dns_policy_rows: Vec::new(),
             top_target: None,
             policy_violations: Vec::new(),
             policy_matched_domains: Vec::new(),
@@ -336,6 +368,16 @@ fn count_entries_to_json(entries: Vec<(&str, usize)>) -> Vec<SummaryCountEntry> 
         .map(|(key, count)| SummaryCountEntry {
             key: key.to_string(),
             count,
+        })
+        .collect()
+}
+
+fn ranked_counts_to_json(entries: Vec<crate::report::RankedStringCount>) -> Vec<SummaryCountEntry> {
+    entries
+        .into_iter()
+        .map(|entry| SummaryCountEntry {
+            key: entry.key,
+            count: entry.count,
         })
         .collect()
 }
@@ -366,6 +408,7 @@ struct SummaryFlowLogReport {
     path: Option<String>,
     event_counts: Option<SummaryEventCounts>,
     top_dns_name: Option<SummaryTopDnsName>,
+    dns_policy_rows: Vec<SummaryDnsPolicyRow>,
     top_target: Option<SummaryTopTarget>,
     policy_violations: Vec<SummaryCountEntry>,
     policy_matched_domains: Vec<SummaryCountEntry>,
@@ -394,6 +437,21 @@ struct SummaryTopDnsName {
     answers: usize,
     answer_ips: Vec<String>,
     targets: Vec<crate::report::DnsCorrelatedTarget>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryDnsPolicyRow {
+    qname: String,
+    queries: usize,
+    answers: usize,
+    answer_ips: Vec<String>,
+    target: Option<String>,
+    target_ip: Option<String>,
+    connect_attempts: usize,
+    connect_ok: usize,
+    connect_error: usize,
+    flow_end: usize,
+    matched_domains: Vec<SummaryCountEntry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -473,6 +531,7 @@ mod tests {
         assert!(rendered.contains("flow-log: disabled"));
         assert!(rendered.contains("flow-log events: disabled"));
         assert!(rendered.contains("flow-log dns names: disabled"));
+        assert!(rendered.contains("flow-log dns policy rows: disabled"));
         assert!(rendered.contains("flow-log top target: disabled"));
         assert!(rendered.contains("flow-log policy violations: disabled"));
         assert!(rendered.contains("flow-log policy matched domains: disabled"));
@@ -500,6 +559,7 @@ mod tests {
         assert!(rendered.contains("flow-log: /tmp/flow.jsonl"));
         assert!(rendered.contains("flow-log events: unavailable"));
         assert!(rendered.contains("flow-log dns names: unavailable"));
+        assert!(rendered.contains("flow-log dns policy rows: unavailable"));
         assert!(rendered.contains("flow-log top target: unavailable"));
         assert!(rendered.contains("flow-log policy violations: unavailable"));
         assert!(rendered.contains("flow-log policy matched domains: unavailable"));
@@ -555,6 +615,9 @@ mod tests {
             "flow-log dns names: example.com (queries=1, answers=1, answer_ips=93.184.216.34, targets=93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, matched_domains=none))"
         ));
         assert!(rendered.contains(
+            "flow-log dns policy rows: example.com -> 93.184.216.34:443 (answer_ips=93.184.216.34, matched_domains=none, attempts=0, ok=0, error=1, flow_end=1)"
+        ));
+        assert!(rendered.contains(
             "flow-log top target: 93.184.216.34:443 (attempts=0, ok=0, error=1, flow_end=1, dns_names=example.com, matched_domains=none)"
         ));
         assert!(rendered.contains("flow-log policy violations: deny_cidr=1"));
@@ -584,6 +647,40 @@ mod tests {
         assert_eq!(value["capture"]["output"], "/tmp/capture.pcapng");
         assert_eq!(value["flow_log"]["status"], "disabled");
         assert!(value["flow_log"]["top_dns_name"].is_null());
+        assert_eq!(value["flow_log"]["dns_policy_rows"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn render_run_summary_json_includes_dns_policy_rows() {
+        let mut cli = make_cli();
+        cli.summary_format = SummaryFormat::Json;
+        let flow_log_path = unique_temp_flow_log_path("summary-dns-policy-rows");
+        fs::write(
+            &flow_log_path,
+            concat!(
+                "{\"event\":\"dns_query\",\"qname\":\"example.com\",\"ts_ms\":0}\n",
+                "{\"event\":\"dns_answer\",\"qname\":\"example.com\",\"answer_ips\":[\"93.184.216.34\"],\"ts_ms\":0}\n",
+                "{\"event\":\"policy_violation\",\"reason_code\":\"deny_domain\",\"matched_domain\":\"blocked.test\",\"remote_ip\":\"93.184.216.34\",\"ts_ms\":1}\n"
+            ),
+        )
+        .unwrap();
+        cli.flow_log = Some(flow_log_path.clone());
+
+        let rendered = render_run_summary_json(&cli, 2);
+        let value: Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["flow_log"]["status"], "available");
+        assert_eq!(
+            value["flow_log"]["dns_policy_rows"][0]["qname"],
+            "example.com"
+        );
+        assert!(value["flow_log"]["dns_policy_rows"][0]["target"].is_null());
+        assert_eq!(
+            value["flow_log"]["dns_policy_rows"][0]["matched_domains"][0],
+            serde_json::json!({"key":"blocked.test","count":1})
+        );
+
+        let _ = fs::remove_file(flow_log_path);
     }
 
     fn unique_temp_flow_log_path(prefix: &str) -> PathBuf {

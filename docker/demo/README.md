@@ -25,6 +25,7 @@ The script verifies:
 - HTTPS proxy requests fail without `--proxy-insecure`
 - HTTP proxy authentication works
 - profile-driven HTTP proxy execution works via `extends`
+- a reusable `deny-domain` demo profile is available under `docker/demo/profiles/domain-deny-origin.toml`
 - `--dump-profile` prints the merged effective TOML
 - HTTPS upstream proxy works with `--proxy-insecure` while keeping hostname verification
 - `childflow` still writes non-empty `pcapng` capture files during the run

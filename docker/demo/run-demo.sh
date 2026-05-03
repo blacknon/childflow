@@ -24,7 +24,8 @@ prepare_demo_artifact_dirs() {
 
   sudo rm -f \
     "$capture_dir/http-origin.pcapng" \
-    "$log_dir/http-origin.jsonl"
+    "$log_dir/http-origin.jsonl" \
+    "$log_dir/domain-deny-origin.jsonl"
 }
 
 prepare_demo_artifact_dirs
@@ -88,6 +89,7 @@ http_proxy_output="$tmpdir/http-proxy.txt"
 https_proxy_output="$tmpdir/https-proxy.txt"
 profile_http_output="$tmpdir/profile-http.txt"
 profile_dump_output="$tmpdir/profile-dump.toml"
+domain_deny_dump_output="$tmpdir/domain-deny-dump.toml"
 
 if curl --connect-timeout 3 --max-time 5 -fsS http://origin-http.demo:8080/ >/dev/null 2>&1; then
   echo "direct HTTP access unexpectedly succeeded" >&2
@@ -155,6 +157,15 @@ grep -q 'proxy = "http://proxy-http:3128"' "$profile_dump_output"
 grep -q 'default_policy = "deny"' "$profile_dump_output"
 grep -q 'deny_cidrs = \[' "$profile_dump_output"
 grep -q '198.51.100.0/24' "$profile_dump_output"
+
+echo "[demo] verifying reusable deny-domain profile definition"
+run_childflow \
+  --profile "$repo_root/docker/demo/profiles/domain-deny-origin.toml" \
+  --dump-profile \
+  >"$domain_deny_dump_output"
+
+grep -q 'deny_domains = \[' "$domain_deny_dump_output"
+grep -q 'origin-http.demo' "$domain_deny_dump_output"
 
 echo "[demo] verifying authenticated HTTPS proxy flow"
 run_childflow \

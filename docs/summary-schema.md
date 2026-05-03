@@ -54,6 +54,7 @@ Example:
 | `path` | string or null | Path passed to `--flow-log` when present |
 | `event_counts` | object or null | Aggregate flow-log event counts |
 | `top_dns_name` | object or null | Most frequently observed DNS name |
+| `dns_policy_rows` | array | Lightweight flattened DNS-name / answer-IP / matched-domain / target correlations |
 | `top_target` | object or null | Most active connection target |
 | `policy_violations` | array | Ranked policy violation counts |
 | `policy_matched_domains` | array | Ranked matched blocked domain counts |
@@ -111,6 +112,50 @@ Example:
 ```json
 "runtime_failures": [
   { "key": "tap_create_blocked", "count": 1 }
+]
+```
+
+## `dns_policy_rows`
+
+`dns_policy_rows` is a lightweight flattened view derived from the fuller
+report-side DNS policy correlation model. It is intended for post-run summaries
+and CI logs where one row per correlation is easier to consume.
+
+Each element currently includes:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `qname` | string | Normalized DNS question name |
+| `queries` | integer | Number of `dns_query` events for this name |
+| `answers` | integer | Number of `dns_answer` events for this name |
+| `answer_ips` | array of strings | Distinct A / AAAA answer IPs observed for this name |
+| `target` | string or null | Correlated `host:port` remote target when one was observed |
+| `target_ip` | string or null | Parsed IP portion of `target` when available |
+| `connect_attempts` | integer | Number of `connect_attempt` events for this row's target |
+| `connect_ok` | integer | Number of successful `connect_result` events for this row's target |
+| `connect_error` | integer | Number of error `connect_result` events for this row's target |
+| `flow_end` | integer | Number of `flow_end` events for this row's target |
+| `matched_domains` | array | Ranked blocked domains correlated to this row |
+
+Example:
+
+```json
+"dns_policy_rows": [
+  {
+    "qname": "example.com",
+    "queries": 1,
+    "answers": 1,
+    "answer_ips": ["93.184.216.34"],
+    "target": null,
+    "target_ip": null,
+    "connect_attempts": 0,
+    "connect_ok": 0,
+    "connect_error": 0,
+    "flow_end": 0,
+    "matched_domains": [
+      { "key": "blocked.test", "count": 1 }
+    ]
+  }
 ]
 ```
 
@@ -231,6 +276,23 @@ Example:
         }
       ]
     },
+    "dns_policy_rows": [
+      {
+        "qname": "example.com",
+        "queries": 1,
+        "answers": 1,
+        "answer_ips": ["93.184.216.34"],
+        "target": null,
+        "target_ip": null,
+        "connect_attempts": 0,
+        "connect_ok": 0,
+        "connect_error": 0,
+        "flow_end": 0,
+        "matched_domains": [
+          { "key": "blocked.test", "count": 1 }
+        ]
+      }
+    ],
     "top_target": {
       "target": "93.184.216.34:443",
       "connect_attempts": 0,
