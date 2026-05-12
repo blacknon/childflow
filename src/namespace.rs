@@ -797,6 +797,9 @@ fn create_tap_device(name: &str) -> Result<(File, String)> {
     }
 
     let rc = unsafe {
+        // SAFETY: `file` is an open `/dev/net/tun` descriptor and `ifreq` points to initialized
+        // writable storage whose lifetime covers the ioctl call. The kernel writes the chosen
+        // interface name back into the same struct.
         nix::libc::ioctl(
             std::os::fd::AsRawFd::as_raw_fd(&file),
             nix::libc::TUNSETIFF as _,

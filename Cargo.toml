@@ -4,6 +4,8 @@ version = "0.8.0"
 edition = "2021"
 license = "MIT"
 description = "A per-command-tree network sandbox for Linux"
+repository = "https://github.com/blacknon/childflow"
+homepage = "https://github.com/blacknon/childflow"
 
 [dependencies]
 anyhow = "1"

@@ -17,6 +17,8 @@ pub struct TapHandle {
 impl TapHandle {
     pub fn receive_from_stream(stream: &UnixStream) -> Result<Self> {
         let fd = recv_fd(stream).context("failed to receive the rootless tap fd from the child")?;
+        // SAFETY: `recv_fd` returns a fresh owned descriptor transferred with `SCM_RIGHTS`,
+        // so converting it into `File` transfers ownership exactly once.
         let file = unsafe { File::from_raw_fd(fd) };
         Ok(Self { file })
     }
@@ -33,8 +35,9 @@ pub fn send_fd_over_stream(stream: &UnixStream, file: &File) -> Result<()> {
         iov_len: payload.len(),
     };
     let fd = file.as_raw_fd();
-    let mut control =
-        vec![0_u8; unsafe { nix::libc::CMSG_SPACE(size_of::<RawFd>() as u32) as usize }];
+    let mut control = vec![0_u8; cmsg_space_bytes()];
+    // SAFETY: `msghdr` is a plain old data struct and we fill every field we rely on below
+    // before passing it to the kernel.
     let mut msg: nix::libc::msghdr = unsafe { zeroed() };
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
@@ -42,6 +45,8 @@ pub fn send_fd_over_stream(stream: &UnixStream, file: &File) -> Result<()> {
     msg.msg_controllen = control.len();
 
     unsafe {
+        // SAFETY: `msg` points at valid payload and control buffers. The returned header, if
+        // non-null, refers into `control`, which has enough space for one `SCM_RIGHTS` payload.
         let cmsg = nix::libc::CMSG_FIRSTHDR(&msg);
         if cmsg.is_null() {
             anyhow::bail!("failed to allocate control message buffer for tap fd transfer");
@@ -57,6 +62,8 @@ pub fn send_fd_over_stream(stream: &UnixStream, file: &File) -> Result<()> {
         msg.msg_controllen = (*cmsg).cmsg_len;
     }
 
+    // SAFETY: `msg` references stack/local buffers that remain alive for this syscall, and the
+    // kernel only reads them during the call.
     let rc = unsafe { nix::libc::sendmsg(stream.as_raw_fd(), &msg, 0) };
     if rc < 0 {
         return Err(anyhow::Error::new(std::io::Error::last_os_error()))
@@ -71,14 +78,16 @@ fn recv_fd(stream: &UnixStream) -> Result<RawFd> {
         iov_base: payload.as_mut_ptr() as *mut nix::libc::c_void,
         iov_len: payload.len(),
     };
-    let mut control =
-        vec![0_u8; unsafe { nix::libc::CMSG_SPACE(size_of::<RawFd>() as u32) as usize }];
+    let mut control = vec![0_u8; cmsg_space_bytes()];
+    // SAFETY: `msghdr` is zero-initialized and then populated with valid buffer pointers
+    // before `recvmsg` writes into it.
     let mut msg: nix::libc::msghdr = unsafe { zeroed() };
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr() as *mut nix::libc::c_void;
     msg.msg_controllen = control.len();
 
+    // SAFETY: `msg` points to writable payload/control buffers that remain valid for the call.
     let rc = unsafe { nix::libc::recvmsg(stream.as_raw_fd(), &mut msg, 0) };
     if rc < 0 {
         return Err(anyhow::Error::new(std::io::Error::last_os_error()))
@@ -88,11 +97,13 @@ fn recv_fd(stream: &UnixStream) -> Result<RawFd> {
         anyhow::bail!("child closed the tap fd transfer socket before sending a descriptor");
     }
 
+    // SAFETY: `msg` was filled by `recvmsg`, so ancillary header traversal is valid.
     let cmsg = unsafe { nix::libc::CMSG_FIRSTHDR(&msg) };
     if cmsg.is_null() {
         anyhow::bail!("child did not send a control message containing the tap fd");
     }
     let is_fd = unsafe {
+        // SAFETY: `cmsg` is non-null and points into the control buffer owned by `msg`.
         (*cmsg).cmsg_level == nix::libc::SOL_SOCKET && (*cmsg).cmsg_type == nix::libc::SCM_RIGHTS
     };
     if !is_fd {
@@ -101,6 +112,8 @@ fn recv_fd(stream: &UnixStream) -> Result<RawFd> {
 
     let mut fd = -1_i32;
     unsafe {
+        // SAFETY: the control message was validated as `SCM_RIGHTS`, so its payload contains
+        // at least one file descriptor-sized value which we copy into `fd`.
         std::ptr::copy_nonoverlapping(
             nix::libc::CMSG_DATA(cmsg),
             &mut fd as *mut RawFd as *mut u8,
@@ -111,6 +124,11 @@ fn recv_fd(stream: &UnixStream) -> Result<RawFd> {
         anyhow::bail!("received an invalid tap fd from the child process");
     }
     Ok(fd)
+}
+
+fn cmsg_space_bytes() -> usize {
+    // SAFETY: `CMSG_SPACE` is a pure size computation for a single descriptor payload.
+    unsafe { nix::libc::CMSG_SPACE(size_of::<RawFd>() as u32) as usize }
 }
 
 impl Read for TapHandle {

@@ -170,7 +170,7 @@ struct TcpPacketContext<'a> {
     addr_plan: &'a AddressPlan,
     event_tx: &'a Sender<RemoteEvent>,
     connections: &'a mut HashMap<FlowKey, ConnectionState>,
-    sandbox_policy: SandboxPolicy,
+    sandbox_policy: &'a SandboxPolicy,
     proxy_upstream: Option<&'a ProxyUpstreamConfig>,
     capture: &'a mut Option<CaptureWriters>,
     flow_log: &'a mut Option<FlowLogger>,
@@ -183,7 +183,7 @@ struct UdpPacketContext<'a> {
     addr_plan: &'a AddressPlan,
     dns_upstream: Option<IpAddr>,
     allow_ipv6_outbound: bool,
-    sandbox_policy: SandboxPolicy,
+    sandbox_policy: &'a SandboxPolicy,
     capture: &'a mut Option<CaptureWriters>,
     event_tx: &'a Sender<RemoteEvent>,
     flow_log: &'a mut Option<FlowLogger>,
@@ -232,7 +232,7 @@ fn run_engine(
                                 addr_plan: &addr_plan,
                                 event_tx: &event_tx,
                                 connections: &mut connections,
-                                sandbox_policy: config.sandbox_policy.clone(),
+                                sandbox_policy: &config.sandbox_policy,
                                 proxy_upstream: config.proxy_upstream.as_ref(),
                                 capture: &mut config.capture,
                                 flow_log: &mut config.flow_log,
@@ -250,7 +250,7 @@ fn run_engine(
                                 addr_plan: &addr_plan,
                                 dns_upstream: config.dns_upstream,
                                 allow_ipv6_outbound: config.allow_ipv6_outbound,
-                                sandbox_policy: config.sandbox_policy.clone(),
+                                sandbox_policy: &config.sandbox_policy,
                                 capture: &mut config.capture,
                                 event_tx: &event_tx,
                                 flow_log: &mut config.flow_log,
@@ -1178,6 +1178,7 @@ pub fn detect_ipv6_outbound() -> bool {
 }
 
 fn set_nonblocking(fd: RawFd) -> Result<()> {
+    // SAFETY: `fd` comes from `TapHandle` and stays open for the duration of this call.
     let fd = unsafe { BorrowedFd::borrow_raw(fd) };
     let flags = OFlag::from_bits_truncate(
         fcntl(fd, FcntlArg::F_GETFL).context("failed to read tap fd flags")?,

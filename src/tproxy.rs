@@ -52,7 +52,7 @@ pub struct TproxyHandle {
 }
 
 pub struct TransparentProxyPlan {
-    upstream: ProxyUpstreamConfig,
+    upstream: Arc<ProxyUpstreamConfig>,
 }
 
 impl TransparentProxyPlan {
@@ -60,7 +60,7 @@ impl TransparentProxyPlan {
         let proxy_spec = cli.proxy.clone()?;
 
         Some(Self {
-            upstream: ProxyUpstreamConfig {
+            upstream: Arc::new(ProxyUpstreamConfig {
                 server: ProxyServer {
                     host: proxy_spec.host,
                     port: proxy_spec.port,
@@ -76,17 +76,17 @@ impl TransparentProxyPlan {
                 },
                 insecure: cli.proxy_insecure,
                 bind_interface: cli.iface.clone(),
-            },
+            }),
         })
     }
 
     pub fn start(&self) -> Result<TproxyHandle> {
-        TproxyHandle::start(self.upstream.clone())
+        TproxyHandle::start(Arc::clone(&self.upstream))
     }
 }
 
 impl TproxyHandle {
-    pub fn start(upstream: ProxyUpstreamConfig) -> Result<Self> {
+    pub fn start(upstream: Arc<ProxyUpstreamConfig>) -> Result<Self> {
         let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
             .context("failed to create transparent listener socket")?;
         socket.set_reuse_address(true).ok();
@@ -157,13 +157,13 @@ impl Drop for TproxyHandle {
 
 fn accept_loop(
     listener: TcpListener,
-    upstream: ProxyUpstreamConfig,
+    upstream: Arc<ProxyUpstreamConfig>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _peer)) => {
-                let upstream = upstream.clone();
+                let upstream = Arc::clone(&upstream);
                 thread::spawn(move || {
                     let _ = handle_connection(stream, &upstream);
                 });
@@ -639,6 +639,8 @@ fn enable_transparent(socket: &Socket) -> std::io::Result<()> {
     let value: libc::c_int = 1;
 
     unsafe {
+        // SAFETY: `fd` is a live socket descriptor, `value` points to a valid `c_int`,
+        // and the kernel only reads the provided option bytes during this call.
         if libc::setsockopt(
             fd,
             libc::IPPROTO_IP,
@@ -652,6 +654,7 @@ fn enable_transparent(socket: &Socket) -> std::io::Result<()> {
 
         #[cfg(target_os = "linux")]
         {
+            // SAFETY: same justification as the IPv4 call above, but for the IPv6 socket option.
             if libc::setsockopt(
                 fd,
                 libc::IPPROTO_IPV6,

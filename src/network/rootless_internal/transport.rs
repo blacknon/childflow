@@ -214,6 +214,8 @@ fn configure_udp_probe_socket(
                 let fd = socket.as_raw_fd();
                 let value: std::ffi::c_int = i32::from(hop_limit);
                 let rc = unsafe {
+                    // SAFETY: `fd` is a valid UDP socket, `value` is initialized, and the
+                    // kernel only reads the option bytes during the syscall.
                     nix::libc::setsockopt(
                         fd,
                         nix::libc::IPPROTO_IPV6,
@@ -237,6 +239,8 @@ fn configure_udp_probe_socket(
         SocketAddr::V6(_) => (nix::libc::SOL_IPV6, nix::libc::IPV6_RECVERR),
     };
     let rc = unsafe {
+        // SAFETY: `fd` is a valid UDP socket and `enabled` stays alive for the duration
+        // of the syscall while the kernel reads the option bytes.
         nix::libc::setsockopt(
             fd,
             level,
@@ -257,11 +261,13 @@ fn recv_udp_error(socket: &UdpSocket) -> Result<Option<ReceivedUdpError>> {
     let fd = socket.as_raw_fd();
     let mut data = [0_u8; 512];
     let mut control = [0_u8; 512];
+    // SAFETY: zero-initialized storage is valid scratch space for the kernel to fill in.
     let mut name: nix::libc::sockaddr_storage = unsafe { zeroed() };
     let mut iov = nix::libc::iovec {
         iov_base: data.as_mut_ptr() as *mut _,
         iov_len: data.len(),
     };
+    // SAFETY: `msghdr` is plain old data and we populate all fields we rely on before use.
     let mut msg: nix::libc::msghdr = unsafe { zeroed() };
     msg.msg_name = &mut name as *mut _ as *mut _;
     msg.msg_namelen = size_of::<nix::libc::sockaddr_storage>() as nix::libc::socklen_t;
@@ -270,6 +276,8 @@ fn recv_udp_error(socket: &UdpSocket) -> Result<Option<ReceivedUdpError>> {
     msg.msg_control = control.as_mut_ptr() as *mut _;
     msg.msg_controllen = control.len();
 
+    // SAFETY: the buffers referenced by `msg` remain valid and writable for the duration
+    // of this syscall, which fills them from the socket error queue.
     let rc = unsafe { nix::libc::recvmsg(fd, &mut msg, nix::libc::MSG_ERRQUEUE) };
     if rc < 0 {
         let err = std::io::Error::last_os_error();
@@ -279,17 +287,23 @@ fn recv_udp_error(socket: &UdpSocket) -> Result<Option<ReceivedUdpError>> {
         return Err(err).context("failed to read the UDP error queue");
     }
 
+    // SAFETY: `msg` was filled by `recvmsg`, so ancillary iteration may examine its headers.
     let mut cmsg = unsafe { nix::libc::CMSG_FIRSTHDR(&msg) };
     while !cmsg.is_null() {
+        // SAFETY: `cmsg` is non-null and points into the control buffer owned by `msg`.
         let level = unsafe { (*cmsg).cmsg_level };
+        // SAFETY: same reasoning as for `cmsg_level` above.
         let ty = unsafe { (*cmsg).cmsg_type };
         if (level == nix::libc::SOL_IP && ty == nix::libc::IP_RECVERR)
             || (level == nix::libc::SOL_IPV6 && ty == nix::libc::IPV6_RECVERR)
         {
             let err_ptr =
                 unsafe { nix::libc::CMSG_DATA(cmsg) as *const nix::libc::sock_extended_err };
+            // SAFETY: Linux documents the `IP*_RECVERR` payload as `sock_extended_err`.
             let err = unsafe { &*err_ptr };
             let offender_ptr = unsafe {
+                // SAFETY: the offender sockaddr is stored immediately after `sock_extended_err`
+                // in this ancillary payload layout.
                 (err_ptr as *const u8).add(size_of::<nix::libc::sock_extended_err>())
                     as *const nix::libc::sockaddr
             };
@@ -301,6 +315,7 @@ fn recv_udp_error(socket: &UdpSocket) -> Result<Option<ReceivedUdpError>> {
                 code: err.ee_code,
             }));
         }
+        // SAFETY: advances within the validated control buffer described by `msg`.
         cmsg = unsafe { nix::libc::CMSG_NXTHDR(&msg, cmsg) };
     }
 
@@ -312,15 +327,18 @@ fn sockaddr_to_ip(sockaddr: *const nix::libc::sockaddr) -> Option<IpAddr> {
         return None;
     }
 
+    // SAFETY: `sockaddr` is non-null and points to a sockaddr produced by the kernel.
     let family = unsafe { (*sockaddr).sa_family as i32 };
     match family {
         nix::libc::AF_INET => {
+            // SAFETY: `sa_family` confirmed the pointer layout is `sockaddr_in`.
             let addr = unsafe { &*(sockaddr as *const nix::libc::sockaddr_in) };
             Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
                 addr.sin_addr.s_addr,
             ))))
         }
         nix::libc::AF_INET6 => {
+            // SAFETY: `sa_family` confirmed the pointer layout is `sockaddr_in6`.
             let addr = unsafe { &*(sockaddr as *const nix::libc::sockaddr_in6) };
             Some(IpAddr::V6(std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr)))
         }
