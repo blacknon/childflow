@@ -1,7 +1,8 @@
+use super::IpKind;
 use super::{
     icmpv6_checksum, internet_checksum, normalize_icmpv4_message, normalize_icmpv6_message,
-    Icmpv4EchoFrame, Icmpv4ErrorFrame, Icmpv6EchoFrame, Icmpv6ErrorFrame, IpKind,
-    ParsedIcmpv4Packet, ParsedIcmpv6Packet, TcpReply,
+    Icmpv4EchoFrame, Icmpv4ErrorFrame, Icmpv6EchoFrame, Icmpv6ErrorFrame, ParsedIcmpv4Packet,
+    ParsedIcmpv6Packet, TcpReply,
 };
 
 mod icmp;

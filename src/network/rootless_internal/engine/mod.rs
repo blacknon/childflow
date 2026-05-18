@@ -3,21 +3,17 @@
 // that can be found in the LICENSE file.
 
 mod events;
+mod runtime;
 mod tcp;
 mod udp;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::{ErrorKind, Read};
 use std::net::IpAddr;
-use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
-use anyhow::{Context, Result};
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use anyhow::Result;
 
 use crate::capture::CaptureWriters;
 use crate::domain::normalize_domain_name;
@@ -42,65 +38,9 @@ pub struct EngineConfig {
 }
 
 pub struct EngineHandle {
-    stop: Arc<AtomicBool>,
-    leak_detected: Arc<AtomicBool>,
-    join: Option<JoinHandle<Result<()>>>,
-}
-
-impl EngineHandle {
-    pub fn start(tap: TapHandle, addr_plan: AddressPlan, config: EngineConfig) -> Result<Self> {
-        set_nonblocking(tap.raw_fd())?;
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_for_thread = Arc::clone(&stop);
-        let leak_detected = Arc::new(AtomicBool::new(false));
-        let leak_detected_for_thread = Arc::clone(&leak_detected);
-        let join = thread::spawn(move || {
-            run_engine(
-                tap,
-                addr_plan,
-                config,
-                stop_for_thread,
-                leak_detected_for_thread,
-            )
-        });
-
-        Ok(Self {
-            stop,
-            leak_detected,
-            join: Some(join),
-        })
-    }
-
-    fn stop_and_join(&mut self) -> Result<()> {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(join) = self.join.take() {
-            match join.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    return Err(err).context("rootless-internal engine stopped with an error");
-                }
-                Err(_) => anyhow::bail!("rootless-internal engine thread panicked"),
-            }
-        }
-        Ok(())
-    }
-
-    pub fn shutdown(mut self) -> Result<()> {
-        self.stop_and_join()
-    }
-
-    pub fn leak_detected(&self) -> bool {
-        self.leak_detected.load(Ordering::Relaxed)
-    }
-}
-
-impl Drop for EngineHandle {
-    fn drop(&mut self) {
-        if let Err(err) = self.stop_and_join() {
-            util::warn(format!("{err:#}"));
-        }
-    }
+    pub(super) stop: Arc<AtomicBool>,
+    pub(super) leak_detected: Arc<AtomicBool>,
+    pub(super) join: Option<std::thread::JoinHandle<Result<()>>>,
 }
 
 #[derive(Debug)]
@@ -177,126 +117,6 @@ struct PolicyViolationTarget<'a> {
     remote_port: Option<u16>,
 }
 
-fn run_engine(
-    mut tap: TapHandle,
-    addr_plan: AddressPlan,
-    mut config: EngineConfig,
-    stop: Arc<AtomicBool>,
-    leak_detected: Arc<AtomicBool>,
-) -> Result<()> {
-    let (event_tx, event_rx) = mpsc::channel();
-    let mut child_mac = None;
-    let mut connections: HashMap<FlowKey, ConnectionState> = HashMap::new();
-    let mut resolved_domains = ResolvedDomainIndex::default();
-    let mut buf = [0_u8; 65535];
-
-    while !stop.load(Ordering::Relaxed) {
-        events::drain_remote_events(
-            &mut tap,
-            &addr_plan,
-            &mut child_mac,
-            &event_rx,
-            &mut connections,
-            &mut config.capture,
-            &mut config.flow_log,
-        )?;
-
-        match tap.read(&mut buf) {
-            Ok(0) => thread::sleep(Duration::from_millis(10)),
-            Ok(n) => {
-                events::capture_frame(
-                    &mut config.capture,
-                    &buf[..n],
-                    "failed to capture a child->engine frame from the rootless tap",
-                );
-                match packet::parse_frame(&buf[..n]) {
-                    Ok(ParsedPacket::Tcp(tcp)) => {
-                        child_mac.get_or_insert(tcp.meta.src_mac);
-                        tcp::handle_tcp_packet(
-                            TcpPacketContext {
-                                tap: &mut tap,
-                                addr_plan: &addr_plan,
-                                event_tx: &event_tx,
-                                connections: &mut connections,
-                                sandbox_policy: &config.sandbox_policy,
-                                proxy_upstream: config.proxy_upstream.as_ref(),
-                                capture: &mut config.capture,
-                                flow_log: &mut config.flow_log,
-                                leak_detected: &leak_detected,
-                                resolved_domains: &resolved_domains,
-                            },
-                            &tcp,
-                        )?;
-                    }
-                    Ok(ParsedPacket::Udp(udp)) => {
-                        child_mac.get_or_insert(udp.meta.src_mac);
-                        udp::handle_udp_packet(
-                            UdpPacketContext {
-                                tap: &mut tap,
-                                addr_plan: &addr_plan,
-                                dns_upstream: config.dns_upstream,
-                                allow_ipv6_outbound: config.allow_ipv6_outbound,
-                                sandbox_policy: &config.sandbox_policy,
-                                capture: &mut config.capture,
-                                event_tx: &event_tx,
-                                flow_log: &mut config.flow_log,
-                                leak_detected: &leak_detected,
-                                resolved_domains: &mut resolved_domains,
-                            },
-                            &udp,
-                        )?;
-                    }
-                    Ok(ParsedPacket::Icmpv4(icmp)) => {
-                        child_mac.get_or_insert(icmp.meta.src_mac);
-                        handle_icmpv4_packet(
-                            &event_tx,
-                            &addr_plan,
-                            &config.sandbox_policy,
-                            &mut config.flow_log,
-                            &leak_detected,
-                            &resolved_domains,
-                            &icmp,
-                        )?;
-                    }
-                    Ok(ParsedPacket::Icmpv6(icmp)) => {
-                        child_mac.get_or_insert(icmp.meta.src_mac);
-                        handle_icmpv6_packet(
-                            &event_tx,
-                            &addr_plan,
-                            &config.sandbox_policy,
-                            &mut config.flow_log,
-                            &leak_detected,
-                            &resolved_domains,
-                            &icmp,
-                        )?;
-                    }
-                    Ok(ParsedPacket::Unsupported) => {}
-                    Err(err) => util::debug(format!(
-                        "rootless-internal engine ignored an unsupported frame: {err:#}"
-                    )),
-                }
-            }
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err).context("failed to read a frame from the rootless tap"),
-        }
-    }
-
-    events::drain_remote_events(
-        &mut tap,
-        &addr_plan,
-        &mut child_mac,
-        &event_rx,
-        &mut connections,
-        &mut config.capture,
-        &mut config.flow_log,
-    )?;
-    events::flush_remaining_flow_end_events(&mut connections, &mut config.flow_log)?;
-
-    Ok(())
-}
-
 fn note_leak_if_requested(
     leak_detected: &Arc<AtomicBool>,
     sandbox_policy: &SandboxPolicy,
@@ -334,25 +154,5 @@ fn note_policy_violation(
 }
 
 pub fn detect_ipv6_outbound() -> bool {
-    let Ok(routes) = std::fs::read_to_string("/proc/net/ipv6_route") else {
-        return false;
-    };
-    routes.lines().any(|line| {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        fields.len() > 9
-            && fields[0] == "00000000000000000000000000000000"
-            && fields[1] == "00000000"
-            && fields[9] != "lo"
-    })
-}
-
-fn set_nonblocking(fd: RawFd) -> Result<()> {
-    // SAFETY: `fd` comes from `TapHandle` and stays open for the duration of this call.
-    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
-    let flags = OFlag::from_bits_truncate(
-        fcntl(fd, FcntlArg::F_GETFL).context("failed to read tap fd flags")?,
-    );
-    fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))
-        .context("failed to set tap fd nonblocking")?;
-    Ok(())
+    runtime::detect_ipv6_outbound()
 }
