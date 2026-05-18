@@ -1304,13 +1304,8 @@ fn rootful_default_deny_blocks_local_http() -> Result<()> {
 
 #[test]
 fn rootful_doctor_json_reports_rootful_backend() -> Result<()> {
-    let output = run_childflow_command(&[
-        "--root",
-        "--doctor",
-        "--doctor-format",
-        "json",
-    ])
-    .context("failed to run childflow rootful doctor json smoke test")?;
+    let output = run_childflow_command(&["--root", "--doctor", "--doctor-format", "json"])
+        .context("failed to run childflow rootful doctor json smoke test")?;
 
     assert!(
         output.status.success(),
