@@ -44,14 +44,16 @@ pub(super) fn run_engine(
         match tap.read(&mut buf) {
             Ok(0) => thread::sleep(Duration::from_millis(10)),
             Ok(n) => handle_engine_frame(
-                &mut tap,
-                &addr_plan,
-                &mut config,
-                &event_tx,
-                &leak_detected,
-                &mut child_mac,
-                &mut connections,
-                &mut resolved_domains,
+                FrameDispatchContext {
+                    tap: &mut tap,
+                    addr_plan: &addr_plan,
+                    config: &mut config,
+                    event_tx: &event_tx,
+                    leak_detected: &leak_detected,
+                    child_mac: &mut child_mac,
+                    connections: &mut connections,
+                    resolved_domains: &mut resolved_domains,
+                },
                 &buf[..n],
             )?,
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -75,17 +77,30 @@ pub(super) fn run_engine(
     Ok(())
 }
 
-fn handle_engine_frame(
-    tap: &mut TapHandle,
-    addr_plan: &AddressPlan,
-    config: &mut EngineConfig,
-    event_tx: &std::sync::mpsc::Sender<super::super::RemoteEvent>,
-    leak_detected: &Arc<std::sync::atomic::AtomicBool>,
-    child_mac: &mut Option<[u8; 6]>,
-    connections: &mut HashMap<crate::network::rootless_internal::state::FlowKey, ConnectionState>,
-    resolved_domains: &mut ResolvedDomainIndex,
-    frame: &[u8],
-) -> Result<()> {
+struct FrameDispatchContext<'a> {
+    tap: &'a mut TapHandle,
+    addr_plan: &'a AddressPlan,
+    config: &'a mut EngineConfig,
+    event_tx: &'a std::sync::mpsc::Sender<super::super::RemoteEvent>,
+    leak_detected: &'a Arc<std::sync::atomic::AtomicBool>,
+    child_mac: &'a mut Option<[u8; 6]>,
+    connections:
+        &'a mut HashMap<crate::network::rootless_internal::state::FlowKey, ConnectionState>,
+    resolved_domains: &'a mut ResolvedDomainIndex,
+}
+
+fn handle_engine_frame(ctx: FrameDispatchContext<'_>, frame: &[u8]) -> Result<()> {
+    let FrameDispatchContext {
+        tap,
+        addr_plan,
+        config,
+        event_tx,
+        leak_detected,
+        child_mac,
+        connections,
+        resolved_domains,
+    } = ctx;
+
     events::capture_frame(
         &mut config.capture,
         frame,

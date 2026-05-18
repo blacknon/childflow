@@ -1,15 +1,11 @@
-use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
 use crate::capture::CaptureWriters;
 use crate::flow_log::{ConnectResultStatus, FlowLogger};
 use crate::proxy::rootless_relay::ProxyUpstreamConfig;
-use crate::sandbox::SandboxPolicy;
 use crate::util;
 
 use super::super::super::packet::{self, ParsedTcpPacket, TcpReply};
@@ -17,24 +13,26 @@ use super::super::super::state::TcpSession;
 use super::super::super::transport::connect_remote;
 use super::super::super::{addr::AddressPlan, state::FlowKey, tap::TapHandle};
 use super::super::events::{capture_frame, note_connect_attempt, note_connect_result};
-use super::super::{
-    note_policy_violation, ConnectionState, PolicyViolationTarget, RemoteEvent, ResolvedDomainIndex,
-};
+use super::super::{note_policy_violation, ConnectionState, PolicyViolationTarget, RemoteEvent};
 
 pub(super) fn handle_tcp_syn(
-    tap: &mut TapHandle,
-    addr_plan: &AddressPlan,
-    event_tx: &Sender<RemoteEvent>,
-    connections: &mut HashMap<FlowKey, ConnectionState>,
-    sandbox_policy: &SandboxPolicy,
-    proxy_upstream: Option<&ProxyUpstreamConfig>,
-    capture: &mut Option<CaptureWriters>,
-    flow_log: &mut Option<FlowLogger>,
-    leak_detected: &Arc<AtomicBool>,
-    resolved_domains: &ResolvedDomainIndex,
+    ctx: super::TcpPacketContext<'_>,
     key: FlowKey,
     tcp: &ParsedTcpPacket,
 ) -> Result<()> {
+    let super::TcpPacketContext {
+        tap,
+        addr_plan,
+        event_tx,
+        connections,
+        sandbox_policy,
+        proxy_upstream,
+        capture,
+        flow_log,
+        leak_detected,
+        resolved_domains,
+    } = ctx;
+
     if let Some(reason) = sandbox_policy.block_reason_for_tcp_remote_ip_with_domains(
         key.remote_ip,
         proxy_upstream.is_some(),
@@ -56,14 +54,16 @@ pub(super) fn handle_tcp_syn(
     }
 
     let command_tx = open_remote_connection(
-        event_tx,
-        flow_log,
-        proxy_upstream,
+        OutboundConnectContext {
+            event_tx,
+            flow_log,
+            proxy_upstream,
+            tap,
+            addr_plan,
+            capture,
+        },
         key.clone(),
         tcp.remote_addr(),
-        tap,
-        addr_plan,
-        capture,
         tcp,
     )?;
     let engine_isn = util::run_entropy();
@@ -102,17 +102,30 @@ pub(super) fn handle_tcp_syn(
     Ok(())
 }
 
+struct OutboundConnectContext<'a> {
+    event_tx: &'a Sender<RemoteEvent>,
+    flow_log: &'a mut Option<FlowLogger>,
+    proxy_upstream: Option<&'a ProxyUpstreamConfig>,
+    tap: &'a mut TapHandle,
+    addr_plan: &'a AddressPlan,
+    capture: &'a mut Option<CaptureWriters>,
+}
+
 fn open_remote_connection(
-    event_tx: &Sender<RemoteEvent>,
-    flow_log: &mut Option<FlowLogger>,
-    proxy_upstream: Option<&ProxyUpstreamConfig>,
+    ctx: OutboundConnectContext<'_>,
     key: FlowKey,
     remote_addr: std::net::SocketAddr,
-    tap: &mut TapHandle,
-    addr_plan: &AddressPlan,
-    capture: &mut Option<CaptureWriters>,
     tcp: &ParsedTcpPacket,
 ) -> Result<Sender<super::super::ConnectionCommand>> {
+    let OutboundConnectContext {
+        event_tx,
+        flow_log,
+        proxy_upstream,
+        tap,
+        addr_plan,
+        capture,
+    } = ctx;
+
     note_connect_attempt(flow_log, remote_addr, proxy_upstream.is_some())?;
     match connect_remote(remote_addr, proxy_upstream, event_tx.clone(), key) {
         Ok(command_tx) => {

@@ -40,16 +40,18 @@ pub(super) fn handle_tcp_packet(ctx: TcpPacketContext<'_>, tcp: &ParsedTcpPacket
 
     if tcp.syn && !tcp.ack {
         return handshake::handle_tcp_syn(
-            tap,
-            addr_plan,
-            event_tx,
-            connections,
-            sandbox_policy,
-            proxy_upstream,
-            capture,
-            flow_log,
-            leak_detected,
-            resolved_domains,
+            TcpPacketContext {
+                tap,
+                addr_plan,
+                event_tx,
+                connections,
+                sandbox_policy,
+                proxy_upstream,
+                capture,
+                flow_log,
+                leak_detected,
+                resolved_domains,
+            },
             key,
             tcp,
         );
