@@ -73,4 +73,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
 
       - name: Run rootless smoke tests in the dev container
-        run: docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test --test rootless_proxy -- --nocapture
+        run: docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test --test rootless_proxy -- --nocapture --skip rootful_
+
+  rootful-smoke:
+    name: Rootful Smoke (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-22.04
+          - ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      - name: Run rootful smoke tests in the dev container
+        run: docker compose -f docker/dev/compose.yml run --rm childflow-dev cargo test --test rootless_proxy rootful_ -- --nocapture

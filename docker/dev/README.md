@@ -58,6 +58,17 @@ Or, after `cargo build`, run the built binary directly:
 childflow -- curl https://example.com
 ```
 
+## Run load tests
+
+Build once, then run the reusable harness:
+
+```bash
+cargo build
+docker/dev/load-test.sh steady-http 600 both
+```
+
+More scenarios and artifact details are in [LOAD_TESTING.md](./LOAD_TESTING.md).
+
 For a single-binary relay proxy check against something like Burp on `host.docker.internal:8080`:
 
 ```bash
