@@ -5,17 +5,13 @@ use anyhow::{anyhow, Context, Result};
 use nix::sched::{setns, CloneFlags};
 use nix::unistd::Pid;
 
+use crate::linux_net;
 use crate::util::run_command;
 
 pub(super) enum CleanupAction {
     RestoreFile {
         path: String,
         value: String,
-    },
-    RunCommand {
-        label: &'static str,
-        program: &'static str,
-        args: Vec<String>,
     },
     RunIptables {
         label: &'static str,
@@ -26,6 +22,35 @@ pub(super) enum CleanupAction {
         label: &'static str,
         table: &'static str,
         args: Vec<String>,
+    },
+    DeletePolicyRuleV4 {
+        fwmark: u32,
+        table: u32,
+        priority: u32,
+    },
+    DeletePolicyRuleV6 {
+        fwmark: u32,
+        table: u32,
+        priority: u32,
+    },
+    DeleteDefaultRouteV4 {
+        iface: String,
+        gateway: Option<std::net::Ipv4Addr>,
+        table: u32,
+    },
+    DeleteDefaultRouteV6 {
+        iface: String,
+        gateway: Option<std::net::Ipv6Addr>,
+        table: u32,
+    },
+    DeleteLocalRouteV4 {
+        table: u32,
+    },
+    DeleteLocalRouteV6 {
+        table: u32,
+    },
+    DeleteLink {
+        iface: String,
     },
 }
 
@@ -57,19 +82,45 @@ pub(super) fn run_cleanup_action(action: &CleanupAction) -> Result<()> {
         CleanupAction::RestoreFile { path, value } => {
             fs::write(path, format!("{value}\n")).with_context(|| format!("cleanup `{path}`"))
         }
-        CleanupAction::RunCommand {
-            label,
-            program,
-            args,
-        } => run_command(program, args.to_vec())
-            .map(|_| ())
-            .with_context(|| format!("cleanup `{label}`")),
         CleanupAction::RunIptables { label, table, args } => run_iptables(table, args.to_vec())
             .map(|_| ())
             .with_context(|| format!("cleanup `{label}`")),
         CleanupAction::RunIp6tables { label, table, args } => run_ip6tables(table, args.to_vec())
             .map(|_| ())
             .with_context(|| format!("cleanup `{label}`")),
+        CleanupAction::DeletePolicyRuleV4 {
+            fwmark,
+            table,
+            priority,
+        } => linux_net::policy_rule_del_v4(*fwmark, *table, *priority)
+            .context("cleanup `remove IPv4 policy rule`"),
+        CleanupAction::DeletePolicyRuleV6 {
+            fwmark,
+            table,
+            priority,
+        } => linux_net::policy_rule_del_v6(*fwmark, *table, *priority)
+            .context("cleanup `remove IPv6 policy rule`"),
+        CleanupAction::DeleteDefaultRouteV4 {
+            iface,
+            gateway,
+            table,
+        } => linux_net::route_del_default_v4_table(iface, *gateway, *table)
+            .context("cleanup `remove IPv4 default route`"),
+        CleanupAction::DeleteDefaultRouteV6 {
+            iface,
+            gateway,
+            table,
+        } => linux_net::route_del_default_v6_table(iface, *gateway, *table)
+            .context("cleanup `remove IPv6 default route`"),
+        CleanupAction::DeleteLocalRouteV4 { table } => {
+            linux_net::route_del_local_v4_table(*table).context("cleanup `remove IPv4 local route`")
+        }
+        CleanupAction::DeleteLocalRouteV6 { table } => {
+            linux_net::route_del_local_v6_table(*table).context("cleanup `remove IPv6 local route`")
+        }
+        CleanupAction::DeleteLink { iface } => {
+            linux_net::link_delete(iface).with_context(|| format!("cleanup `delete link {iface}`"))
+        }
     }
 }
 
@@ -80,10 +131,15 @@ pub(super) fn is_ignorable_cleanup_error(action: &CleanupAction, err: &anyhow::E
                 && path.ends_with("/rp_filter")
                 && error_chain_has_io_kind(err, std::io::ErrorKind::NotFound)
         }
-        CleanupAction::RunCommand { label, .. } => {
-            *label == "delete host veth pair" && error_chain_contains(err, "Cannot find device")
-        }
-        CleanupAction::RunIptables { .. } | CleanupAction::RunIp6tables { .. } => false,
+        CleanupAction::DeleteLink { .. } => error_chain_contains(err, "No such device"),
+        CleanupAction::RunIptables { .. }
+        | CleanupAction::RunIp6tables { .. }
+        | CleanupAction::DeletePolicyRuleV4 { .. }
+        | CleanupAction::DeletePolicyRuleV6 { .. }
+        | CleanupAction::DeleteDefaultRouteV4 { .. }
+        | CleanupAction::DeleteDefaultRouteV6 { .. }
+        | CleanupAction::DeleteLocalRouteV4 { .. }
+        | CleanupAction::DeleteLocalRouteV6 { .. } => false,
     }
 }
 

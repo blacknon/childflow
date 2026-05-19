@@ -1,60 +1,8 @@
 use std::net::IpAddr;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
 use super::super::IcmpRelayOutcome;
-
-pub(super) fn relay_icmpv4_echo(
-    remote_ip: std::net::Ipv4Addr,
-    hop_limit: u8,
-    payload: &[u8],
-) -> Result<IcmpRelayOutcome> {
-    let output = run_ping_helper(remote_ip.to_string(), hop_limit, payload.len(), false)
-        .with_context(|| {
-            format!("failed to execute `ping` while relaying an ICMPv4 echo request to {remote_ip}")
-        })?;
-    parse_ping_helper_output(IpAddr::V4(remote_ip), false, &output)
-}
-
-pub(super) fn relay_icmpv6_echo(
-    remote_ip: std::net::Ipv6Addr,
-    hop_limit: u8,
-    payload: &[u8],
-) -> Result<IcmpRelayOutcome> {
-    let output = run_ping_helper(remote_ip.to_string(), hop_limit, payload.len(), true)
-        .with_context(|| {
-            format!("failed to execute `ping` while relaying an ICMPv6 echo request to {remote_ip}")
-        })?;
-    parse_ping_helper_output(IpAddr::V6(remote_ip), true, &output)
-}
-
-fn run_ping_helper(
-    remote_ip: String,
-    hop_limit: u8,
-    payload_len: usize,
-    ipv6: bool,
-) -> Result<std::process::Output> {
-    let payload_len = payload_len.to_string();
-    let hop_limit = hop_limit.to_string();
-    let mut command = Command::new("ping");
-    if ipv6 {
-        command.arg("-6");
-    }
-    command.args([
-        "-n",
-        "-c",
-        "1",
-        "-W",
-        "3",
-        "-t",
-        hop_limit.as_str(),
-        "-s",
-        payload_len.as_str(),
-        remote_ip.as_str(),
-    ]);
-    command.output().context("failed to run the ping helper")
-}
 
 pub(super) fn parse_ping_helper_output(
     remote_ip: IpAddr,

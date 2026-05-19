@@ -10,7 +10,6 @@ use super::helpers::{
 };
 use crate::preflight::PreflightReport;
 
-const ROOTLESS_INTERNAL_REQUIRED_COMMANDS: &[&str] = &["ip"];
 const ROOTLESS_UIDMAP_HELPERS: &[&str] = &["newuidmap", "newgidmap"];
 const ROOTLESS_INTERNAL_NAMESPACE_PATHS: &[&str] = &[
     "/proc/self/ns/user",
@@ -23,16 +22,10 @@ pub(super) fn inspect_rootless_internal() -> PreflightReport {
     let path_env = env::var_os("PATH").unwrap_or_default();
     let mut report = PreflightReport::new("rootless-internal");
 
-    let missing_commands = find_missing_commands(ROOTLESS_INTERNAL_REQUIRED_COMMANDS, &path_env);
-    if missing_commands.is_empty() {
-        report.push_ok("external commands", "found `ip` in PATH");
-    } else {
-        report.push_fatal(
-            "external commands",
-            format!("missing required commands: {}", missing_commands.join(", ")),
-            "install `iproute2` so childflow can configure `tap0`, loopback, and default routes inside the child namespace",
-        );
-    }
+    report.push_ok(
+        "external commands",
+        "the rootless backend no longer requires `ip` for namespace network setup",
+    );
 
     let missing_namespace_paths = find_missing_paths(ROOTLESS_INTERNAL_NAMESPACE_PATHS);
     if missing_namespace_paths.is_empty() {

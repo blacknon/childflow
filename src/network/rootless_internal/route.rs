@@ -2,12 +2,10 @@
 // Use of this source code is governed by an MIT license
 // that can be found in the LICENSE file.
 
+#[cfg(test)]
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-pub fn lo_up_args() -> Vec<String> {
-    vec!["link".into(), "set".into(), "lo".into(), "up".into()]
-}
-
+#[cfg(test)]
 pub fn addr_add_v4_args(iface: &str, ip: Ipv4Addr, prefix_len: u8) -> Vec<String> {
     vec![
         "addr".into(),
@@ -18,6 +16,7 @@ pub fn addr_add_v4_args(iface: &str, ip: Ipv4Addr, prefix_len: u8) -> Vec<String
     ]
 }
 
+#[cfg(test)]
 pub fn addr_add_v6_args(iface: &str, ip: Ipv6Addr, prefix_len: u8) -> Vec<String> {
     vec![
         "-6".into(),
@@ -30,10 +29,7 @@ pub fn addr_add_v6_args(iface: &str, ip: Ipv6Addr, prefix_len: u8) -> Vec<String
     ]
 }
 
-pub fn link_up_args(iface: &str) -> Vec<String> {
-    vec!["link".into(), "set".into(), iface.into(), "up".into()]
-}
-
+#[cfg(test)]
 pub fn default_route_v4_args(gateway: Ipv4Addr, iface: &str) -> Vec<String> {
     vec![
         "route".into(),
@@ -46,6 +42,7 @@ pub fn default_route_v4_args(gateway: Ipv4Addr, iface: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
 pub fn default_route_v6_args(gateway: Ipv6Addr, iface: &str) -> Vec<String> {
     vec![
         "-6".into(),
@@ -59,6 +56,7 @@ pub fn default_route_v6_args(gateway: Ipv6Addr, iface: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
 pub fn neigh_add_v4_args(neighbor: Ipv4Addr, mac: &str, iface: &str) -> Vec<String> {
     vec![
         "neigh".into(),
@@ -73,6 +71,7 @@ pub fn neigh_add_v4_args(neighbor: Ipv4Addr, mac: &str, iface: &str) -> Vec<Stri
     ]
 }
 
+#[cfg(test)]
 pub fn neigh_add_v6_args(neighbor: Ipv6Addr, mac: &str, iface: &str) -> Vec<String> {
     vec![
         "-6".into(),

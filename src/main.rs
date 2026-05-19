@@ -27,6 +27,8 @@ mod flow_log;
 #[cfg(target_os = "linux")]
 mod hosts;
 #[cfg(target_os = "linux")]
+mod linux_net;
+#[cfg(target_os = "linux")]
 mod namespace;
 #[cfg(target_os = "linux")]
 mod network;

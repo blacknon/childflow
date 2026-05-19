@@ -25,13 +25,13 @@ pub(super) fn inspect_rootful_capabilities() -> CapabilityReport {
         );
     }
 
-    let missing_commands = missing_commands(&["ip", "iptables", "ip6tables"]);
+    let missing_commands = missing_commands(&["iptables", "ip6tables"]);
     if missing_commands.is_empty() {
         report.push(
             observability_doctor::EXTERNAL_COMMANDS,
             "external commands",
             CapabilityStatus::Available,
-            "found `ip`, `iptables`, and `ip6tables` in PATH",
+            "found `iptables` and `ip6tables` in PATH",
         );
     } else {
         report.push(

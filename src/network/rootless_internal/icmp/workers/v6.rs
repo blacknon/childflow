@@ -16,9 +16,14 @@ pub(in crate::network::rootless_internal::icmp) fn spawn_icmpv6_echo_worker(
     thread::spawn(move || {
         let child_probe = frames::v6::build_child_icmpv6_echo_probe(&request);
 
-        let result =
-            relay::relay_icmpv6_echo(request.remote_ip, request.hop_limit, &request.payload)
-                .and_then(|outcome| match outcome {
+        let result = relay::relay_icmpv6_echo(
+            request.remote_ip,
+            request.hop_limit,
+            request.identifier,
+            request.sequence,
+            &request.payload,
+        )
+        .and_then(|outcome| match outcome {
                     IcmpRelayOutcome::Message(reply) => {
                         frames::v6::build_icmpv6_echo_reply_frame(&request, &reply)
                     }

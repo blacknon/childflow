@@ -11,25 +11,12 @@ pub(super) fn inspect_rootless_internal_capabilities() -> CapabilityReport {
     let mut report = CapabilityReport::default();
     let euid = current_euid();
 
-    let missing_required_commands = missing_commands(&["ip"]);
-    if missing_required_commands.is_empty() {
-        report.push(
-            observability_doctor::EXTERNAL_COMMANDS,
-            "external commands",
-            CapabilityStatus::Available,
-            "found `ip` in PATH",
-        );
-    } else {
-        report.push(
-            observability_doctor::EXTERNAL_COMMANDS,
-            "external commands",
-            CapabilityStatus::Unavailable,
-            format!(
-                "missing required commands: {}",
-                missing_required_commands.join(", ")
-            ),
-        );
-    }
+    report.push(
+        observability_doctor::EXTERNAL_COMMANDS,
+        "external commands",
+        CapabilityStatus::Available,
+        "the rootless backend no longer requires `ip` for namespace network setup",
+    );
 
     let namespace_handles = [
         "/proc/self/ns/user",

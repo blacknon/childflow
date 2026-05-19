@@ -2,23 +2,28 @@ use anyhow::Result;
 
 use super::IcmpRelayOutcome;
 
+#[cfg(test)]
 mod ping;
 mod raw;
 
 pub(super) fn relay_icmpv4_echo(
     remote_ip: std::net::Ipv4Addr,
     hop_limit: u8,
+    identifier: u16,
+    sequence: u16,
     payload: &[u8],
 ) -> Result<IcmpRelayOutcome> {
-    ping::relay_icmpv4_echo(remote_ip, hop_limit, payload)
+    raw::relay_icmpv4_echo(remote_ip, hop_limit, identifier, sequence, payload)
 }
 
 pub(super) fn relay_icmpv6_echo(
     remote_ip: std::net::Ipv6Addr,
     hop_limit: u8,
+    identifier: u16,
+    sequence: u16,
     payload: &[u8],
 ) -> Result<IcmpRelayOutcome> {
-    ping::relay_icmpv6_echo(remote_ip, hop_limit, payload)
+    raw::relay_icmpv6_echo(remote_ip, hop_limit, identifier, sequence, payload)
 }
 
 pub(super) fn relay_icmpv4_message(

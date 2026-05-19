@@ -7,7 +7,7 @@ use std::env;
 use super::helpers::{current_euid, find_missing_commands, find_unwritable_paths};
 use crate::preflight::PreflightReport;
 
-const ROOTFUL_REQUIRED_COMMANDS: &[&str] = &["ip", "iptables", "ip6tables"];
+const ROOTFUL_REQUIRED_COMMANDS: &[&str] = &["iptables", "ip6tables"];
 const ROOTFUL_REQUIRED_SYSCTLS: &[&str] = &[
     "/proc/sys/net/ipv4/ip_forward",
     "/proc/sys/net/ipv6/conf/all/forwarding",
@@ -32,13 +32,13 @@ pub(super) fn inspect_rootful(proxy_requested: bool) -> PreflightReport {
     if missing_commands.is_empty() {
         report.push_ok(
             "external commands",
-            "found `ip`, `iptables`, and `ip6tables` in PATH",
+            "found `iptables` and `ip6tables` in PATH",
         );
     } else {
         report.push_fatal(
             "external commands",
             format!("missing required commands: {}", missing_commands.join(", ")),
-            "install `iproute2` and an `iptables` / `ip6tables` userspace compatible with the host firewall backend",
+            "install an `iptables` / `ip6tables` userspace compatible with the host firewall backend",
         );
     }
 

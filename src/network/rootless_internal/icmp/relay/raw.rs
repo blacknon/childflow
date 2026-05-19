@@ -8,6 +8,17 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use super::super::IcmpRelayOutcome;
 
+pub(super) fn relay_icmpv4_echo(
+    remote_ip: std::net::Ipv4Addr,
+    hop_limit: u8,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> Result<IcmpRelayOutcome> {
+    let message = build_icmpv4_echo_message(identifier, sequence, payload);
+    relay_icmpv4_message(remote_ip, hop_limit, &message)
+}
+
 pub(super) fn relay_icmpv4_message(
     remote_ip: std::net::Ipv4Addr,
     hop_limit: u8,
@@ -72,6 +83,17 @@ pub(super) fn relay_icmpv4_message(
         }
         return Ok(IcmpRelayOutcome::Message(message));
     }
+}
+
+pub(super) fn relay_icmpv6_echo(
+    remote_ip: std::net::Ipv6Addr,
+    hop_limit: u8,
+    identifier: u16,
+    sequence: u16,
+    payload: &[u8],
+) -> Result<IcmpRelayOutcome> {
+    let message = build_icmpv6_echo_message(identifier, sequence, payload);
+    relay_icmpv6_message(remote_ip, hop_limit, &message)
 }
 
 pub(super) fn relay_icmpv6_message(
@@ -150,4 +172,44 @@ pub(super) fn relay_icmpv6_message(
         }
         return Ok(IcmpRelayOutcome::Message(message));
     }
+}
+
+fn build_icmpv4_echo_message(identifier: u16, sequence: u16, payload: &[u8]) -> Vec<u8> {
+    let mut icmp = Vec::with_capacity(8 + payload.len());
+    icmp.push(8);
+    icmp.push(0);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&identifier.to_be_bytes());
+    icmp.extend_from_slice(&sequence.to_be_bytes());
+    icmp.extend_from_slice(payload);
+    let checksum = internet_checksum(&icmp);
+    icmp[2..4].copy_from_slice(&checksum.to_be_bytes());
+    icmp
+}
+
+fn build_icmpv6_echo_message(identifier: u16, sequence: u16, payload: &[u8]) -> Vec<u8> {
+    let mut icmp = Vec::with_capacity(8 + payload.len());
+    icmp.push(128);
+    icmp.push(0);
+    icmp.extend_from_slice(&[0, 0]);
+    icmp.extend_from_slice(&identifier.to_be_bytes());
+    icmp.extend_from_slice(&sequence.to_be_bytes());
+    icmp.extend_from_slice(payload);
+    icmp
+}
+
+fn internet_checksum(data: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    for chunk in data.chunks(2) {
+        let word = match chunk {
+            [hi, lo] => u16::from_be_bytes([*hi, *lo]),
+            [hi] => u16::from_be_bytes([*hi, 0]),
+            _ => 0,
+        };
+        sum += u32::from(word);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }

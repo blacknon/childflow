@@ -68,7 +68,6 @@ cargo install childflow
 Host requirements:
 
 - Linux only
-- `ip`
 - `iptables`
 - `ip6tables`
 
@@ -78,6 +77,7 @@ Additional `rootless-internal` requirements:
 - `/dev/net/tun`
 - user namespaces enabled on the host
 - `uidmap` is recommended on Debian / Ubuntu style systems for `newuidmap` / `newgidmap` fallback
+- `ip` is no longer required for rootless namespace network setup
 
 Additional `rootful` requirements:
 

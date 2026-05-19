@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 
 use super::addr;
 use crate::capture::{CaptureMetadata, CaptureMode, CapturePlan, RootfulEgressRewrite};
 use crate::cli::{Cli, OutputView};
+use crate::linux_net;
 
 pub(super) fn discover_rootless_egress_rewrite(
     addr_plan: &addr::AddressPlan,
@@ -59,62 +60,18 @@ fn discover_rootless_wire_egress_capture_plan(output_path: PathBuf) -> Result<Ca
 }
 
 fn discover_route_get_src_v4() -> Result<std::net::Ipv4Addr> {
-    let output =
-        crate::util::run_command("ip", vec!["route".into(), "get".into(), "1.1.1.1".into()])
-            .context("failed to inspect IPv4 route-get output")?;
-    parse_route_get_src_v4(&output)
+    linux_net::discover_egress_src_v4("1.1.1.1".parse().unwrap())
+        .context("failed to determine the IPv4 source address from the default route")
 }
 
 fn discover_route_get_dev_v4() -> Result<String> {
-    let output =
-        crate::util::run_command("ip", vec!["route".into(), "get".into(), "1.1.1.1".into()])
-            .context("failed to inspect IPv4 route-get output")?;
-    parse_route_get_dev(&output)
+    let source_ip = discover_route_get_src_v4()?;
+    linux_net::discover_interface_for_source_ip(source_ip.into())
+        .context("failed to determine the IPv4 egress interface from the default route")
 }
 
 fn discover_route_get_src_v6() -> Result<Option<std::net::Ipv6Addr>> {
-    let output = crate::util::run_command(
-        "ip",
-        vec![
-            "-6".into(),
-            "route".into(),
-            "get".into(),
-            "2606:4700:4700::1111".into(),
-        ],
-    )
-    .context("failed to inspect IPv6 route-get output")?;
-    parse_route_get_src_v6(&output).map(Some)
-}
-
-fn parse_route_get_src_v4(output: &str) -> Result<std::net::Ipv4Addr> {
-    let tokens: Vec<&str> = output.split_whitespace().collect();
-    tokens
-        .windows(2)
-        .find(|pair| pair[0] == "src")
-        .ok_or_else(|| anyhow!("no `src` token found in route-get output: {output}"))?[1]
-        .parse::<std::net::Ipv4Addr>()
-        .with_context(|| {
-            format!("failed to parse IPv4 `src` token from route-get output: {output}")
-        })
-}
-
-fn parse_route_get_src_v6(output: &str) -> Result<std::net::Ipv6Addr> {
-    let tokens: Vec<&str> = output.split_whitespace().collect();
-    tokens
-        .windows(2)
-        .find(|pair| pair[0] == "src")
-        .ok_or_else(|| anyhow!("no `src` token found in IPv6 route-get output: {output}"))?[1]
-        .parse::<std::net::Ipv6Addr>()
-        .with_context(|| {
-            format!("failed to parse IPv6 `src` token from route-get output: {output}")
-        })
-}
-
-fn parse_route_get_dev(output: &str) -> Result<String> {
-    let tokens: Vec<&str> = output.split_whitespace().collect();
-    Ok(tokens
-        .windows(2)
-        .find(|pair| pair[0] == "dev")
-        .ok_or_else(|| anyhow!("no `dev` token found in route-get output: {output}"))?[1]
-        .to_string())
+    linux_net::discover_egress_src_v6("2606:4700:4700::1111".parse().unwrap())
+        .context("failed to determine the IPv6 source address from the default route")
+        .map(Some)
 }

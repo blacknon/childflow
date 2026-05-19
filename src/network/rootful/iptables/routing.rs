@@ -1,6 +1,7 @@
 use anyhow::Context;
 
 use super::*;
+use crate::linux_net;
 
 impl NetworkContext {
     pub(crate) fn install_interface_forcing(&mut self) -> Result<()> {
@@ -65,83 +66,27 @@ impl NetworkContext {
             replace_action_flag(&mark_v6_args, "-A", "-D"),
         );
 
-        run_command(
-            "ip",
-            vec![
-                "rule".into(),
-                "add".into(),
-                "fwmark".into(),
-                route_mark.to_string(),
-                "lookup".into(),
-                route_table.to_string(),
-                "priority".into(),
-                route_priority.to_string(),
-            ],
-        )
-        .context("failed to install policy routing rule for interface forcing")?;
-        self.push_cleanup_command(
-            "remove IPv4 interface-forcing policy rule",
-            "ip",
-            vec![
-                "rule".into(),
-                "del".into(),
-                "priority".into(),
-                route_priority.to_string(),
-            ],
-        );
+        linux_net::policy_rule_add_v4(route_mark, route_table, route_priority)
+            .context("failed to install policy routing rule for interface forcing")?;
+        self.push_cleanup_policy_rule_v4(route_mark, route_table, route_priority);
 
-        run_command(
-            "ip",
-            vec![
-                "-6".into(),
-                "rule".into(),
-                "add".into(),
-                "fwmark".into(),
-                route_mark.to_string(),
-                "lookup".into(),
-                route_table.to_string(),
-                "priority".into(),
-                route_priority.to_string(),
-            ],
-        )
-        .context("failed to install IPv6 policy routing rule for interface forcing")?;
-        self.push_cleanup_command(
-            "remove IPv6 interface-forcing policy rule",
-            "ip",
-            vec![
-                "-6".into(),
-                "rule".into(),
-                "del".into(),
-                "priority".into(),
-                route_priority.to_string(),
-            ],
-        );
+        linux_net::policy_rule_add_v6(route_mark, route_table, route_priority)
+            .context("failed to install IPv6 policy routing rule for interface forcing")?;
+        self.push_cleanup_policy_rule_v6(route_mark, route_table, route_priority);
 
-        run_command(
-            "ip",
-            build_default_route_args(route_table, &iface, route_info.gateway),
-        )
-        .with_context(|| {
-            format!("failed to install route table {route_table} for forced interface {iface}")
-        })?;
-        self.push_cleanup_command(
-            "remove IPv4 forced-interface route",
-            "ip",
-            build_default_route_delete_args(route_table, &iface, route_info.gateway),
-        );
+        linux_net::route_add_default_v4_table(&iface, route_info.gateway, route_table)
+            .with_context(|| {
+                format!("failed to install route table {route_table} for forced interface {iface}")
+            })?;
+        self.push_cleanup_default_route_v4(iface.clone(), route_info.gateway, route_table);
 
-        run_command(
-            "ip",
-            build_default_route6_args(route_table, &iface, route6_info.gateway),
-        )
-        .with_context(|| {
-            format!("failed to install IPv6 route table {route_table} for forced interface {iface}")
-        })?;
-        self.push_cleanup_command(
-            "remove IPv6 forced-interface route",
-            "ip",
-            build_default_route6_delete_args(route_table, &iface, route6_info.gateway),
-        );
+        linux_net::route_add_default_v6_table(&iface, route6_info.gateway, route_table)
+            .with_context(|| {
+                format!(
+                    "failed to install IPv6 route table {route_table} for forced interface {iface}"
+                )
+            })?;
+        self.push_cleanup_default_route_v6(iface, route6_info.gateway, route_table);
 
         Ok(())
     }
