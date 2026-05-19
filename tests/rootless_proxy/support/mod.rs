@@ -10,7 +10,9 @@ pub(crate) use http::{
     assert_connects_to_https_target, spawn_bound_http_server, spawn_http_connect_proxy,
     spawn_local_http_server, spawn_local_tcp_server, spawn_local_udp_server,
 };
-pub(crate) use net::{discover_reachable_host_ipv4, LoopbackAliasGuard};
+pub(crate) use net::{
+    discover_reachable_host_ipv4, list_childflow_transient_links, LoopbackAliasGuard,
+};
 pub(crate) use temp::unique_temp_profile_dir;
 
 mod capture;

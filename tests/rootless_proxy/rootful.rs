@@ -3,9 +3,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use super::support::{
-    assert_capture_file_written, discover_reachable_host_ipv4, run_childflow_command,
-    spawn_http_connect_proxy, spawn_local_http_server, spawn_local_tcp_server,
-    spawn_local_udp_server, unique_loopback_dns_ip, unique_temp_capture_path, LocalDnsServer,
+    assert_capture_file_written, discover_reachable_host_ipv4, list_childflow_transient_links,
+    run_childflow_command, spawn_http_connect_proxy, spawn_local_http_server,
+    spawn_local_tcp_server, spawn_local_udp_server, unique_loopback_dns_ip,
+    unique_temp_capture_path, LocalDnsServer,
 };
 
 #[test]
@@ -104,6 +105,61 @@ fn rootful_doctor_text_reports_rootful_backend() -> Result<()> {
     assert!(stdout.contains("status:"));
     assert!(stdout.contains("capabilities"));
     assert!(stdout.contains("preflight"));
+    Ok(())
+}
+
+#[test]
+fn rootful_cleanup_removes_transient_links_after_run() -> Result<()> {
+    let before = list_childflow_transient_links()?;
+    let (server_addr, requests) =
+        spawn_local_http_server("childflow-rootful-cleanup-should-not-connect")?;
+    let host_ip = discover_reachable_host_ipv4()?;
+
+    let output = run_childflow_command(&[
+        "--root",
+        "--default-policy",
+        "deny",
+        "--",
+        "python3",
+        "-c",
+        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()",
+        &format!("http://{host_ip}:{}/hello", server_addr.port()),
+    ])
+    .context("failed to run childflow rootful cleanup smoke test")?;
+
+    assert!(!output.status.success());
+    assert!(requests.recv_timeout(Duration::from_millis(500)).is_err());
+    let after = list_childflow_transient_links()?;
+    assert_eq!(after, before, "rootful run leaked transient links");
+    Ok(())
+}
+
+#[test]
+fn rootful_failed_setup_rolls_back_transient_links() -> Result<()> {
+    let before = list_childflow_transient_links()?;
+
+    let output = run_childflow_command(&[
+        "--root",
+        "--iface",
+        "childflow-definitely-missing0",
+        "--",
+        "python3",
+        "-c",
+        "print('unreachable')",
+    ])
+    .context("failed to run childflow rootful rollback smoke test")?;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to prepare the selected network backend")
+            || stderr.contains("failed to determine")
+            || stderr.contains("failed to inspect default route"),
+        "unexpected stderr for rootful rollback smoke test:\n{}",
+        stderr
+    );
+    let after = list_childflow_transient_links()?;
+    assert_eq!(after, before, "failed rootful setup leaked transient links");
     Ok(())
 }
 

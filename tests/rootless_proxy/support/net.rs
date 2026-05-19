@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 use anyhow::{bail, Context, Result};
@@ -48,4 +49,29 @@ pub(crate) fn discover_reachable_host_ipv4() -> Result<Ipv4Addr> {
 #[allow(dead_code)]
 pub(crate) fn metadata_alias_ip() -> Ipv4Addr {
     loopback_metadata_ip()
+}
+
+pub(crate) fn list_childflow_transient_links() -> Result<BTreeSet<String>> {
+    let mut links = BTreeSet::new();
+    for entry in std::fs::read_dir("/sys/class/net")
+        .context("failed to read `/sys/class/net` while checking childflow cleanup")?
+    {
+        let entry = entry.context("failed to inspect an entry under `/sys/class/net`")?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if is_childflow_transient_link(&name) {
+            links.insert(name.into_owned());
+        }
+    }
+    Ok(links)
+}
+
+fn is_childflow_transient_link(name: &str) -> bool {
+    if name.len() != 9 {
+        return false;
+    }
+    if !(name.starts_with("cfh") || name.starts_with("cfc")) {
+        return false;
+    }
+    name[3..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
