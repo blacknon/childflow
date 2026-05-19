@@ -1,7 +1,10 @@
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::net::Ipv4Addr;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -9,6 +12,7 @@ use super::temp::unique_temp_profile_dir;
 
 pub(crate) struct LocalDnsServer {
     child: Child,
+    queries: Receiver<String>,
 }
 
 impl LocalDnsServer {
@@ -35,40 +39,58 @@ impl LocalDnsServer {
             .spawn()
             .context("failed to start local DNS server helper")?;
 
-        let mut stdout = String::new();
         let stdout_pipe = child
             .stdout
-            .as_mut()
+            .take()
             .context("local DNS server did not expose stdout")?;
-        let mut buf = [0_u8; 1];
-        loop {
-            let n = stdout_pipe
-                .read(&mut buf)
-                .context("failed to read local DNS server readiness signal")?;
-            if n == 0 {
-                let mut stderr = String::new();
-                if let Some(stderr_pipe) = child.stderr.as_mut() {
-                    let _ = stderr_pipe.read_to_string(&mut stderr);
-                }
-                bail!(
-                    "local DNS server exited before readiness; stderr: {}",
-                    stderr.trim()
-                );
+        let mut stdout_reader = BufReader::new(stdout_pipe);
+        let mut ready_line = String::new();
+        let n = stdout_reader
+            .read_line(&mut ready_line)
+            .context("failed to read local DNS server readiness signal")?;
+        if n == 0 {
+            let mut stderr = String::new();
+            if let Some(stderr_pipe) = child.stderr.as_mut() {
+                let _ = stderr_pipe.read_to_string(&mut stderr);
             }
-            stdout.push(buf[0] as char);
-            if stdout.ends_with('\n') {
-                break;
-            }
-        }
-
-        if stdout.trim() != "READY" {
             bail!(
-                "unexpected local DNS server readiness line: {}",
-                stdout.trim()
+                "local DNS server exited before readiness; stderr: {}",
+                stderr.trim()
             );
         }
 
-        Ok(Self { child })
+        if ready_line.trim() != "READY" {
+            bail!(
+                "unexpected local DNS server readiness line: {}",
+                ready_line.trim()
+            );
+        }
+
+        let (query_tx, query_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdout_reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if let Some(query) = line.trim().strip_prefix("QUERY ") {
+                            let _ = query_tx.send(query.to_string());
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            child,
+            queries: query_rx,
+        })
+    }
+
+    pub(crate) fn recv_query_timeout(&self, timeout: Duration) -> Result<String, RecvTimeoutError> {
+        self.queries.recv_timeout(timeout)
     }
 }
 
@@ -134,6 +156,7 @@ question_end = offset + 4
 question = data[12:question_end]
 qname = ".".join(labels).rstrip(".").lower()
 qtype = struct.unpack("!H", data[offset:offset + 2])[0]
+print(f"QUERY {qname}", flush=True)
 
 flags = 0x8180
 answers = b""

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::network::NetworkBackend;
 
 use super::inspect::parse_proc_u64;
+use super::CheckStatus;
 use super::*;
 
 #[test]
@@ -36,6 +37,41 @@ fn inspect_rootless_report_contains_backend_name() {
     let report = inspect(NetworkBackend::RootlessInternal, false);
     assert_eq!(report.backend_name(), "rootless-internal");
     assert!(!report.checks().is_empty());
+}
+
+#[test]
+fn inspect_rootless_report_marks_external_commands_as_ip_free() {
+    let report = inspect(NetworkBackend::RootlessInternal, false);
+    let check = report
+        .checks()
+        .iter()
+        .find(|check| check.label == "external commands")
+        .expect("rootless preflight should report external commands");
+
+    assert_eq!(check.status, CheckStatus::Ok);
+    assert!(check.detail.contains("no longer requires `ip`"));
+}
+
+#[test]
+fn inspect_rootful_report_requires_only_iptables_userspace() {
+    let report = inspect(NetworkBackend::Rootful, false);
+    let check = report
+        .checks()
+        .iter()
+        .find(|check| check.label == "external commands")
+        .expect("rootful preflight should report external commands");
+
+    assert!(!check.detail.contains("`ip`"));
+    match &check.status {
+        CheckStatus::Ok | CheckStatus::Fatal => {
+            assert!(
+                check.detail.contains("iptables") || check.detail.contains("ip6tables"),
+                "unexpected rootful external-command detail: {}",
+                check.detail
+            );
+        }
+        other => panic!("unexpected rootful external-command status: {:?}", other),
+    }
 }
 
 #[test]

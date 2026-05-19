@@ -1,8 +1,10 @@
 use super::capabilities::{
-    inspect_apparmor_userns_capability, render_apparmor_userns_detail, render_capability_status,
-    CapabilityReport, CapabilityStatus,
+    inspect_apparmor_userns_capability, inspect_capabilities, render_apparmor_userns_detail,
+    render_capability_status, CapabilityReport, CapabilityStatus,
 };
 use super::json::DoctorJsonReport;
+use crate::network::NetworkBackend;
+use crate::observability::doctor as observability_doctor;
 use crate::preflight::{self, CheckStatus};
 
 #[test]
@@ -58,4 +60,39 @@ fn doctor_json_report_uses_stable_status_strings() {
     assert_eq!(value["capabilities"][0]["key"], "tun_tap_device");
     assert_eq!(value["capabilities"][0]["status"], "limited");
     assert_eq!(value["preflight"][0]["status"], "warning");
+}
+
+#[test]
+fn rootless_capabilities_report_ip_is_no_longer_required() {
+    let report = inspect_capabilities(NetworkBackend::RootlessInternal);
+    let check = report
+        .checks()
+        .iter()
+        .find(|check| check.key == observability_doctor::EXTERNAL_COMMANDS)
+        .expect("rootless doctor report should include external commands");
+
+    assert_eq!(check.status, CapabilityStatus::Available);
+    assert!(check.detail.contains("no longer requires `ip`"));
+}
+
+#[test]
+fn rootful_capabilities_report_requires_only_iptables_userspace() {
+    let report = inspect_capabilities(NetworkBackend::Rootful);
+    let check = report
+        .checks()
+        .iter()
+        .find(|check| check.key == observability_doctor::EXTERNAL_COMMANDS)
+        .expect("rootful doctor report should include external commands");
+
+    assert!(!check.detail.contains("`ip`"));
+    match check.status {
+        CapabilityStatus::Available | CapabilityStatus::Unavailable => {
+            assert!(
+                check.detail.contains("iptables") || check.detail.contains("ip6tables"),
+                "unexpected rootful external-command detail: {}",
+                check.detail
+            );
+        }
+        other => panic!("unexpected rootful external-command status: {:?}", other),
+    }
 }

@@ -124,6 +124,31 @@ pub(crate) fn spawn_local_udp_server() -> Result<(SocketAddr, Receiver<Vec<u8>>)
     Ok((addr, payload_rx))
 }
 
+pub(crate) fn spawn_local_tcp_server() -> Result<(SocketAddr, Receiver<()>)> {
+    let listener =
+        TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).context("failed to bind local TCP server")?;
+    let addr = listener
+        .local_addr()
+        .context("failed to query local TCP server address")?;
+    let (accept_tx, accept_rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result: Result<()> = (|| {
+            let (_stream, _) = listener
+                .accept()
+                .context("local TCP server accept failed")?;
+            accept_tx
+                .send(())
+                .context("failed to publish local TCP accept event to test thread")?;
+            Ok(())
+        })();
+
+        let _ = result;
+    });
+
+    Ok((addr, accept_rx))
+}
+
 pub(crate) fn assert_connects_to_https_target(request_line: &str) {
     assert!(
         request_line.starts_with("CONNECT ") && request_line.ends_with(":443 HTTP/1.1"),
