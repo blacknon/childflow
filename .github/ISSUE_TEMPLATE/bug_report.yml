@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem in childflow
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please include a minimal reproduction and the exact command when possible.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence describing the problem
+      placeholder: childflow drops proxied TCP traffic when ...
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the exact childflow command and target command
+      placeholder: |
+        childflow --offline -- cargo test
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - rootless-internal
+        - rootful (--root)
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Linux distribution, kernel, namespace support, and related tooling
+      placeholder: |
+        Ubuntu 24.04
+        kernel 6.8.x
+        iptables version ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or flow-log snippets
+      description: Paste relevant stderr, summary output, or JSONL excerpts
+      render: shell

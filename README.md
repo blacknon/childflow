@@ -5,8 +5,51 @@ childflow
 <img src="./img/childflow-proxy-demo.gif" width="720" />
 </p>
 
-childflow is a per-command-tree network sandbox for Linux.
-Run one command and its child processes in an isolated network context, control DNS / hosts / proxy behavior, apply outbound policy, capture only that tree's traffic, and emit structured flow logs for that tree.
+`childflow` is a Linux network sandbox for a single command tree.
+Run one command and its child processes with isolated DNS, hosts, proxy, outbound policy, packet capture, and structured flow logs without changing the rest of the host session.
+
+It is built for cases where you need per-process or per-command control instead of host-wide isolation, and where tools do not honor `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` consistently.
+
+## Quickstart
+
+Force one command tree through a proxy:
+
+```bash
+childflow -p http://127.0.0.1:8080 -- curl https://example.com
+```
+
+Run a command tree fully offline:
+
+```bash
+childflow --offline -- cargo test
+```
+
+Capture only one command tree's traffic and write structured flow logs:
+
+```bash
+childflow \
+  -c ./childflow.pcapng \
+  --flow-log ./flow.jsonl \
+  -- curl https://example.com
+```
+
+## Why childflow
+
+Use `childflow` when you want to:
+
+- force a single CLI tool through a proxy even if it ignores proxy environment variables
+- isolate only one command tree instead of a full shell session or container
+- apply default-deny or allowlist outbound policy to one command tree
+- capture and summarize only that command tree's traffic without recording unrelated host traffic
+- test Linux CLI tools under offline, proxied, or DNS-controlled network conditions
+
+## Comparison
+
+`childflow` complements tools such as `proxychains`, `firejail`, `bubblewrap`, `tcpdump`, and ad hoc `ip netns` setups.
+
+- unlike proxy env vars or `proxychains`, it controls the network path for the command tree instead of hoping the tool cooperates
+- unlike host-wide packet capture, it can record only the selected command tree's traffic
+- unlike generic namespace wrappers, it ships focused DNS, hosts, proxy, policy, capture, and flow-log features in one CLI
 
 ## About
 

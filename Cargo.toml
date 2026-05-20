@@ -1,11 +1,12 @@
 [package]
 name = "childflow"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 license = "MIT"
 description = "A per-command-tree network sandbox for Linux"
 repository = "https://github.com/blacknon/childflow"
 homepage = "https://github.com/blacknon/childflow"
+keywords = ["linux", "sandbox", "network", "proxy", "cli"]
 
 [dependencies]
 anyhow = "1"
